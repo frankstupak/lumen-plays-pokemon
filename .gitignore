@@ -1,0 +1,38 @@
+# ── Node ────────────────────────────────────────────────
+node_modules/
+
+# ── ROMs — Nintendo copyright ───────────────────────────
+# Supply your own legally-obtained copy. Verify.ts gates on the
+# pret/pokered build hash (see README). Symbol tables (roms/*.sym)
+# are committed — they come from the open pret/pokered disassembly.
+roms/*.gb
+
+# ── Runtime state (regenerates every run) ───────────────
+checkpoints/
+saves/
+logs-24h/
+events/
+
+# ── Backups / superseded ────────────────────────────────
+*.bak*
+*.superseded
+*.tmp
+
+# ── Local operational files (fleet coordination, not project) ──
+FLEET_STATUS_NOTICE_READ_ME.txt
+MAINTENANCE_NOTICE_READ_ME.txt
+docs/NOTICE-POWERBAR-20260807.md
+deploy_powerbar.sh
+deploy_powerbar2.sh
+lumen-pokemon-live.service.bak
+
+# ── Secrets / env ───────────────────────────────────────
+.env
+*.env
+.secrets/
+
+# ── OS / editor ─────────────────────────────────────────
+.DS_Store
+*.swp
+.idea/
+.vscode/

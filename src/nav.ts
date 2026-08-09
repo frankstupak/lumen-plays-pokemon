@@ -1,0 +1,228 @@
+// A* pathfinding + step executor with self-healing collision model
+import { Emulator, KEYS } from "./emulator";
+import { SymbolTable } from "./symbols";
+import { MapModel, Warp } from "./map";
+import { EventBus } from "./events";
+import { Sync } from "./sync";
+
+const DIRS = [
+  { dx: 0, dy: -1, key: "UP" }, { dx: 0, dy: 1, key: "DOWN" },
+  { dx: -1, dy: 0, key: "LEFT" }, { dx: 1, dy: 0, key: "RIGHT" },
+] as const;
+
+export function astar(map: MapModel, sx: number, sy: number, tx: number, ty: number,
+                      extraBlocked: Set<string>): { x: number; y: number }[] | null {
+  const key = (x: number, y: number) => `${x},${y}`;
+  const open = new Map<string, { x: number; y: number; g: number; f: number }>();
+  const came = new Map<string, string>();
+  const gScore = new Map<string, number>();
+  const h = (x: number, y: number) => Math.abs(x - tx) + Math.abs(y - ty);
+  open.set(key(sx, sy), { x: sx, y: sy, g: 0, f: h(sx, sy) });
+  gScore.set(key(sx, sy), 0);
+  while (open.size) {
+    let bestK = ""; let best: any = null;
+    for (const [k, n] of open) if (!best || n.f < best.f) { best = n; bestK = k; }
+    open.delete(bestK);
+    if (best.x === tx && best.y === ty) {
+      const path = [{ x: tx, y: ty }];
+      let cur = bestK;
+      while (came.has(cur)) {
+        cur = came.get(cur)!;
+        const [cx, cy] = cur.split(",").map(Number);
+        path.unshift({ x: cx, y: cy });
+      }
+      return path.slice(1); // drop start cell
+    }
+    for (const d of DIRS) {
+      const nx = best.x + d.dx, ny = best.y + d.dy, nk = key(nx, ny);
+      const isTarget = nx === tx && ny === ty;
+      // target cell is allowed even if "impassable" terrain (warp tiles like doors often are)
+      const ok = isTarget ? (nx >= 0 && ny >= 0 && nx < map.gw && ny < map.gh)
+                          : map.passable(nx, ny);
+      if (!ok || extraBlocked.has(nk)) continue;
+      // Never route THROUGH an unrelated warp tile: stepping onto it triggers a
+      // map transition we didn't ask for. Only the target warp is allowed.
+      if (!isTarget && map.isWarp(nx, ny)) continue;
+      const g = best.g + 1;
+      if (g < (gScore.get(nk) ?? Infinity)) {
+        gScore.set(nk, g); came.set(nk, bestK);
+        open.set(nk, { x: nx, y: ny, g, f: g + h(nx, ny) });
+      }
+    }
+  }
+  return null;
+}
+
+export class Navigator {
+  private learnedBlocked = new Set<string>();
+  constructor(private emu: Emulator, private sym: SymbolTable, private map: MapModel,
+              private bus: EventBus, private sync?: Sync) {}
+
+  pos() { const m = this.emu.mem();
+    return { map: m[this.sym.addr("wCurMap")], x: m[this.sym.addr("wXCoord")], y: m[this.sym.addr("wYCoord")] }; }
+
+  inBattle(): boolean { return this.emu.mem()[this.sym.addr("wIsInBattle")] !== 0; }
+
+  /** One walk-unit step. Returns 'moved' | 'blocked' | 'warped' */
+  /** One walk-unit step. Returns 'moved' | 'blocked' | 'warped' | 'battle' */
+  async step(dx: number, dy: number): Promise<string> {
+    const d = DIRS.find(v => v.dx === dx && v.dy === dy)!;
+    if (this.sync) await this.sync.settle();
+    if (this.inBattle()) return "battle";
+    if (this.sync?.textUp()) return "dialog";
+    const before = this.pos();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (this.inBattle()) return "battle";
+      await this.emu.tapAsync(KEYS[d.key], 8, 2);
+      await this.emu.framesAsync(22);
+      if (this.sync) await this.sync.settle(300);
+      const now = this.pos();
+      if (now.map !== before.map) { await this.emu.framesAsync(90); return "warped"; }
+      if (now.x !== before.x || now.y !== before.y) return "moved";
+      // first attempt may have only turned the player; retry
+    }
+    return "blocked";
+  }
+
+  /** Walk to (tx,ty) on current map. Returns 'arrived' | 'warped' | 'stuck' */
+  async goto(tx: number, ty: number): Promise<string> {
+    this.bus.emit("tool_call", { tool: "goto", args: { tx, ty } });
+    this.learnedBlocked.clear();   // learned walls are per-journey, never persistent
+    let noPath = 0;
+    for (let replans = 0; replans < 25; replans++) {
+      if (this.inBattle()) return "battle";
+      if (this.sync?.textUp()) return "dialog";
+      this.map.build(); // refresh sprites/terrain
+      const p = this.pos();
+      if (p.x === tx && p.y === ty) return "arrived";
+      const path = astar(this.map, p.x, p.y, tx, ty, this.learnedBlocked);
+      if (!path) {
+        // A wandering NPC standing in a one-tile gap makes the map genuinely
+        // pathless for a moment. Wait for them to move before conceding.
+        if (++noPath <= 6) {
+          this.learnedBlocked.clear();
+          await this.emu.framesAsync(120);
+          continue;
+        }
+        this.bus.emit("tool_call", { tool: "goto", result: "no_path" });
+        return "stuck";
+      }
+      noPath = 0;
+      for (const cell of path) {
+        const cur = this.pos();
+        const dx = cell.x - cur.x, dy = cell.y - cur.y;
+        if (Math.abs(dx) + Math.abs(dy) !== 1) break; // desynced from plan -> replan
+        const r = await this.step(dx, dy);
+        if (r === "warped") return "warped";
+        if (r === "battle") return "battle";
+        if (r === "dialog") return "dialog";
+        if (r === "blocked") {
+          this.learnedBlocked.add(`${cell.x},${cell.y}`);
+          break; // replan
+        }
+      }
+      const q = this.pos();
+      if (q.x === tx && q.y === ty) return "arrived";
+    }
+    return "stuck";
+  }
+
+  /**
+   * Traverse a warp. Interior warps (stairs, ladders) fire on step-on. Edge
+   * door warps do not: the player must be pushed outward across the map
+   * boundary. Try the boundary-implied direction first, then the rest.
+   */
+  async enterWarp(w: Warp): Promise<string> {
+    const r = await this.goto(w.x, w.y);
+    if (r === "warped") return "warped";
+    if (r === "battle") return "battle";
+    if (r === "stuck") return "stuck";
+
+    const outward: [number, number][] = [];
+    if (w.y >= this.map.gh - 1) outward.push([0, 1]);
+    if (w.y <= 0) outward.push([0, -1]);
+    if (w.x >= this.map.gw - 1) outward.push([1, 0]);
+    if (w.x <= 0) outward.push([-1, 0]);
+    const order: [number, number][] = [...outward, [0, 1], [0, -1], [1, 0], [-1, 0]];
+
+    const tried = new Set<string>();
+    for (const [dx, dy] of order) {
+      const k = `${dx},${dy}`;
+      if (tried.has(k)) continue;
+      tried.add(k);
+      const before = this.pos();
+      const sr = await this.step(dx, dy);
+      if (sr === "warped") {
+        this.bus.emit("tool_call", { tool: "enterWarp", push: k, result: "warped" });
+        return "warped";
+      }
+      const after = this.pos();
+      if (after.x !== before.x || after.y !== before.y) await this.step(-dx, -dy);
+    }
+    // Interior door warps (Center/Mart/building exits) sit on the visible bottom
+    // row but the tile BELOW is collision-wall, so step() refuses and the push
+    // loop above never fires. Gen1 fires these on the walk-into-wall animation:
+    // raw-press the outward direction a few times regardless of the grid.
+    for (const [dx, dy] of order) {
+      if (dx === 0 && dy === -1) continue;   // never push back up into the room
+      const key = dy > 0 ? KEYS.DOWN : dy < 0 ? KEYS.UP : dx > 0 ? KEYS.RIGHT : KEYS.LEFT;
+      const startMap: number = this.pos().map ?? -1;
+      for (let i = 0; i < 4; i++) {
+        await this.emu.tapAsync(key, 8, 16);
+        await this.sync?.settle(300);
+        const nowMap: number = this.pos().map ?? -1;
+        if (nowMap !== startMap) {
+          this.bus.emit("tool_call", { tool: "enterWarp", push: `raw${dx},${dy}`, result: "warped" });
+          return "warped";
+        }
+      }
+    }
+    this.bus.emit("tool_call", { tool: "enterWarp", result: "no_transition" });
+    return "stuck";
+  }
+
+  /**
+   * Leave the current map across a boundary edge (route-to-route travel).
+   * Boundary openings are not warps and carry no table entry, so candidates
+   * are derived from the collision grid and tried nearest-first: A* decides
+   * which are actually reachable rather than us guessing from geometry.
+   */
+  async leaveMapEdge(dir: "N" | "S" | "E" | "W"): Promise<string> {
+    this.map.build();
+    const g = this.map.grid, gw = this.map.gw, gh = this.map.gh;
+    const cands: { x: number; y: number }[] = [];
+    if (dir === "N") for (let x = 0; x < gw; x++) { if (g[0][x]) cands.push({ x, y: 0 }); }
+    if (dir === "S") for (let x = 0; x < gw; x++) { if (g[gh - 1][x]) cands.push({ x, y: gh - 1 }); }
+    if (dir === "W") for (let y = 0; y < gh; y++) { if (g[y][0]) cands.push({ x: 0, y }); }
+    if (dir === "E") for (let y = 0; y < gh; y++) { if (g[y][gw - 1]) cands.push({ x: gw - 1, y }); }
+
+    const push: Record<string, [number, number]> =
+      { N: [0, -1], S: [0, 1], W: [-1, 0], E: [1, 0] };
+    const [px, py] = [this.pos().x, this.pos().y];
+    cands.sort((a, b) =>
+      (Math.abs(a.x - px) + Math.abs(a.y - py)) - (Math.abs(b.x - px) + Math.abs(b.y - py)));
+
+    this.bus.emit("tool_call", { tool: "leaveMapEdge", dir, candidates: cands.length });
+
+    const startMap = this.pos().map;
+    for (const c of cands) {
+      const r = await this.goto(c.x, c.y);
+      if (r === "warped") return "warped";
+      if (r === "battle") return "battle";
+      if (r === "stuck") continue;               // unreachable opening, try the next
+      for (let i = 0; i < 3; i++) {
+        const sr = await this.step(push[dir][0], push[dir][1]);
+        if (sr === "battle") return "battle";
+        if (sr === "warped" || this.pos().map !== startMap) {
+          this.bus.emit("tool_call", { tool: "leaveMapEdge", dir, result: "left", via: c });
+          return "warped";
+        }
+        if (sr === "blocked") break;
+      }
+    }
+    this.bus.emit("tool_call", { tool: "leaveMapEdge", dir, result: "no_exit" });
+    return "stuck";
+  }
+
+  clearLearned() { this.learnedBlocked.clear(); }
+}

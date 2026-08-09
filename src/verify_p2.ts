@@ -1,0 +1,15 @@
+import { Emulator, loadSnapshotFile } from "./emulator";
+import { SymbolTable } from "./symbols";
+import { StateReader } from "./state";
+import { Screen } from "./screen";
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
+loadSnapshotFile(emu, "/home/lumen/pokemon/saves/starter.state.gz");
+const st = new StateReader(emu, sym).read();
+const m = emu.mem();
+const dec = (a: number, n: number) => { let s = ""; for (let i = 0; i < n; i++) { const t = m[a+i]; if (t === 0x50) break;
+  s += t >= 0x80 && t <= 0x99 ? String.fromCharCode(65 + t - 0x80) : t >= 0xa0 && t <= 0xb9 ? String.fromCharCode(97 + t - 0xa0) : "?"; } return s; };
+console.log("map=" + st.map + " pos=(" + st.x + "," + st.y + ") party=" + st.partyCount + " money=" + st.money);
+console.log("mon nickname: " + dec(sym.addr("wPartyMonNicks"), 11));
+console.log("player name:  " + dec(sym.addr("wPlayerName"), 11));
+st.party.forEach(p => console.log("  species=" + p.species + " L" + p.level + " HP " + p.hp + "/" + p.maxHp));
