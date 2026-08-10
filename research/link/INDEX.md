@@ -50,4 +50,9 @@ See ../../docs/multiplayer/M3_TRADE.md and the M3 section appended to R4.
   the battle move list is ONE-INDEXED; move selection has the SAME no-input law as the
   trade nybble sync, and link-battle narration scrolls itself (ManualTextScroll.inLinkBattle)
   so pressing A through it is actively harmful.
-- Next: M4 dual harness (two BrainProfiles, one StreamServer grid).
+- M4 DUEL DONE 2026-08-10: model-vs-model link battle SHIPPED — cerebras-oss-120b vs
+  deepseek-v4-flash, 6/6 mirrored, winner decided. Per-side BrainProfile from env
+  (LPP_DUEL_A_MODEL etc). Brains choose a move SLOT only; keys/timing/bus stay inside the
+  M3-verified LinkBattleSession. See ../../docs/multiplayer/M4_DUEL.md.
+- Next: M5 (wq#433, stretch) — BGB link-over-TCP so a REMOTE orchestrator can challenge.
+  Research thread D3 (BGB wire format) first; f(recv)->send stays unchanged per R2.
