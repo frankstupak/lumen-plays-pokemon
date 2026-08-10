@@ -37,12 +37,17 @@ const dump = (tag: string) => {
   await emu.tapAsync(KEYS.A, 8, 20); await sync.settle(300);
   console.log("=== 4-move menu ==="); dump("open");
   console.log("screen:\n" + scr.text());
+  // Second element is the actual KEYS value. It previously held single letters
+  // ("d","u","r","l") looked up as KEYS[k], which are not members of KEYS — so
+  // every tap in this probe was passing `undefined` and pressing nothing, on top
+  // of not type-checking. Declared [string, number][] and now genuinely is one.
   const seq: [string, number][] = [
-    ["DOWN","d"], ["DOWN","d"], ["DOWN","d"], ["UP","u"], ["UP","u"], ["UP","u"],
-    ["RIGHT","r"], ["LEFT","l"],
+    ["DOWN", KEYS.DOWN], ["DOWN", KEYS.DOWN], ["DOWN", KEYS.DOWN],
+    ["UP", KEYS.UP], ["UP", KEYS.UP], ["UP", KEYS.UP],
+    ["RIGHT", KEYS.RIGHT], ["LEFT", KEYS.LEFT],
   ];
   for (const [label, k] of seq) {
-    await emu.tapAsync(KEYS[k as any], 8, 10); await sync.settle(120);
+    await emu.tapAsync(k, 8, 10); await sync.settle(120);
     dump(`after ${label}`);
   }
 })();

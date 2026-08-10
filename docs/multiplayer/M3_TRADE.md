@@ -104,16 +104,29 @@ and A's received block head reads `81 8e 81` = **B O B**. The enemy structures
 `$D9AC` OT, `$D9EE` nickname) all arrived populated and correct. Alignment is
 exact: `$D89C` = party count, `$D89D` = species list, `$D8A4` = first mon.
 
-## Open items
+## Resolved (measured 2026-08-10) — no open items remain for M3 trade
 
-- **Rendezvous can need a retry.** In the E2E run the first attempt never
-  converged (`$CC3D` stayed 0 through 14 quiet steps); the second landed.
-  `TradeSession` retries up to `maxRendezvous` (default 6). Root cause not yet
-  established — worth a trace of what the non-converging side is doing inside
-  `$226E`.
-- **`catchUpTimeouts` = 671 of ~702 exchanges.** Peer catch-up hits its step
-  limit on nearly every byte. It works, but the margin is unclear and it is the
-  main wall-clock cost of the block phase.
+**Rendezvous retry is no longer needed.** The retry existed because the phase
+detector read screen text, which cannot tell the two party lists apart and
+misreads transition frames. Reading `wMenuWatchedKeys` `$CC29` instead
+identifies the active menu exactly, and with that the confirm lands on
+**attempt 1 in 3/3 runs**. `maxRendezvous` is kept as a safety net; it no longer
+fires.
+
+**Peer catch-up is load-bearing; its budget is not.** Disabling `peerCatchUp`
+stalls side B at `wLinkState` 2 on "PLEASE WAIT!" in 3/3 runs (823 exchanges, no
+swap), so the mechanism is required. But `catchUpTimeouts` sits at 671 of ~702
+block exchanges at *every* budget from 256 steps down to 4 — only ~31 bytes ever
+stage successfully, and within a handful of bursts. The other 671 are a follower
+waiting for our clock, which cannot progress in isolation however long it runs.
+Default lowered 256 -> 8: verified 3/3, 22.7-24.0s vs 24.6-25.1s.
+
+**Wall time is ~25 seconds** per full trade, not the ~3 minutes first reported;
+that figure was polling overhead, not the run.
+
+**Party sizes 1 through 6 verified**, including the full-party edge case. See
+`M3_TRADE_PARTIES.md`.
+
 ## Multi-mon parties — VERIFIED 2026-08-10
 
 `npx tsx src/link/drive_trade_multimon.ts` builds a **two-mon party on each

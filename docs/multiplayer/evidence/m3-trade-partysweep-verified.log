@@ -1,0 +1,108 @@
+
+=== party size 1 (offering slot 0, the entry above CANCEL) ===
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+A after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+B after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+  -> VERIFIED: full two-way swap (attempts=1 ex=750 23.1s)
+
+=== party size 2 (offering slot 1, the entry above CANCEL) ===
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+A after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$1122/lv41/OT:BOB/nick:BTWO
+B after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+  -> VERIFIED: full two-way swap (attempts=1 ex=749 35.9s)
+
+=== party size 3 (offering slot 2, the entry above CANCEL) ===
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+A after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$1122/lv42/OT:BOB/nick:BTHREE
+B after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv41/OT:BOB/nick:BTWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+  -> VERIFIED: full two-way swap (attempts=1 ex=749 35.8s)
+
+=== party size 4 (offering slot 3, the entry above CANCEL) ===
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+        [3] sp178/id$23c2/lv13/OT:AAAAAAA/nick:AFOUR
+A after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+        [3] sp178/id$1122/lv43/OT:BOB/nick:BFOUR
+B after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv41/OT:BOB/nick:BTWO
+        [2] sp178/id$1122/lv42/OT:BOB/nick:BTHREE
+        [3] sp178/id$23c2/lv13/OT:AAAAAAA/nick:AFOUR
+  -> VERIFIED: full two-way swap (attempts=1 ex=749 34.8s)
+
+=== party size 5 (offering slot 4, the entry above CANCEL) ===
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+        [3] sp178/id$23c2/lv13/OT:AAAAAAA/nick:AFOUR
+        [4] sp178/id$23c2/lv14/OT:AAAAAAA/nick:AFIVE
+A after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+        [3] sp178/id$23c2/lv13/OT:AAAAAAA/nick:AFOUR
+        [4] sp178/id$1122/lv44/OT:BOB/nick:BFIVE
+B after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv41/OT:BOB/nick:BTWO
+        [2] sp178/id$1122/lv42/OT:BOB/nick:BTHREE
+        [3] sp178/id$1122/lv43/OT:BOB/nick:BFOUR
+        [4] sp178/id$23c2/lv14/OT:AAAAAAA/nick:AFIVE
+  -> VERIFIED: full two-way swap (attempts=1 ex=749 33.8s)
+
+=== party size 6 (offering slot 5, the entry above CANCEL) ===
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+        [3] sp178/id$23c2/lv13/OT:AAAAAAA/nick:AFOUR
+        [4] sp178/id$23c2/lv14/OT:AAAAAAA/nick:AFIVE
+        [5] sp178/id$23c2/lv15/OT:AAAAAAA/nick:ASIX
+A after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv11/OT:AAAAAAA/nick:ATWO
+        [2] sp178/id$23c2/lv12/OT:AAAAAAA/nick:ATHREE
+        [3] sp178/id$23c2/lv13/OT:AAAAAAA/nick:AFOUR
+        [4] sp178/id$23c2/lv14/OT:AAAAAAA/nick:AFIVE
+        [5] sp178/id$1122/lv45/OT:BOB/nick:BSIX
+B after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv41/OT:BOB/nick:BTWO
+        [2] sp178/id$1122/lv42/OT:BOB/nick:BTHREE
+        [3] sp178/id$1122/lv43/OT:BOB/nick:BFOUR
+        [4] sp178/id$1122/lv44/OT:BOB/nick:BFIVE
+        [5] sp178/id$23c2/lv15/OT:AAAAAAA/nick:ASIX
+  -> VERIFIED: full two-way swap (attempts=1 ex=749 34.4s)
+
+================ PARTY-SIZE SWEEP ================
+  size 1: PASS  full two-way swap  attempts=1 ex=750 23.1s
+  size 2: PASS  full two-way swap  attempts=1 ex=749 35.9s
+  size 3: PASS  full two-way swap  attempts=1 ex=749 35.8s
+  size 4: PASS  full two-way swap  attempts=1 ex=749 34.8s
+  size 5: PASS  full two-way swap  attempts=1 ex=749 33.8s
+  size 6: PASS  full two-way swap  attempts=1 ex=749 34.4s
+*** ALL 6 PARTY SIZES VERIFIED ***
