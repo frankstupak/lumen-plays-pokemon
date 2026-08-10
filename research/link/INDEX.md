@@ -24,7 +24,9 @@ reproducible for testing. No cycle-accurate sync needed. No emulator swap needed
       no IRQ-timing regression on the single-player path when the bus is idle.
 - D2: SameBoy source (GB_serial_set_data / connect_serial_device) as a correctness oracle for
       edge cases (double-start, mid-transfer SC rewrite, disconnect).
-- D3: BGB link-protocol wire format spec (for M5) — version handshake, timestamp sync bytes.
+- D3: DONE 2026-08-10 -> R5_bgb_link_over_tcp.md (spec read from bgb.bircd.org: 8-byte packets,
+      version/status handshake, sync1/2/3, 2 MiHz 31-bit timestamps, TCP_NODELAY, no packet
+      boundary guarantees).
 
 ## R4 (ADDED 2026-08-08): ROM-verified facts — supersedes memory/web for byte values.
 - SERIAL_PREAMBLE_BYTE = $FD (verified from Serial_ExchangeBytes cp $FD).
