@@ -22,6 +22,13 @@ import { Brain } from "../brain";
 import { EventBus } from "../events";
 import { moveLabel } from "../moves";
 import { BattleView } from "./battle";
+import { speciesNames } from "./species";
+
+// Brains were shown raw species NUMBERS and at least one model reasoned about the
+// wrong Pokemon from one: "178" looks like data, so a model confabulates rather
+// than asking. Names come from MonsterNames in the running cart (see species.ts),
+// so they cannot drift from the ROM and there is no hardcoded list.
+const SPECIES = speciesNames();
 
 export interface DuelBrainStats {
   tag: string;
@@ -63,8 +70,8 @@ function prompt(v: BattleView): string {
   const foeLast = v.lastFoeMove ? `Opponent's last move: ${moveLabel(v.lastFoeMove)}.` : "First turn.";
   return [
     `Turn ${v.turn}.`,
-    `You: ${v.myNick} (species #${v.mySpecies}) Lv${v.myLevel}, HP ${v.myHp}/${v.myMaxHp}.`,
-    `Opponent: ${v.foeNick} (species #${v.foeSpecies}) Lv${v.foeLevel}, HP ${v.foeHp}/${v.foeMaxHp}.`,
+    `You: ${v.myNick}, a ${SPECIES.describe(v.mySpecies)}, Lv${v.myLevel}, HP ${v.myHp}/${v.myMaxHp}.`,
+    `Opponent: ${v.foeNick}, a ${SPECIES.describe(v.foeSpecies)}, Lv${v.foeLevel}, HP ${v.foeHp}/${v.foeMaxHp}.`,
     foeLast,
     "Your moves:",
     moves,

@@ -93,6 +93,15 @@ export interface LinkBattleOptions {
   maxRounds?: number;
   /** Rounds of NO observable change before the driver nudges with A. */
   stuckRounds?: number;
+  /**
+   * Fuse used when SC shows one side armed and the other idle. MEASURED: making
+   * this SHORTER than stuckRounds is a REGRESSION. At 4 the battle pumped more
+   * bytes (766 vs 743 exchanges) but recorded ZERO turns, because each early
+   * nudge un-commits a side and re-presses on a menu mid-exchange, thrashing
+   * the selection instead of advancing it. Defaults equal to stuckRounds; the
+   * knob is kept so the experiment stays reproducible rather than folklore.
+   */
+  stalledRounds?: number;
   /** Rounds the HP tuple must hold still before a turn is recorded. */
   settleRounds?: number;
   /**
@@ -139,6 +148,7 @@ const DEFAULTS = {
   moveSlotB: 0,
   maxRounds: 120,
   stuckRounds: 25,
+  stalledRounds: 25,
   settleRounds: 3,
   pickMove: null,
   onFrame: null,
@@ -195,7 +205,50 @@ export class LinkBattleSession {
     return `${s.tag}[map=$${this.m(s, ADDR.curMap).toString(16)} ls=${this.m(s, ADDR.linkState)} ` +
       `bt=${this.inBattle(s)} hp=${this.hp(s)} foe=${this.foeHp(s)} ` +
       `pm=${this.m(s, ADDR.playerMove)} em=${this.m(s, ADDR.enemyMove)} ` +
-      `cur=${this.m(s, ADDR.menuCursor)}/${this.m(s, ADDR.menuMax)} keys=$${this.m(s, ADDR.menuKeys).toString(16)}]`;
+      `cur=${this.m(s, ADDR.menuCursor)}/${this.m(s, ADDR.menuMax)} keys=$${this.m(s, ADDR.menuKeys).toString(16)} ` +
+      `SC=$${this.sc(s).toString(16)}${this.linkArmed(s) ? " ARMED" : ""}]`;
+  }
+
+  /**
+   * SC ($FF02) as the core currently sees it. Bit 7 = transfer requested; the
+   * hook clears it when a byte completes, so a side sitting with bit 7 set is
+   * BLOCKED WAITING ON THE LINK, not stuck.
+   */
+  private sc(s: BattleSide): number { return (s.emu.core as any).memory[0xFF02] & 0xFF; }
+  /**
+   * True while this side has a transfer armed. This is the discriminator the
+   * staleness deadman lacked: a side correctly blocked in the ROM's link
+   * exchange changes NOTHING on screen and in RAM, which is indistinguishable
+   * from an input that never dispatched — and the nudge then fires on a side
+   * that is behaving perfectly, un-commits it, and re-presses A on a menu that
+   * is already committed.
+   */
+  private linkArmed(s: BattleSide): boolean { return (this.sc(s) & 0x80) !== 0; }
+
+  /**
+   * MEASURED 2026-08-10, with SC on the probe line. Across a whole battle:
+   *   A: SC=$1  (internal clock selected, bit 7 CLEAR — idle master)
+   *   B: SC=$80 (external clock, bit 7 SET — follower armed, waiting)
+   * B is armed essentially the entire run while A never sets bit 7, so no clock
+   * is ever driven and the exchange cannot advance. Byte counts confirm it: ex
+   * sits frozen at 720, then jumps only on the rounds a nudge fires (720 -> 737
+   * -> 743), then freezes again.
+   *
+   * So the "nudge" was never papering over a dropped keypress — it is what
+   * shakes the master's ROM into issuing SC=$81. That is why nudges appeared
+   * "about once per turn": they ARE the turn pump. Waiting 25 stale rounds to
+   * discover a condition that is directly readable from SC is what made a turn
+   * cost ~100 rounds.
+   *
+   * One side armed while the other is idle is an unambiguous stalled link, so
+   * it gets a short fuse instead of the full staleness timeout.
+   */
+  private linkStalled(): boolean {
+    return this.linkArmed(this.a) !== this.linkArmed(this.b);
+  }
+  /** Rounds of no change to tolerate before nudging, given the link state. */
+  private fuse(): number {
+    return this.linkStalled() ? this.o.stalledRounds : this.o.stuckRounds;
   }
 
   /**
@@ -395,10 +448,10 @@ export class LinkBattleSession {
         // driven by STALENESS, not by a timer and not by wEnemySelectedMove
         // (which stays populated from the previous turn and would block a
         // retry forever).
-        if (this.stale[s.tag] < this.o.stuckRounds) return undefined;
+        if (this.stale[s.tag] < this.fuse()) return undefined;
         this.stale[s.tag] = 0;
         this.retries[s.tag]++;
-        this.log(`    ${s.tag} nudge #${this.retries[s.tag]} — nothing changed for ${this.o.stuckRounds} rounds on ${where}`);
+        this.log(`    ${s.tag} nudge #${this.retries[s.tag]} — no change for ${this.fuse()} rounds on ${where}${this.linkStalled() ? " (link stalled: one side armed, one idle)" : ""}`);
         // Un-commit and fall through to the normal logic. A nudge must NOT be a
         // blind A: on the move menu that commits whatever happens to be
         // highlighted, which silently overrode the requested slot and made
@@ -440,7 +493,7 @@ export class LinkBattleSession {
       // Narration: link battles scroll their own text (ManualTextScroll has an
       // in-link-battle path), so silence is correct here — with the same
       // deadman in case a prompt really is waiting on a press.
-      if (this.stale[s.tag] >= this.o.stuckRounds) {
+      if (this.stale[s.tag] >= this.fuse()) {
         this.stale[s.tag] = 0;
         this.log(`    ${s.tag} nudge — stalled on ${where}`);
         return KEYS.A;

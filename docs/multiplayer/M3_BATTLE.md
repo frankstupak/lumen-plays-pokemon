@@ -125,14 +125,50 @@ was sent; the two views of the same mon then disagree by construction and the
 HP-mirror check reports a link fault that is really a fixture bug. Observed
 directly: A read the foe at 57 HP while B's own mon sat at 31.
 
-## Open items
+## Status of the former open items (measured 2026-08-10)
 
-- **Both sides currently pick the same move slot each turn.** The move mirror is
-  still a real check (each side reads the other's id out of its own
-  `wEnemySelectedMove`), but a run with differing slots would make it
-  non-trivial. The plumbing is there: `SLOT_A` / `SLOT_B`.
-- **Nudges fire roughly once per turn** on the move menu, i.e. the first commit
-  press regularly fails to dispatch. It self-corrects, but the root cause is not
-  established — worth a trace of what the ROM does with that first press.
+**Differing move slots — CLOSED, verified.** `SLOT_A=0 SLOT_B=1` produces a
+non-trivial mirror: A picks 10 (SCRATCH) and sees the foe pick 45; B picks 45
+(GROWL) and sees 10. HP moves asymmetrically and correctly — A takes no damage
+because GROWL does none, B drops 57 -> 51 — and both sides' views agree.
+
+```
+TURN 1: A picked 10/sees 45 hp 57(foe 51) | B picked 45/sees 10 hp 51(foe 57) | mirror=true
+```
+
+Needs `ROUNDS>=200`: at 160 the run ends mid-turn and reports 0 turns, which is
+a budget artifact, not a failure.
+
+**Nudges — ROOT CAUSE FOUND, and the earlier reading was wrong.** Putting SC
+($FF02) on the probe line shows the actual state across a whole battle:
+
+```
+A: SC=$1   internal clock selected, bit 7 CLEAR  -> idle master
+B: SC=$80  external clock, bit 7 SET             -> follower armed, waiting
+```
+
+B sits armed for essentially the entire run while A never sets bit 7, so no
+clock is driven and the exchange cannot advance. The byte counter confirms it:
+`ex` freezes at 720 and moves *only* on the rounds a nudge fires (720 -> 737 ->
+743), then freezes again.
+
+So the nudge is not papering over a dropped keypress. **It is what shakes the
+master's ROM into issuing SC=$81 — the nudge IS the turn pump.** That is exactly
+why nudges appeared "about once per turn".
+
+**Nudging sooner does not help — measured negative result.** Since one side
+armed while the other is idle is directly readable from SC, the obvious fix was
+a short fuse on that condition. At 4 rounds instead of 25 the battle pumped
+*more* bytes (766 vs 743 exchanges) and recorded **zero** turns: each early
+nudge un-commits a side and re-presses on a menu mid-exchange, thrashing the
+selection rather than advancing it. Default restored to 25. The knob
+(`stalledRounds`) and the `linkStalled()` / `linkArmed()` readers are kept so
+the experiment is reproducible instead of folklore.
+
+The real fix is to make the master drive the clock without needing an input
+event at all — a bus-level change, not a driver-level one. That is the next
+piece of link work, and it is now a specific question (why does the master ROM
+only issue SC=$81 after a joypad event?) rather than a vague one.
+
 - Single-mon parties only. Faint-and-switch (`ChooseNextMon.notLinkBattle`) is
-  untested, and M4 will need it.
+  untested.

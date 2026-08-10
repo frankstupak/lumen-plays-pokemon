@@ -1,0 +1,38 @@
+A party:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+B party:
+        [0] sp178/id$1122/lv20/OT:BOB/nick:BOBMON
+  in colosseum: A[map=$f0 ls=1 bt=0 hp=31 foe=0 pm=10 em=50 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=1 bt=0 hp=31 foe=0 pm=10 em=50 cur=1/2 keys=$3 SC=$80 ARMED] ex=46
+  battle open=true: A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+  rng list A=[120,233,92,209,72,193,59,183,53] B=[120,233,92,209,72,193,59,183,53] match=true
+    r=0 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=10 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=20 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=30 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=40 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=50 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=60 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=70 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3 SC=$80 ARMED] ex=720
+    r=80 moveMenu/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=0 cur=1/5 keys=$c3 SC=$80 ARMED] ex=720
+    r=90 moveMenu/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=0 cur=1/5 keys=$c3 SC=$80 ARMED] ex=720
+    r=100 moveMenu/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=0 cur=1/5 keys=$c3 SC=$80 ARMED] ex=720
+    A nudge #1 — nothing changed for 25 rounds on moveMenu
+    B nudge #1 — nothing changed for 25 rounds on text
+    r=110 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=0/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=0 cur=1/5 keys=$c3 SC=$0] ex=737
+    r=120 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=45 cur=0/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=10 cur=1/5 keys=$c3 SC=$80 ARMED] ex=743
+    r=130 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=45 cur=0/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=10 cur=1/5 keys=$c3 SC=$80 ARMED] ex=743
+    r=140 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=45 cur=0/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=10 cur=1/5 keys=$c3 SC=$80 ARMED] ex=743
+    r=150 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=45 cur=0/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=45 em=10 cur=1/5 keys=$c3 SC=$80 ARMED] ex=743
+    r=160 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=45 cur=0/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=51 foe=57 pm=45 em=10 cur=1/5 keys=$c3 SC=$80 ARMED] ex=743
+    TURN 1: A picked 10/sees 45 hp 57(foe 51) | B picked 45/sees 10 hp 51(foe 57) | mirror=true
+    r=170 battleMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=51 pm=10 em=45 cur=0/1 keys=$11 SC=$1] B[map=$f0 ls=4 bt=2 hp=51 foe=57 pm=45 em=10 cur=2/5 keys=$c3 SC=$80 ARMED] ex=743
+    r=180 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=51 pm=10 em=45 cur=1/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=51 foe=57 pm=45 em=10 cur=2/5 keys=$c3 SC=$80 ARMED] ex=743
+    r=190 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=51 pm=10 em=45 cur=1/5 keys=$c3 SC=$1] B[map=$f0 ls=4 bt=2 hp=51 foe=57 pm=45 em=10 cur=2/5 keys=$c3 SC=$80 ARMED] ex=743
+    B nudge #2 — nothing changed for 25 rounds on moveMenu
+    A nudge #2 — nothing changed for 25 rounds on moveMenu
+
+================ LINK BATTLE RESULT ================
+started=true ended=false turns=1 mirrored=1 rngMatch=true exchanges=743 winner=none
+  r170: A move=10 sees foe=45 hp=57/foe=51 | B move=45 sees foe=10 hp=51/foe=57 | mirror=true
+ran 1 turns without the battle ending
+*** LINK BATTLE VERIFIED — turn exchange mirrors on both cores ***

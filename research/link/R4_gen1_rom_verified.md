@@ -58,7 +58,10 @@ truth (the actual cart the harness runs), superseding any web/memory value.
   at screen (6,7). Selection is exchanged as a nybble: send $CC42, recv $CC3E, via
   Serial_SyncAndExchangeNybble ($2247) / Serial_ExchangeLinkMenuSelection.
 - **Trade Center room = map 239 ($EF)** — REACHED in vivo by the selecting core.
-- OPEN: the nybble exchange does not converge for the non-selecting peer (selector
+- RESOLVED 2026-08-10 (was OPEN): the nybble exchange DOES converge — both sides reach
+  $CC3D=$CC3E and the trade completes. The fix was sub-frame slicing plus peer catch-up
+  (see the M3 section below). Original note kept for the record:
+- (superseded) the nybble exchange does not converge for the non-selecting peer (selector
   s/r=d4/00, peer s/r=d0/7f). Suspected cause = instant-delivery staleness in the bus (the
   master receives the follower's previous byte). Next: give the follower a chance to stage
   its reply within the transfer window (sub-frame, NOT frame-granularity — frame deferral was

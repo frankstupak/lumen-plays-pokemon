@@ -88,15 +88,26 @@ a small dedicated server costs a hundred lines and keeps the live kiosk
 untouchable. Same throttling discipline — 10fps per side, skip clients whose
 send buffer is already deep, keep the freshest frame for `/snapA.png` pollers.
 
-## Open items
+## Status of the former open items (2026-08-10)
+
+**Species names — CLOSED.** `src/link/species.ts` reads `MonsterNames`
+($07:421E) straight out of the running cart: 10 bytes per entry, internal index
+order starting at 1, 190 entries. Nothing is hardcoded, so the names always
+match the ROM actually loaded and there is no list to drift. Verified against
+known internal indices — `$01` RHYDON, `$15` MEW, `$54` PIKACHU, `$99`
+BULBASAUR, `$B0` CHARMANDER, `$B2` CHARMELEON. RHYDON at index 1 is the tell
+that the table is internal-ordered rather than Pokedex-ordered. Prompts now read
+`a CHARMELEON (#178)` instead of `species #178`; the number is kept alongside
+the name since it is still the value in RAM. Unknown indices degrade to
+`SPECIES_n` rather than throwing.
+
+**Nudges — root cause found**, and it is a link-clock problem, not a keypress
+problem. See `M3_BATTLE.md`: SC shows the follower armed and the master idle,
+and the nudge is what makes the master issue a clock. Nudging *sooner* is a
+measured regression.
 
 - **Single-mon parties.** Faint-and-switch (`ChooseNextMon.notLinkBattle`) is
   still untested and a multi-mon duel needs it.
-- **The brains see species NUMBERS.** `myNick`/`foeNick` are read from RAM, but
-  the species id is passed raw and at least one model reasoned about the wrong
-  Pokemon from it. A species-name table would fix it.
 - **Local models untried in a duel.** `qwen36-local` runs ~12 tok/s on CPU, so a
   turn costs minutes; it is the obvious first tenant of hapi-1 when the blade
-  boots.
-- Nudges still fire about once per turn on the move menu (M3 open item) — the
-  first commit press regularly fails to dispatch.
+  boots. Hardware-gated, not code-gated.

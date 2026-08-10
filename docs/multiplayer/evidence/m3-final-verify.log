@@ -1,0 +1,7 @@
+### TRADE e2e
+exchanges=750 rendezvousAttempts=1 wallSeconds=23.2 CUSTEPS=256
+*** TRADE VERIFIED — full two-way swap ***
+### BATTLE differing slots
+    TURN 1: A picked 10/sees 45 hp 57(foe 51) | B picked 45/sees 10 hp 51(foe 57) | mirror=true
+started=true ended=false turns=1 mirrored=1 rngMatch=true exchanges=743 winner=none
+*** LINK BATTLE VERIFIED — turn exchange mirrors on both cores ***
