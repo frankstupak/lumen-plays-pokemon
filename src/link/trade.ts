@@ -41,6 +41,9 @@ import { installSerialHook } from "./hook";
 import { runCycles, setSlice, clearSlice } from "./lockstep";
 import { readLinkState } from "./linkstate";
 import { Identity, MonIdentity, readIdentity, sameMon, describeMon } from "./identity";
+import { SlotView, readParty, slotKey, describeParty } from "./party";
+
+export type Phase = "stats" | "enemyList" | "playerList" | "submenu" | "cancelbox" | "other";
 
 export interface TradeSide {
   tag: string;
@@ -59,8 +62,28 @@ export interface TradeOptions {
   tableB?: { x: number; y: number };
   catchUpCycles?: number;
   catchUpMaxSteps?: number;
+  /**
+   * Arm the SerialBus peer catch-up (advance the follower in small bursts until
+   * it commits a fresh SB byte). MEASURED 2026-08-10: catchUpTimeouts sits at
+   * 671 of ~702 block exchanges at EVERY budget from 256 steps down to 4, and
+   * wall time barely moves (26.4s -> 22.6s), so the budget is nearly inert and
+   * only ~31 bytes ever benefit. Kept switchable so the contribution can be
+   * re-measured rather than assumed.
+   */
+  peerCatchUp?: boolean;
   /** Max rendezvous attempts. The first attempt does not always converge. */
   maxRendezvous?: number;
+  /**
+   * Which party slot each side offers, and which of the partner's slots it asks
+   * for. Slot 0 is the default and needs no cursor movement. Non-zero slots are
+   * reached by pressing DOWN and READ-VERIFYING wCurrentMenuItem ($CC26) after
+   * each press — neither list watches UP, so the cursor is DOWN-only and wraps
+   * at wMaxMenuItem (which is the party count, i.e. the CANCEL entry).
+   */
+  offerSlotA?: number;
+  offerSlotB?: number;
+  wantSlotA?: number;
+  wantSlotB?: number;
   log?: (line: string) => void;
 }
 
@@ -68,6 +91,8 @@ export interface TradeResult {
   swapped: boolean;
   aBefore: Identity; aAfter: Identity;
   bBefore: Identity; bAfter: Identity;
+  aPartyBefore: SlotView[]; aPartyAfter: SlotView[];
+  bPartyBefore: SlotView[]; bPartyAfter: SlotView[];
   exchanges: number;
   rendezvousAttempts: number;
   /** True when the two sides were clones, i.e. the run could not prove anything. */
@@ -82,7 +107,12 @@ const DEFAULTS = {
   tableB: { x: 6, y: 4 },
   catchUpCycles: 64,
   catchUpMaxSteps: 256,
+  peerCatchUp: true,
   maxRendezvous: 6,
+  offerSlotA: 0,
+  offerSlotB: 0,
+  wantSlotA: 0,
+  wantSlotB: 0,
 };
 
 /** wLinkState ($D12B) == 50 is the trade menu; >= 2 means the session started. */
@@ -113,18 +143,47 @@ export class TradeSession {
   }
 
   /**
-   * Where a side is inside TradeCenter_SelectMon, from the rendered text.
-   * "TRADE" appears ONLY in the STATS|TRADE submenu; the stats page shows
-   * STATUS/OK; the party list shows CANCEL. Screen text is used only for this
-   * three-way discrimination -- every result is still verified from RAM.
+   * Where a side is inside TradeCenter_SelectMon, read from RAM.
+   *
+   * wMenuWatchedKeys ($CC29) is set distinctly by every menu on this screen, so
+   * it identifies the active menu unambiguously AND tells us which keys are
+   * legal there. Values decoded from the ROM (bank 1, scan for `ld [$CC29],a`):
+   *   $5561 .enemyMonMenu           $A1 = DOWN|LEFT|A   maxItem = wEnemyPartyCount
+   *   $55E5 .playerMonMenu          $91 = DOWN|RIGHT|A  maxItem = wPartyCount
+   *   $56A6 .displayStatsTradeMenu  $13 = RIGHT|B|A     maxItem = 0  (HORIZONTAL)
+   *   $56CA .selectedCancelMenuItem $23 = LEFT|B|A
+   * NOTE neither party list watches UP — the cursor is DOWN-only and wraps.
+   *
+   * The stats page is not a menu, so it is detected from screen text; every
+   * result is still verified from RAM.
    */
-  private phase(s: TradeSide): "stats" | "submenu" | "list" | "other" {
-    const g = this.grid(s);
-    if (g.includes("STATUS/OK")) return "stats";
-    if (g.includes("TRADE")) return "submenu";
-    if (g.includes("CANCEL")) return "list";
-    return "other";
+  private phase(s: TradeSide): Phase {
+    if (this.grid(s).includes("STATUS/OK")) return "stats";
+    switch (s.emu.mem()[0xCC29] & 0xFF) {
+      case 0xA1: return "enemyList";
+      case 0x91: return "playerList";
+      case 0x13: return "submenu";
+      case 0x23: return "cancelbox";
+      default: return "other";
+    }
   }
+
+  private cursor(s: TradeSide): number { return s.emu.mem()[0xCC26] & 0xFF; }
+  private maxItem(s: TradeSide): number { return s.emu.mem()[0xCC28] & 0xFF; }
+
+  /**
+   * DOWN until the cursor sits on `want`, then A. Never counts presses blind:
+   * the cursor is read back from wCurrentMenuItem ($CC26) every iteration, so a
+   * dropped or doubled input self-corrects instead of silently selecting the
+   * wrong slot — or CANCEL, which aborts the whole session (wLinkState 50 -> 1).
+   * `want` is clamped below wMaxMenuItem because the last entry IS CANCEL.
+   */
+  private cursorKey(s: TradeSide, want: number): number {
+    const max = this.maxItem(s);
+    const target = Math.max(0, Math.min(want, Math.max(0, max - 1)));
+    return this.cursor(s) === target ? KEYS.A : KEYS.DOWN;
+  }
+
 
   /** Walk both sides to the attendant and complete the Cable Club handshake. */
   private async connect(): Promise<void> {
@@ -161,9 +220,13 @@ export class TradeSession {
     setSlice(this.b.emu.core, fine);
     this.bus.deferTicks = 1;
     const cores = [this.a.emu.core, this.b.emu.core];
-    this.bus.peerRunner = (port: 0 | 1, cycles: number) => runCycles(cores[port], cycles);
-    this.bus.catchUpCycles = this.o.catchUpCycles;
-    this.bus.catchUpMaxSteps = this.o.catchUpMaxSteps;
+    if (this.o.peerCatchUp) {
+      this.bus.peerRunner = (port: 0 | 1, cycles: number) => runCycles(cores[port], cycles);
+      this.bus.catchUpCycles = this.o.catchUpCycles;
+      this.bus.catchUpMaxSteps = this.o.catchUpMaxSteps;
+    } else {
+      this.bus.peerRunner = null;
+    }
 
     await this.a.nav.goto(this.o.tableA.x, this.o.tableA.y);
     await this.b.nav.goto(this.o.tableB.x, this.o.tableB.y);
@@ -218,14 +281,29 @@ export class TradeSession {
         }
         continue;
       }
-      // Back out of a stats page, select from a list, park inside a submenu.
+      // Back out of a stats page or a cancel box; on a list, walk the cursor to
+      // the wanted slot and only then press A; park inside a submenu.
       // "other" (blank/transition frames, and the state both sides land in after
       // a rendezvous that fails to converge) must still get an A-press: leaving
       // it with no input deadlocked the loop on the first promoted build — the
       // run sat at 80 iterations with a single rendezvous attempt.
-      const keyFor = (p: string) => (p === "stats" ? KEYS.B : p === "submenu" ? undefined : KEYS.A);
-      if (k % 5 === 0) this.log(`    k=${k} phases A=${pa} B=${pb} ex=${this.bus.exchanges}`);
-      this.step(8 * fine, keyFor(pa), keyFor(pb));
+      const keyFor = (s: TradeSide, p: Phase, want: number, offer: number): number | undefined => {
+        switch (p) {
+          case "stats": return KEYS.B;
+          case "cancelbox": return KEYS.B;
+          case "submenu": return undefined;                 // park for the rendezvous
+          case "enemyList": return this.cursorKey(s, want);
+          case "playerList": return this.cursorKey(s, offer);
+          default: return KEYS.A;
+        }
+      };
+      if (k % 5 === 0) {
+        this.log(`    k=${k} A[${pa} cur=${this.cursor(this.a)}/${this.maxItem(this.a)}] ` +
+          `B[${pb} cur=${this.cursor(this.b)}/${this.maxItem(this.b)}] ex=${this.bus.exchanges}`);
+      }
+      this.step(8 * fine,
+        keyFor(this.a, pa, this.o.wantSlotA, this.o.offerSlotA),
+        keyFor(this.b, pb, this.o.wantSlotB, this.o.offerSlotB));
       this.step(16 * fine);
     }
     this.step(60 * fine);   // let the trade animation finish
@@ -235,10 +313,25 @@ export class TradeSession {
   async run(): Promise<TradeResult> {
     const aBefore = readIdentity(this.a.emu.mem());
     const bBefore = readIdentity(this.b.emu.mem());
-    const blind = sameMon(aBefore.mon1, bBefore.mon1);
-    this.log(`  A ${describeMon(aBefore.mon1)}`);
-    this.log(`  B ${describeMon(bBefore.mon1)}`);
-    if (blind) this.log("  WARNING: both sides carry an identical mon — a swap will be INVISIBLE (see identity.ts)");
+    const aPartyBefore = readParty(this.a.emu.mem());
+    const bPartyBefore = readParty(this.b.emu.mem());
+    // A run is BLIND when nothing the trade could move differs between the two
+    // sides. With multi-mon parties that is a party-level question, not a
+    // slot-1 question: it is enough that the OFFERED mons differ.
+    const offA = aPartyBefore[Math.min(this.o.offerSlotA, aPartyBefore.length - 1)];
+    const offB = bPartyBefore[Math.min(this.o.offerSlotB, bPartyBefore.length - 1)];
+    const blind = !!offA && !!offB && slotKey(offA) === slotKey(offB);
+    this.log(`  A party (offering slot ${this.o.offerSlotA}, wanting B's ${this.o.wantSlotA}):\n        ${describeParty(aPartyBefore)}`);
+    this.log(`  B party (offering slot ${this.o.offerSlotB}, wanting A's ${this.o.wantSlotB}):\n        ${describeParty(bPartyBefore)}`);
+    if (blind) this.log("  WARNING: both sides offer an identical mon — a swap will be INVISIBLE (see identity.ts)");
+    // The two sides do not choose independently: Gen1 exchanges ONE agreed pair,
+    // so what A offers must be what B asked for and vice versa. An inconsistent
+    // pair makes the nybble sync disagree and the confirm never lands — which
+    // looks exactly like the rendezvous bug and is not one.
+    if (this.o.offerSlotA !== this.o.wantSlotB || this.o.offerSlotB !== this.o.wantSlotA) {
+      this.log(`  WARNING: inconsistent selection — A offers ${this.o.offerSlotA}/wants ${this.o.wantSlotA}, ` +
+        `B offers ${this.o.offerSlotB}/wants ${this.o.wantSlotB}. Require offerSlotA==wantSlotB and offerSlotB==wantSlotA.`);
+    }
 
     await this.connect();
     await this.exchangeParties();
@@ -246,17 +339,29 @@ export class TradeSession {
 
     const aAfter = readIdentity(this.a.emu.mem());
     const bAfter = readIdentity(this.b.emu.mem());
+    const aPartyAfter = readParty(this.a.emu.mem());
+    const bPartyAfter = readParty(this.b.emu.mem());
     clearSlice(this.a.emu.core);
     clearSlice(this.b.emu.core);
 
-    const aGotB = sameMon(aAfter.mon1, bBefore.mon1);
-    const bGotA = sameMon(bAfter.mon1, aBefore.mon1);
+    // Party-level verdict: the offered mon must have LEFT and the partner's
+    // offered mon must have ARRIVED, on both sides. Checking only slot 1 would
+    // miss a swap into a later slot and would call a one-sided move a success.
+    const keys = (p: SlotView[]) => p.map(slotKey);
+    const has = (p: SlotView[], k: string) => keys(p).includes(k);
+    const kOffA = offA ? slotKey(offA) : "", kOffB = offB ? slotKey(offB) : "";
+    const aGotB = !!kOffB && has(aPartyAfter, kOffB) && !has(aPartyAfter, kOffA);
+    const bGotA = !!kOffA && has(bPartyAfter, kOffA) && !has(bPartyAfter, kOffB);
     const swapped = !blind && aGotB && bGotA;
     const note = blind
-      ? "BLIND RUN: the two sides were clones, so this proves nothing either way"
+      ? "BLIND RUN: the two offered mons were identical, so this proves nothing either way"
       : swapped ? "full two-way swap"
       : aGotB || bGotA ? "HALF SWAP: only one side received its partner's mon"
       : "no swap";
-    return { swapped, aBefore, aAfter, bBefore, bAfter, exchanges: this.bus.exchanges, rendezvousAttempts, blind, note };
+    return {
+      swapped, aBefore, aAfter, bBefore, bAfter,
+      aPartyBefore, aPartyAfter, bPartyBefore, bPartyAfter,
+      exchanges: this.bus.exchanges, rendezvousAttempts, blind, note,
+    };
   }
 }

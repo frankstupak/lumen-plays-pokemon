@@ -114,6 +114,36 @@ exact: `$D89C` = party count, `$D89D` = species list, `$D8A4` = first mon.
 - **`catchUpTimeouts` = 671 of ~702 exchanges.** Peer catch-up hits its step
   limit on nearly every byte. It works, but the margin is unclear and it is the
   main wall-clock cost of the block phase.
-- Trade is currently driven with a **one-mon party on both sides**. Multi-mon
-  parties will exercise the list cursor properly and should be tested before M4
-  hands this to two live agents.
+## Multi-mon parties — VERIFIED 2026-08-10
+
+`npx tsx src/link/drive_trade_multimon.ts` builds a **two-mon party on each
+side** (`src/link/party.ts` clones slot 1 and overrides identity only, so stats,
+types, moves and DVs stay self-consistent with the species) and trades **slot 1
+— a non-first slot**. Result, one rendezvous attempt, 748 exchanges:
+
+```
+A [1] lv30 OT"AAAAAAA" nick"ALPHATWO"  ->  B [1]
+B [1] lv35 OT"BOB"     nick"BOBTWO"    ->  A [1]
+slot 0 untouched on both sides
+```
+
+Evidence: `evidence/m3-trade-multimon-verified.log`.
+
+This exercises what the one-mon proof could not: the list cursor, the CANCEL
+boundary and non-first-slot selection.
+
+**The cursor is never counted, it is read back.** `wCurrentMenuItem` (`$CC26`)
+is re-read after every press and the driver presses DOWN again only while the
+cursor is short of the target; a dropped or doubled input self-corrects. The
+target is clamped below `wMaxMenuItem` because the last entry *is* CANCEL, and
+selecting CANCEL kills the session (`wLinkState` 50 -> 1).
+
+Menus are identified from `wMenuWatchedKeys` (`$CC29`), which every menu on this
+screen sets distinctly — `$A1` enemy list (DOWN|LEFT|A), `$91` player list
+(DOWN|RIGHT|A), `$13` STATS|TRADE submenu (RIGHT|B|A), `$23` cancel box
+(LEFT|B|A). Neither list watches UP: the cursor is DOWN-only and wraps.
+
+**Selections must be consistent.** Gen1 exchanges ONE agreed pair, so
+`offerSlotA == wantSlotB` and `offerSlotB == wantSlotA`. An inconsistent pair
+makes the nybble sync disagree and the confirm never lands — which looks exactly
+like the rendezvous bug and is not one. `TradeSession` warns on this.

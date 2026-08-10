@@ -43,15 +43,22 @@ function side(tag: string): TradeSide {
   // identity is what the partner actually receives.
   writeIdentity(B.emu.mem(), { playerName: "BOB", playerID: 0x1122, mon1Level: 25, mon1Nick: "BOBMON" });
 
-  const session = new TradeSession(A, B, { fineDiv: Number(process.env.FINE ?? 64) });
+  const t0 = Date.now();
+  const session = new TradeSession(A, B, {
+    fineDiv: Number(process.env.FINE ?? 64),
+    catchUpCycles: Number(process.env.CUCYCLES ?? 64),
+    catchUpMaxSteps: Number(process.env.CUSTEPS ?? 256),
+    peerCatchUp: process.env.CATCHUP !== "0",
+  });
   const r = await session.run();
+  const secs = ((Date.now() - t0) / 1000).toFixed(1);
 
   console.log("\n================ TRADE RESULT ================");
   console.log(`A before ${describeMon(r.aBefore.mon1)}`);
   console.log(`A after  ${describeMon(r.aAfter.mon1)}`);
   console.log(`B before ${describeMon(r.bBefore.mon1)}`);
   console.log(`B after  ${describeMon(r.bAfter.mon1)}`);
-  console.log(`exchanges=${r.exchanges} rendezvousAttempts=${r.rendezvousAttempts}`);
+  console.log(`exchanges=${r.exchanges} rendezvousAttempts=${r.rendezvousAttempts} wallSeconds=${secs} CUSTEPS=${process.env.CUSTEPS ?? 256}`);
   console.log(r.swapped ? `*** TRADE VERIFIED — ${r.note} ***` : `--- ${r.note} ---`);
   if (r.swapped && process.env.SAVE === "1") {
     saveSnapshotFile(A.emu, "checkpoints/m3-traded-A.state.gz");

@@ -1,0 +1,59 @@
+Started lumen-job-m3-multimon-1786347200.service - [systemd-run] /bin/bash -c "{ /bin/bash -lc cd\\ /home/lumen/pokemon\\ \\&\\&\\ npx\\ tsx\\ src/link/drive_trade_multimon.ts\\ 2\\>\\&1\\ \\|\\ tee\\ /home/lumen/pokemon/logs/m3_multimon_\\\$\\(date\\ +%H%M\\).txt ; }; rc=\$?; echo \"LUMEN_JOB_EXIT=\$rc\"; exit \$rc".
+/home/lumen/pokemon/logs/m3_multimon_0733.txt: No such file or directory (os error 2)
+A party:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv30/OT:AAAAAAA/nick:ALPHATWO
+B party:
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv35/OT:BOB/nick:BOBTWO
+  A party (offering slot 1, wanting B's 1):
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv30/OT:AAAAAAA/nick:ALPHATWO
+  B party (offering slot 1, wanting A's 1):
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv35/OT:BOB/nick:BOBTWO
+  connected: A map=239 B map=239 exchanges=31
+  party block done: A ls=50 B ls=50 exchanges=702 cuTimeouts=671
+    k=0 A[playerList cur=0/2] B[other cur=0/2] ex=702
+  rendezvous #1: both parked, confirming
+    nybble sync converged on $1 -> TradeCenter_Trade
+    nybble sync converged on $1 -> TradeCenter_Trade
+    nybble sync converged on $1 -> TradeCenter_Trade
+    nybble sync converged on $1 -> TradeCenter_Trade
+    nybble sync converged on $1 -> TradeCenter_Trade
+    nybble sync converged on $1 -> TradeCenter_Trade
+    nybble sync converged on $1 -> TradeCenter_Trade
+    k=5 A[cancelbox cur=1/0] B[cancelbox cur=1/0] ex=725
+    k=10 A[other cur=0/1] B[other cur=0/1] ex=725
+    k=15 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=20 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=25 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=30 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=35 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=40 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=45 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=50 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=55 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=60 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=65 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=70 A[other cur=0/1] B[other cur=0/1] ex=748
+    k=75 A[other cur=0/1] B[other cur=0/1] ex=748
+================ MULTI-MON TRADE RESULT ================
+A before:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$23c2/lv30/OT:AAAAAAA/nick:ALPHATWO
+A after :
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+        [1] sp178/id$1122/lv35/OT:BOB/nick:BOBTWO
+B before:
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$1122/lv35/OT:BOB/nick:BOBTWO
+B after :
+        [0] sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+        [1] sp178/id$23c2/lv30/OT:AAAAAAA/nick:ALPHATWO
+exchanges=748 rendezvousAttempts=1 blind=false
+*** MULTI-MON TRADE VERIFIED — full two-way swap ***
+LUMEN_JOB_EXIT=1
+lumen-job-m3-multimon-1786347200.service: Main process exited, code=exited, status=1/FAILURE
+lumen-job-m3-multimon-1786347200.service: Failed with result 'exit-code'.
+lumen-job-m3-multimon-1786347200.service: Consumed 40.555s CPU time over 38.851s wall clock time, 326.4M memory peak.
