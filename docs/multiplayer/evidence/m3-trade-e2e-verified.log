@@ -1,0 +1,17 @@
+  A sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+  B sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+  connected: A map=239 B map=239 exchanges=31
+  party block done: A ls=50 B ls=50 exchanges=702 cuTimeouts=671
+    k=0 phases A=list B=other ex=702
+  rendezvous #1: both parked, confirming
+  rendezvous #2: both parked, confirming
+    nybble sync converged on $2 -> TradeCenter_Trade
+
+================ TRADE RESULT ================
+A before sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+A after  sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+B before sp178/id$1122/lv25/OT:BOB/nick:BOBMON
+B after  sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+exchanges=748 rendezvousAttempts=2
+*** TRADE VERIFIED — full two-way swap ***
+saved checkpoints/m3-traded-A|B.state.gz

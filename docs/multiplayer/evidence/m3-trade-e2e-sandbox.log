@@ -1,0 +1,121 @@
+A identity: sp178 otid$23c2 lv20 OT"AAAAAAA" nick"CHARMELEON"
+B identity: sp178 otid$1122 lv25 OT"BOB" nick"BOBMON"   <- differentiated before any link traffic
+both in trade center? A=239:3,4 B=239:6,4  ex=31
+idle 180 frames -> exchanges 31 -> 31 (delta 0)
+A ls=1 pos=239:3,4 | B ls=1 pos=239:6,4
+SC writes in trade room: A=0 [] B=0 []
+FINE slice: A=524 B=524 cycles/step, deferTicks=1
+  peerRunner armed
+  followerReadyGate=false limit=64
+=== attempt trade initiation (face table, press A) ===
+  positioned: A=239:3,4 B=239:6,4
+  t0 ex=31 A=239:3,4 ls=1 "" | B=239:6,4 ls=1 ""
+  t1 ex=31 A=239:3,4 ls=1 "" | B=239:6,4 ls=1 ""
+  t2 ex=31 A=239:3,4 ls=1 "" | B=239:6,4 ls=1 ""
+  t3 ex=31 A=239:3,4 ls=1 "" | B=239:6,4 ls=1 ""
+  t4 ex=31 A=239:3,4 ls=1 "" | B=239:6,4 ls=1 ""
+  t5 ex=31 A=239:3,4 ls=2 "" | B=239:6,4 ls=2 ""
+   *** BOTH SIDES ADVANCED — TRADE STARTING ***
+trade-attempt exchanges delta=0
+  party BEFORE: A=[178] B=[178]
+  T0 ex=31 A ls=2 p=[178] "" | B ls=2 p=[178] ""
+  T1 ex=31 A ls=2 p=[178] "Just a mome" | B ls=2 p=[178] "Just a mome"
+  T2 ex=31 A ls=2 p=[178] "Just a moment." | B ls=2 p=[178] "Just a moment."
+  T3 ex=31 A ls=2 p=[178] "Just a moment." | B ls=2 p=[178] "Just a moment."
+  T4 ex=31 A ls=2 p=[178] "Just a moment." | B ls=2 p=[178] "Just a moment."
+  T5 ex=31 A ls=2 p=[178] "Just a moment." | B ls=2 p=[178] "Just a moment."
+  T6 ex=31 A ls=2 p=[178] "Just a moment." | B ls=2 p=[178] "Just a moment."
+  T9 ex=43 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T10 ex=56 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T11 ex=633 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T12 ex=702 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T13 ex=702 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T14 ex=702 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T15 ex=702 A ls=2 p=[178] "PLEASE WAIT!" | B ls=2 p=[178] "PLEASE WAIT!"
+  T16 ex=702 A ls=50 p=[178] "AAAAAAA CHARMELEON BOB CHARMELEON CANCEL" | B ls=50 p=[178] ""
+  T17 ex=702 A ls=50 p=[178] "AAAAAAA CHARMELEON BOB CHARMELEON STATS TRAD" | B ls=50 p=[178] "BOB CHARMELEON AAAAAAA CHARMELEON CANCEL"
+  T18 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 TYPE1/ F" | B ls=50 p=[178] "BOB CHARMELEON AAAAAAA CHARMELEON STATS TRAD"
+  T19 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 TYPE1/ FIRE "
+  T20 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T21 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T22 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T23 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T24 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T25 ex=702 A ls=50 p=[178] "CHARMELEON EXP POINTS 6358 LEVEL UP 100 21 ." | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T26 ex=702 A ls=50 p=[178] "AAAAAAA CHARMELEON BOB CHARMELEON CANCEL" | B ls=50 p=[178] "CHARMELEON EXP POINTS 6358 LEVEL UP 7053 26 "
+  T27 ex=702 A ls=50 p=[178] "AAAAAAA CHARMELEON BOB CHARMELEON STATS TRAD" | B ls=50 p=[178] "BOB CHARMELEON AAAAAAA CHARMELEON CANCEL"
+  T28 ex=702 A ls=50 p=[178] "57/ 57 S OK . TYPE1/ TYPE2/ / OT/" | B ls=50 p=[178] "BOB CHARMELEON AAAAAAA CHARMELEON STATS TRAD"
+  T29 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T30 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T31 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T32 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T33 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T34 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T35 ex=702 A ls=50 p=[178] "CHARMELEON EXP POINTS 6358 LEVEL UP 100 21 ." | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 ATTACK TYPE1"
+  T36 ex=702 A ls=50 p=[178] "AAAAAAA CHARMELEON BOB CHARMELEON CANCEL" | B ls=50 p=[178] "CHARMELEON EXP POINTS 6358 LEVEL UP 7053 26 "
+  T37 ex=702 A ls=50 p=[178] "AAAAAAA CHARMELEON BOB CHARMELEON STATS TRAD" | B ls=50 p=[178] "BOB CHARMELEON AAAAAAA CHARMELEON CANCEL"
+  T38 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 TYPE1/ F" | B ls=50 p=[178] "BOB CHARMELEON AAAAAAA CHARMELEON STATS TRAD"
+  T39 ex=702 A ls=50 p=[178] "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T" | B ls=50 p=[178] "BOBMON 25 57/ 57 STATUS/OK .005 TYPE1/ FIRE "
+  party AFTER block: A=[178] B=[178] exchanges=702 cuTimeouts=671
+  SAVED trademenu_e2e_A/B.state.gz at LINK_STATE 50 50
+=== driving trade selection to completion ===
+  C0 ex=702 sub=00 A ls=50 "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T"
+  C3 ex=702 sub=00 A ls=50 "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T"
+  C6 ex=702 sub=00 A ls=50 "CHARMELEON 20 57/ 57 STATUS/OK .005 ATTACK T"
+  C9 ex=702 sub=00 A ls=50 "AAAAAAA CHARMELEON BOB CHARMELEON STATS TRAD"
+  RENDEZVOUS k=11: cursors A=0 B=0 -> confirming
+   quiet q0 ex=702 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q1 ex=702 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q2 ex=702 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q3 ex=713 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q4 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q5 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q6 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q7 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q8 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q9 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q10 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q11 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q12 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q13 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+  C12 ex=726 sub=00 A ls=50 "AAAAAAA CHARMELEON BOB CHARMELEON CHARMELEON"
+  RENDEZVOUS k=14: cursors A=0 B=0 -> confirming
+   quiet q0 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q1 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q2 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q3 ex=726 A(CC3D=0 CC3E=0) B(CC3D=0 CC3E=0)
+   quiet q4 ex=736 A(CC3D=0 CC3E=2) B(CC3D=0 CC3E=2)
+   quiet q5 ex=749 A(CC3D=2 CC3E=2) B(CC3D=2 CC3E=2)
+
+================ E2E VERDICT ================
+A before sp178 otid$23c2 lv20 OT"AAAAAAA" nick"CHARMELEON"
+A after  sp178 otid$1122 lv25 OT"BOB" nick"BOBMON"
+B before sp178 otid$1122 lv25 OT"BOB" nick"BOBMON"
+B after  sp178 otid$23c2 lv20 OT"AAAAAAA" nick"CHARMELEON"
+A holds B's mon: true | B holds A's mon: true
+*** E2E TRADE VERIFIED — full two-way swap over the emulated link cable ***
+saved checkpoints/e2e_traded_A|B.state.gz
+  A enemyBlock: nonzero=57/415 head=[fd fd fd fd fd fd 81 8e 81 1 b2 ff 0 0]
+  A $FFAB(preamble-flag)=0 $FFAC(next)=fe $FFAD(last)=fe
+  B enemyBlock: nonzero=65/415 head=[fd fd fd fd fd fd fd fd 80 1 b2 ff 0 0]
+  B $FFAB(preamble-flag)=0 $FFAC(next)=fe $FFAD(last)=0
+--- A room grid ---
+##########
+..........
+..........
+..........
+....##N...
+..........
+..........
+..........
+
+--- B room grid ---
+##########
+..........
+..........
+..........
+...N##....
+..........
+..........
+..........
+

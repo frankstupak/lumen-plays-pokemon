@@ -62,6 +62,10 @@ export class Emulator {
 
   saveState(): any { return this.inner.saveState(); }
   loadState(snap: any) { this.inner.saving(snap); this.liveMem = null; this.gb.doFrame(); }
+  /** Internal GameBoyCore instance — for the link subsystem (M2+) to install the
+   *  serial hook. Read/patch only via the documented link hook; do not poke it
+   *  directly elsewhere. */
+  get core(): any { return this.inner; }
   batterySave(): number[] { return this.gb.getSaveData(); }
 
   screenPng(path: string) {

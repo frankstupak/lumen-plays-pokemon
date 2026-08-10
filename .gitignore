@@ -36,3 +36,6 @@ lumen-pokemon-live.service.bak
 *.swp
 .idea/
 .vscode/
+
+# ── M3 run logs (evidence is kept under docs/multiplayer/evidence/) ──
+logs-m3-*.txt
