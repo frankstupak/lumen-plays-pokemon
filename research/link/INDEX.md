@@ -43,4 +43,11 @@ See ../../docs/multiplayer/M3_TRADE.md and the M3 section appended to R4.
   successful trade and a failed trade produce the same RAM and every check is blind. Use
   src/link/identity.ts writeIdentity(); TradeSession refuses to report success from a clone
   pair. This cost several sessions of chasing ROM-side phantoms that were never wrong.
-- Next: M4 dual harness (two BrainProfiles, one StreamServer grid), then M3-battle.
+- M3-BATTLE DONE 2026-08-10: full Gen1 Cable Club link battle to knockout between two
+  cores, 10/10 turns mirrored, shared RNG list identical both sides. See
+  ../../docs/multiplayer/M3_BATTLE.md. COLOSSEUM = map $F0 (ROM: LoadSpecialWarpData $6314
+  cp $F0); wLinkState 1 -> 3 -> 4 where 4 = BATTLING (CableClub_DoBattleOrTradeAgain $54D8);
+  the battle move list is ONE-INDEXED; move selection has the SAME no-input law as the
+  trade nybble sync, and link-battle narration scrolls itself (ManualTextScroll.inLinkBattle)
+  so pressing A through it is actively harmful.
+- Next: M4 dual harness (two BrainProfiles, one StreamServer grid).
