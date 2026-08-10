@@ -1,0 +1,107 @@
+Started lumen-job-lb-full3-1786349319.service - [systemd-run] /bin/bash -c "{ /bin/bash -lc cd\\ /home/lumen/pokemon\\ \\&\\&\\ SLOT_A=0\\ SLOT_B=2\\ ROUNDS=1400\\ npx\\ tsx\\ src/link/drive_link_battle.ts ; }; rc=\$?; echo \"LUMEN_JOB_EXIT=\$rc\"; exit \$rc".
+A party:
+        [0] sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON
+B party:
+        [0] sp178/id$1122/lv20/OT:BOB/nick:BOBMON
+  in colosseum: A[map=$f0 ls=1 bt=0 hp=31 foe=0 pm=10 em=50 cur=1/2 keys=$3] B[map=$f0 ls=1 bt=0 hp=31 foe=0 pm=10 em=50 cur=1/2 keys=$3] ex=46
+  battle open=true: A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+  rng list A=[120,233,92,209,72,193,59,183,53] B=[120,233,92,209,72,193,59,183,53] match=true
+    r=0 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=10 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=20 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=30 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=40 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=50 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=60 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=70 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=80 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] ex=720
+    r=90 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] ex=720
+    r=100 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] ex=720
+    A nudge — stalled on moveMenu
+    B nudge — stalled on moveMenu
+    r=110 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=0/5 keys=$c3] ex=737
+    r=120 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    r=130 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=57 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    TURN 1: A picked 10/sees 10 hp 48(foe 57) | B picked 10/sees 10 hp 57(foe 48) | mirror=true
+    r=140 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=57 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    r=150 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=57 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    TURN 2: A picked 10/sees 10 hp 48(foe 42) | B picked 10/sees 10 hp 42(foe 48) | mirror=true
+    r=160 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    r=170 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    r=180 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=1/5 keys=$c3] ex=750
+    r=190 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=1/5 keys=$c3] ex=750
+    B nudge — stalled on moveMenu
+    A nudge — stalled on moveMenu
+    r=200 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=750
+    r=210 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=773
+    r=220 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=48 pm=10 em=10 cur=0/5 keys=$c3] ex=773
+    TURN 3: A picked 10/sees 10 hp 39(foe 42) | B picked 10/sees 10 hp 42(foe 39) | mirror=true
+    r=230 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=39 pm=10 em=10 cur=0/5 keys=$c3] ex=773
+    r=240 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=42 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=42 foe=39 pm=10 em=10 cur=0/5 keys=$c3] ex=773
+    r=250 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=34 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=39 pm=10 em=10 cur=0/5 keys=$c3] ex=773
+    TURN 4: A picked 10/sees 10 hp 39(foe 34) | B picked 10/sees 10 hp 34(foe 39) | mirror=true
+    r=260 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=39 foe=34 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=39 pm=10 em=10 cur=1/5 keys=$c3] ex=773
+    r=270 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=39 foe=34 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=39 pm=10 em=10 cur=1/5 keys=$c3] ex=773
+    r=280 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=39 foe=34 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=39 pm=10 em=10 cur=1/5 keys=$c3] ex=773
+    A nudge — stalled on moveMenu
+    B nudge — stalled on moveMenu
+    r=290 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=34 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=39 pm=10 em=10 cur=0/5 keys=$c3] ex=791
+    r=300 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=34 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=39 pm=10 em=10 cur=0/5 keys=$c3] ex=797
+    r=310 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=34 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=30 pm=10 em=10 cur=0/5 keys=$c3] ex=797
+    TURN 5: A picked 10/sees 10 hp 30(foe 34) | B picked 10/sees 10 hp 34(foe 30) | mirror=true
+    r=320 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=34 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=34 foe=30 pm=10 em=10 cur=0/5 keys=$c3] ex=797
+    r=330 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=34 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=0/5 keys=$c3] ex=797
+    TURN 6: A picked 10/sees 10 hp 30(foe 26) | B picked 10/sees 10 hp 26(foe 30) | mirror=true
+    r=340 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=30 foe=26 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=1/5 keys=$c3] ex=797
+    r=350 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=30 foe=26 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=1/5 keys=$c3] ex=797
+    r=360 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=30 foe=26 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=1/5 keys=$c3] ex=797
+    B nudge — stalled on moveMenu
+    A nudge — stalled on moveMenu
+    r=370 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=26 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=0/5 keys=$c3] ex=797
+    r=380 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=26 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=0/5 keys=$c3] ex=820
+    r=390 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=26 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=30 pm=10 em=10 cur=0/5 keys=$c3] ex=820
+    TURN 7: A picked 10/sees 10 hp 21(foe 26) | B picked 10/sees 10 hp 26(foe 21) | mirror=true
+    r=400 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=26 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=21 pm=10 em=10 cur=0/5 keys=$c3] ex=820
+    r=410 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=26 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=26 foe=21 pm=10 em=10 cur=0/5 keys=$c3] ex=820
+    TURN 8: A picked 10/sees 10 hp 21(foe 17) | B picked 10/sees 10 hp 17(foe 21) | mirror=true
+    r=420 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=17 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=21 pm=10 em=10 cur=0/5 keys=$c3] ex=820
+    r=430 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=21 foe=17 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=21 pm=10 em=10 cur=1/5 keys=$c3] ex=820
+    r=440 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=21 foe=17 pm=10 em=10 cur=1/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=21 pm=10 em=10 cur=1/5 keys=$c3] ex=820
+    B nudge — stalled on moveMenu
+    A nudge — stalled on moveMenu
+    r=450 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=17 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=21 pm=10 em=10 cur=0/5 keys=$c3] ex=820
+    r=460 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=17 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=21 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=470 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=17 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=21 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    TURN 9: A picked 10/sees 10 hp 12(foe 17) | B picked 10/sees 10 hp 17(foe 12) | mirror=true
+    r=480 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=17 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=490 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=17 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=17 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=500 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    TURN 10: A picked 10/sees 10 hp 12(foe 0) | B picked 10/sees 10 hp 0(foe 12) | mirror=true
+    r=510 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=520 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=530 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=540 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=550 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=560 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=570 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=580 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    r=590 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=10 cur=0/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=10 em=10 cur=0/5 keys=$c3] ex=843
+    A nudge — stalled on text
+    B nudge — stalled on text
+================ LINK BATTLE RESULT ================
+started=true ended=true turns=10 mirrored=10 rngMatch=true exchanges=843 winner=A
+  r133: A move=10 sees foe=10 hp=48/foe=57 | B move=10 sees foe=10 hp=57/foe=48 | mirror=true
+  r157: A move=10 sees foe=10 hp=48/foe=42 | B move=10 sees foe=10 hp=42/foe=48 | mirror=true
+  r229: A move=10 sees foe=10 hp=39/foe=42 | B move=10 sees foe=10 hp=42/foe=39 | mirror=true
+  r253: A move=10 sees foe=10 hp=39/foe=34 | B move=10 sees foe=10 hp=34/foe=39 | mirror=true
+  r312: A move=10 sees foe=10 hp=30/foe=34 | B move=10 sees foe=10 hp=34/foe=30 | mirror=true
+  r335: A move=10 sees foe=10 hp=30/foe=26 | B move=10 sees foe=10 hp=26/foe=30 | mirror=true
+  r395: A move=10 sees foe=10 hp=21/foe=26 | B move=10 sees foe=10 hp=26/foe=21 | mirror=true
+  r419: A move=10 sees foe=10 hp=21/foe=17 | B move=10 sees foe=10 hp=17/foe=21 | mirror=true
+  r479: A move=10 sees foe=10 hp=12/foe=17 | B move=10 sees foe=10 hp=17/foe=12 | mirror=true
+  r502: A move=10 sees foe=10 hp=12/foe=0 | B move=10 sees foe=10 hp=0/foe=12 | mirror=true
+battle ended, A standing
+*** LINK BATTLE VERIFIED — turn exchange mirrors on both cores ***
+LUMEN_JOB_EXIT=0
+lumen-job-lb-full3-1786349319.service: Deactivated successfully.
+lumen-job-lb-full3-1786349319.service: Consumed 1min 10.700s CPU time over 1min 8.165s wall clock time, 310.9M memory peak.

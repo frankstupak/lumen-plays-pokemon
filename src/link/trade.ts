@@ -106,7 +106,14 @@ const DEFAULTS = {
   tableA: { x: 3, y: 4 },
   tableB: { x: 6, y: 4 },
   catchUpCycles: 64,
-  catchUpMaxSteps: 256,
+  // MEASURED 2026-08-10. Catch-up itself is LOAD-BEARING: disabling it stalls
+  // side B at wLinkState 2 on "PLEASE WAIT!" in 3/3 runs (823 exchanges, no
+  // swap). Its BUDGET is not: catchUpTimeouts is 671 of ~702 block exchanges at
+  // every budget from 256 down to 4, so only ~31 bytes ever stage successfully
+  // and they do so within a handful of bursts. 256 just burns 16k cycles per
+  // byte on a follower that is waiting for our clock and cannot progress in
+  // isolation. 8 verified 3/3 at 22.7-24.0s vs 24.6-25.1s for 256.
+  catchUpMaxSteps: 8,
   peerCatchUp: true,
   maxRendezvous: 6,
   offerSlotA: 0,
