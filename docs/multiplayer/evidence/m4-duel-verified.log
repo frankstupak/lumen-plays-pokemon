@@ -1,0 +1,143 @@
+Started lumen-job-duel5-1786350871.service - [systemd-run] /bin/bash -c "{ /bin/bash -lc cd\\ /home/lumen/pokemon\\ \\&\\&\\ LPP_DUEL_B_MAXTOK=5000\\ ROUNDS=1600\\ DUEL_PORT=8899\\ npx\\ tsx\\ src/link/drive_duel.ts ; }; rc=\$?; echo \"LUMEN_JOB_EXIT=\$rc\"; exit \$rc".
+A brain = cerebras-oss-120b   B brain = deepseek-v4-flash
+  in colosseum: A[map=$f0 ls=1 bt=0 hp=31 foe=0 pm=10 em=50 cur=1/2 keys=$3] B[map=$f0 ls=1 bt=0 hp=31 foe=0 pm=10 em=50 cur=1/2 keys=$3] ex=46
+  battle open=true: A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+  rng list A=[120,233,92,209,72,193,59,183,53] B=[120,233,92,209,72,193,59,183,53] match=true
+    r=0 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=10 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=20 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=30 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=0 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=40 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=50 text/text A[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=31 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=60 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+    r=70 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=0 em=0 cur=1/2 keys=$3] ex=720
+duel stream on :8899
+    A (cerebras-oss-120b) turn 1: EMBER[FIRE 40] [slot 3]
+    B (deepseek-v4-flash) turn 1: SCRATCH[NORMAL 40] [slot 1]
+    r=80 text/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=52 em=0 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] ex=720
+    r=90 text/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=52 em=0 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] ex=753
+    r=100 text/moveMenu A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=52 em=0 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=0 cur=1/5 keys=$c3] ex=830
+    B nudge #1 — nothing changed for 25 rounds on moveMenu
+    A nudge #1 — nothing changed for 25 rounds on text
+    r=110 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=52 em=0 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=52 cur=0/5 keys=$c3] ex=906
+    r=120 text/text A[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=57 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=130 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=57 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=140 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=57 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=150 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=57 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=57 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=160 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=170 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=180 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    r=190 moveMenu/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=910
+    TURN 1: A picked 52/sees 10 hp 48(foe 47) | B picked 10/sees 52 hp 47(foe 48) | mirror=true
+    B (deepseek-v4-flash) turn 2: SCRATCH[NORMAL 40] [slot 1]
+    r=200 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=1/5 keys=$c3] ex=910
+    A nudge #2 — nothing changed for 25 rounds on moveMenu
+    A (cerebras-oss-120b) turn 2: EMBER[FIRE 40] [slot 3]
+    r=210 text/moveMenu A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=1/5 keys=$c3] ex=910
+    B nudge #2 — nothing changed for 25 rounds on moveMenu
+    r=220 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=943
+    r=230 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    r=240 text/text A[map=$f0 ls=4 bt=2 hp=48 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=48 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    r=250 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    r=260 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=47 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    r=270 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=47 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    r=280 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    r=290 moveMenu/text A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=986
+    TURN 2: A picked 52/sees 10 hp 39(foe 41) | B picked 10/sees 52 hp 41(foe 39) | mirror=true
+    B (deepseek-v4-flash) turn 3: SCRATCH[NORMAL 40] [slot 1]
+    r=300 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=1/5 keys=$c3] ex=986
+    r=310 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=1/5 keys=$c3] ex=986
+    A nudge #3 — nothing changed for 25 rounds on moveMenu
+    A (cerebras-oss-120b) turn 3: EMBER[FIRE 40] [slot 3]
+    r=320 text/moveMenu A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=1/5 keys=$c3] ex=989
+    B nudge #3 — nothing changed for 25 rounds on moveMenu
+    r=330 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    r=340 text/text A[map=$f0 ls=4 bt=2 hp=39 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=39 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    r=350 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    r=360 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    r=370 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=41 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=41 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    r=380 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    r=390 moveMenu/text A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1055
+    TURN 3: A picked 52/sees 10 hp 30(foe 35) | B picked 10/sees 52 hp 35(foe 30) | mirror=true
+    B (deepseek-v4-flash) turn 4: SCRATCH[NORMAL 40] [slot 1]
+    r=400 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=1/5 keys=$c3] ex=1055
+    r=410 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=1/5 keys=$c3] ex=1055
+    A nudge #4 — nothing changed for 25 rounds on moveMenu
+    A (cerebras-oss-120b) turn 4: EMBER[FIRE 40] [slot 3]
+    r=420 text/moveMenu A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=1/5 keys=$c3] ex=1055
+    B nudge #4 — nothing changed for 25 rounds on moveMenu
+    r=430 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1118
+    r=440 text/text A[map=$f0 ls=4 bt=2 hp=30 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=30 pm=10 em=52 cur=0/5 keys=$c3] ex=1130
+    r=450 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1130
+    r=460 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1130
+    r=470 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=35 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1130
+    r=480 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=35 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1130
+    r=490 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1130
+    TURN 4: A picked 52/sees 10 hp 21(foe 29) | B picked 10/sees 52 hp 29(foe 21) | mirror=true
+    r=500 moveMenu/battleMenu A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=0/1 keys=$11] ex=1130
+    B (deepseek-v4-flash) turn 5: SCRATCH[NORMAL 40] [slot 1]
+    r=510 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=1/5 keys=$c3] ex=1130
+    A nudge #5 — nothing changed for 25 rounds on moveMenu
+    A (cerebras-oss-120b) turn 5: EMBER[FIRE 40] [slot 3]
+    r=520 text/moveMenu A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=1/5 keys=$c3] ex=1130
+    B nudge #5 — nothing changed for 25 rounds on moveMenu
+    r=530 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1171
+    r=540 text/text A[map=$f0 ls=4 bt=2 hp=21 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=550 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=21 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=560 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=12 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=570 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=29 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=12 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=580 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=29 foe=12 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=590 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=600 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    r=610 moveMenu/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=10 em=52 cur=0/5 keys=$c3] ex=1204
+    TURN 5: A picked 52/sees 10 hp 12(foe 18) | B picked 10/sees 52 hp 18(foe 12) | mirror=true
+    B (deepseek-v4-flash) turn 6: EMBER[FIRE 40] [slot 3]
+    r=620 moveMenu/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1204
+    r=630 moveMenu/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1204
+    A nudge #6 — nothing changed for 25 rounds on moveMenu
+    A (cerebras-oss-120b) turn 6: EMBER[FIRE 40] [slot 3]
+    r=640 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1206
+    r=650 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=660 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=18 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=18 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=670 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=680 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=690 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=700 text/text A[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=12 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=710 text/text A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=720 text/text A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    r=730 text/text A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=52 em=52 cur=2/5 keys=$c3] ex=1227
+    TURN 6: A picked 52/sees 52 hp 2(foe 12) | B picked 52/sees 52 hp 12(foe 2) | mirror=true
+    A (cerebras-oss-120b) turn 7: EMBER[FIRE 40] [slot 3]
+    r=740 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=52 em=52 cur=3/5 keys=$c3] ex=1227
+    r=750 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=52 em=52 cur=3/5 keys=$c3] ex=1227
+    r=760 moveMenu/moveMenu A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=3/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=52 em=52 cur=3/5 keys=$c3] ex=1227
+    B nudge #6 — nothing changed for 25 rounds on moveMenu
+    B (deepseek-v4-flash) turn 7: SCRATCH[NORMAL 40] [slot 1]
+    A nudge #7 — nothing changed for 25 rounds on moveMenu
+    r=770 text/text A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=52 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=10 em=52 cur=0/5 keys=$c3] ex=1227
+    r=780 text/text A[map=$f0 ls=4 bt=2 hp=2 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=790 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=2 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=800 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=810 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=820 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=830 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=840 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=850 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=860 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    r=870 text/text A[map=$f0 ls=4 bt=2 hp=0 foe=12 pm=52 em=10 cur=2/5 keys=$c3] B[map=$f0 ls=4 bt=2 hp=12 foe=0 pm=10 em=52 cur=0/5 keys=$c3] ex=1250
+    A nudge #8 — nothing changed for 25 rounds on text
+================ DUEL RESULT ================
+started=true ended=true turns=6 mirrored=6 rngMatch=true exchanges=1250 winner=B
+  A cerebras-oss-120b: calls=7 parsed=7 rejected=0 picks=[0,0,7,0] tok=2007+565 avg=259ms
+  B deepseek-v4-flash: calls=7 parsed=7 rejected=0 picks=[6,0,1,0] tok=1543+817 avg=2085ms
+  r191: A EMBER[FIRE 40] hp 48(foe 47) | B SCRATCH[NORMAL 40] hp 47(foe 48) | mirror=true
+  r294: A EMBER[FIRE 40] hp 39(foe 41) | B SCRATCH[NORMAL 40] hp 41(foe 39) | mirror=true
+  r397: A EMBER[FIRE 40] hp 30(foe 35) | B SCRATCH[NORMAL 40] hp 35(foe 30) | mirror=true
+  r500: A EMBER[FIRE 40] hp 21(foe 29) | B SCRATCH[NORMAL 40] hp 29(foe 21) | mirror=true
+  r615: A EMBER[FIRE 40] hp 12(foe 18) | B SCRATCH[NORMAL 40] hp 18(foe 12) | mirror=true
+  r738: A EMBER[FIRE 40] hp 2(foe 12) | B EMBER[FIRE 40] hp 12(foe 2) | mirror=true
+battle ended, B standing
+*** DUEL VERIFIED — cerebras-oss-120b vs deepseek-v4-flash, winner B ***
+LUMEN_JOB_EXIT=0
+lumen-job-duel5-1786350871.service: Deactivated successfully.
+lumen-job-duel5-1786350871.service: Consumed 2min 4.060s CPU time over 2min 11.848s wall clock time, 397.8M memory peak.

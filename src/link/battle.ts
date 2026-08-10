@@ -68,6 +68,17 @@ export interface BattleSide {
   scr: Screen;
 }
 
+/** What a brain is shown when it is asked to choose a move. */
+export interface BattleView {
+  tag: string;
+  turn: number;
+  myNick: string; foeNick: string;
+  mySpecies: number; myLevel: number; myHp: number; myMaxHp: number;
+  foeSpecies: number; foeLevel: number; foeHp: number; foeMaxHp: number;
+  moves: number[]; pp: number[];
+  lastFoeMove: number;
+}
+
 export interface LinkBattleOptions {
   fineDiv?: number;
   attendant?: { x: number; y: number };
@@ -84,6 +95,16 @@ export interface LinkBattleOptions {
   stuckRounds?: number;
   /** Rounds the HP tuple must hold still before a turn is recorded. */
   settleRounds?: number;
+  /**
+   * Chooses this side's move slot (0-3) for the coming turn. Called ONCE per
+   * turn, at the battle menu, before FIGHT is opened — a side that is already
+   * committed must not be interrupted. Returning out of range falls back to the
+   * configured static slot, so a confused brain cannot wedge the battle.
+   * This is the M4 seam: two of these, two BrainProfiles, one link cable.
+   */
+  pickMove?: ((view: BattleView) => Promise<number>) | null;
+  /** Called every frame-batch with each side's PNG, for the duel stream grid. */
+  onFrame?: ((tag: string, png: Buffer) => void) | null;
   log?: (line: string) => void;
 }
 
@@ -119,6 +140,8 @@ const DEFAULTS = {
   maxRounds: 120,
   stuckRounds: 25,
   settleRounds: 3,
+  pickMove: null,
+  onFrame: null,
 };
 
 export class LinkBattleSession {
@@ -127,6 +150,7 @@ export class LinkBattleSession {
   private stale: Record<string, number> = { A: 0, B: 0 };
   private lastTuple = "";
   private settled = 0;
+  picksRejected: Record<string, number> = { A: 0, B: 0 };
   private sig: Record<string, string> = { A: "", B: "" };
   private retries: Record<string, number> = { A: 0, B: 0 };
   private log: (s: string) => void;
@@ -136,6 +160,7 @@ export class LinkBattleSession {
     this.log = this.o.log;
   }
 
+  private frameTick = 0;
   private step(n: number, keyA?: number, keyB?: number): void {
     for (let i = 0; i < n; i++) {
       if (keyA !== undefined) (this.a.emu as any).gb.pressKey(keyA);
@@ -143,6 +168,13 @@ export class LinkBattleSession {
       (this.a.emu as any).gb.doFrame();
       (this.b.emu as any).gb.doFrame();
       this.bus.tick();
+      // Frames are best-effort video for the duel grid. The pair runs many
+      // times realtime, so sample sparsely rather than per frame; the stream
+      // server throttles again on its own side.
+      if (this.o.onFrame && ++this.frameTick % 240 === 0) {
+        this.o.onFrame("A", this.a.emu.screenPngBuffer());
+        this.o.onFrame("B", this.b.emu.screenPngBuffer());
+      }
     }
   }
 
@@ -294,6 +326,36 @@ export class LinkBattleSession {
     else { this.sig[s.tag] = sig; this.stale[s.tag] = 0; }
   }
 
+  /** Gen1 text codec, enough for a nickname: $80-$99 = A-Z, $50 terminates. */
+  private name(s: BattleSide, addr: number): string {
+    const m = s.emu.mem();
+    let out = "";
+    for (let i = 0; i < 11; i++) {
+      const c = m[addr + i] & 0xFF;
+      if (c === 0x50) break;
+      out += c >= 0x80 && c <= 0x99 ? String.fromCharCode(65 + c - 0x80) : c === 0x7F ? " " : "";
+    }
+    return out || "?";
+  }
+
+  private view(s: BattleSide, turn: number): BattleView {
+    const m = s.emu.mem(), mv = s.sym.addr("wBattleMonMoves"), pp = s.sym.addr("wBattleMonPP");
+    return {
+      tag: s.tag, turn,
+      myNick: this.name(s, s.sym.addr("wBattleMonNick")),
+      foeNick: this.name(s, s.sym.addr("wEnemyMonNick")),
+      mySpecies: this.m(s, s.sym.addr("wBattleMonSpecies")),
+      myLevel: this.m(s, s.sym.addr("wBattleMonLevel")),
+      myHp: this.hp(s), myMaxHp: this.r16(s, "wBattleMonMaxHP"),
+      foeSpecies: this.m(s, s.sym.addr("wEnemyMonSpecies")),
+      foeLevel: this.m(s, s.sym.addr("wEnemyMonLevel")),
+      foeHp: this.foeHp(s), foeMaxHp: this.r16(s, "wEnemyMonMaxHP"),
+      moves: [0, 1, 2, 3].map(i => m[mv + i] & 0xFF),
+      pp: [0, 1, 2, 3].map(i => m[pp + i] & 0x3F),
+      lastFoeMove: this.m(s, ADDR.enemyMove),
+    };
+  }
+
   private classify(s: BattleSide): "moveMenu" | "battleMenu" | "text" {
     const g = this.grid(s);
     if (g.includes("TYPE/") || g.includes("PP")) return "moveMenu";
@@ -312,7 +374,11 @@ export class LinkBattleSession {
     const slot: Record<string, number> = { A: this.o.moveSlotA, B: this.o.moveSlotB };
     let lastPair = "";
 
-    const keyFor = (s: BattleSide): number | undefined => {
+    // Keyed on TURN, not a boolean: an un-dispatched commit press un-commits
+    // the side, and a boolean latch would re-ask (and re-bill) the brain for a
+    // turn it has already decided.
+    const chosenTurn: Record<string, number> = { A: -1, B: -1 };
+    const keyFor = async (s: BattleSide): Promise<number | undefined> => {
       const where = this.classify(s);
       const cur = this.m(s, ADDR.menuCursor);
       if (where === "battleMenu") {
@@ -340,6 +406,37 @@ export class LinkBattleSession {
         committed[s.tag] = false;
         if (where !== "moveMenu") return KEYS.A;
       }
+      if (where === "moveMenu") {
+        // Ask the brain HERE, not at the battle menu. The battle menu is on
+        // screen for only a few rounds between turns and this driver often
+        // steps straight past it, so a hook there fires about once per battle.
+        // The move menu is where the choice is actually needed, and the cores
+        // do not advance while the request is in flight — both are stepped only
+        // after BOTH sides' keys have resolved.
+        const turnNo = turns.length + 1;
+        if (this.o.pickMove && chosenTurn[s.tag] !== turnNo) {
+          chosenTurn[s.tag] = turnNo;
+          const fallback = s.tag === "A" ? this.o.moveSlotA : this.o.moveSlotB;
+          try {
+            const want = await this.o.pickMove(this.view(s, turnNo));
+            const ok = Number.isInteger(want) && want >= 0 && want <= 3 && !!this.view(s, 0).moves[want];
+            slot[s.tag] = ok ? want : fallback;
+            if (!ok) this.picksRejected[s.tag]++;
+          } catch (e) {
+            slot[s.tag] = fallback;
+            this.picksRejected[s.tag]++;
+            this.log(`    ${s.tag} pickMove failed (${e}) — falling back to slot ${fallback}`);
+          }
+        }
+        // MEASURED: the move list is ONE-INDEXED. Cursor 1..4 maps to the four
+        // move ids and wPlayerSelectedMove ($CCDC) follows the highlighted
+        // entry. Targeting slot 0 never matches and walks the cursor forever.
+        // wMenuWatchedKeys here is $C3 (UP|DOWN|B|A).
+        const target = slot[s.tag] + 1;
+        if (cur !== target) return KEYS.DOWN;
+        committed[s.tag] = true;
+        return KEYS.A;
+      }
       // Narration: link battles scroll their own text (ManualTextScroll has an
       // in-link-battle path), so silence is correct here — with the same
       // deadman in case a prompt really is waiting on a press.
@@ -354,7 +451,8 @@ export class LinkBattleSession {
     for (let round = 0; round < this.o.maxRounds; round++) {
       if (this.inBattle(this.a) === 0 || this.inBattle(this.b) === 0) return true;
       this.track(this.a); this.track(this.b);
-      this.step(6 * fine, keyFor(this.a), keyFor(this.b));
+      const [ka, kb] = [await keyFor(this.a), await keyFor(this.b)];
+      this.step(6 * fine, ka, kb);
       this.step(10 * fine);
 
       const pmA = this.m(this.a, ADDR.playerMove), emA = this.m(this.a, ADDR.enemyMove);
@@ -367,7 +465,12 @@ export class LinkBattleSession {
       // the HP tuple to stop moving compares like with like.
       const tuple = `${this.hp(this.a)}/${this.foeHp(this.a)}/${this.hp(this.b)}/${this.foeHp(this.b)}`;
       if (tuple === this.lastTuple) this.settled++; else { this.lastTuple = tuple; this.settled = 0; }
-      if (this.settled === this.o.settleRounds && tuple !== lastPair &&
+      // Settled is necessary but not sufficient: a side can be paused mid
+      // damage animation while its HP happens to sit still. Requiring BOTH
+      // sides to be back on a menu means both turns have fully resolved, which
+      // is the only moment the two RAM views are directly comparable.
+      const bothAtMenu = this.classify(this.a) !== "text" && this.classify(this.b) !== "text";
+      if (this.settled >= this.o.settleRounds && bothAtMenu && tuple !== lastPair &&
           pmA !== 0 && emA !== 0 && pmB !== 0 && emB !== 0) {
         lastPair = tuple;
         const mirrored = pmA === emB && pmB === emA &&
