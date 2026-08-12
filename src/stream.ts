@@ -43,7 +43,8 @@ function renderEvent(m) {
       "<br><b>BADGES</b> " + m.badgeCount + " &nbsp;<b>MONEY</b> ₽" + m.money +
       "<br><b>PARTY</b> " + (m.partyCount || "none") + "<br><b>BATTLE</b> " + (m.inBattle ? "YES" : "no") +
       "<br><b style='color:#d29922'>CONTINUES</b> <span style='color:#f0b429;font-weight:bold'>" + retriesTxt.c + "</span>" +
-      "<br><b style='color:#d29922'>WHITE-OUTS</b> <span style='color:#f0b429;font-weight:bold'>" + retriesTxt.w + "</span>";
+      "<br><b style='color:#d29922'>WHITE-OUTS</b> <span style='color:#f0b429;font-weight:bold'>" + retriesTxt.w + "</span>" +
+      "<br><span style='color:#8b949e;font-size:10px'>RESTARTS (infra) " + retriesTxt.b + "</span>";
   }
   const cls = m.kind === "tool_call" ? "k-tool" : m.kind === "state_read" ? "k-state" : m.kind === "think_chunk" ? "k-think" : "k-sys";
   const d = document.createElement("div"); d.className = cls;
@@ -101,13 +102,14 @@ pollPower(); setInterval(pollPower, 15000);
 // Lumen continue counter: lifetime resets (boots) + in-game white-outs.
 // Rendered inside the HUD stats list (under BATTLE); the hud is rebuilt on
 // every state_read, so we just keep the latest text in a var it reads.
-let retriesTxt = { c: "…", w: "…" };
+let retriesTxt = { c: "…", w: "…", b: "…" };
 async function pollRetries() {
   try {
     const r = await (await fetch("/retries.json", { cache: "no-store" })).json();
-    if (r.continues === null || r.continues === undefined) { retriesTxt = { c: "…", w: "…" }; return; }
-    retriesTxt = { c: r.continues, w: r.whiteouts };
-  } catch (e) { retriesTxt = { c: "…", w: "…" }; }
+    if (r.continues === null || r.continues === undefined) { retriesTxt = { c: "…", w: "…", b: "…" }; return; }
+    // wq#470: continues = gameplayContinues; serviceBoots = infra restarts (dim line)
+    retriesTxt = { c: r.continues, w: r.whiteouts, b: (r.serviceBoots ?? "…") };
+  } catch (e) { retriesTxt = { c: "…", w: "…", b: "…" }; }
 }
 pollRetries(); setInterval(pollRetries, 30000);
 
@@ -131,7 +133,8 @@ export class StreamServer {
   private recent: object[] = [];
   private power = new PowerMeter();
   // set by live_agent after RetryCounter construction; null-safe until then
-  retryStats: (() => { continues: number; whiteouts: number }) | null = null;
+  // wq#470: continues = gameplayContinues (kiosk number); serviceBoots = infra restarts
+  retryStats: (() => { continues: number; gameplayContinues: number; serviceBoots: number; whiteouts: number }) | null = null;
   constructor(port: number) {
     const srv = createServer((req, res) => {
       // Polling endpoints: fallback for clients whose WebSocket path is broken
@@ -159,7 +162,7 @@ export class StreamServer {
       }
       if (req.url?.startsWith("/retries.json")) {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(this.retryStats ? this.retryStats() : { continues: null, whiteouts: null }));
+        res.end(JSON.stringify(this.retryStats ? this.retryStats() : { continues: null, gameplayContinues: null, serviceBoots: null, whiteouts: null }));
         return;
       }
       res.writeHead(200, { "Content-Type": "text/html" }); res.end(PAGE);

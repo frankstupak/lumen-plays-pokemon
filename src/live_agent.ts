@@ -49,6 +49,7 @@ bus.on(e => {
   const ev = e as any;
   if (ev.kind === "battle_softlock" && ev.stage === "terminal") {
     console.error(`[softlock] terminal after ${ev.turns} battle turns (stall ${ev.stall}) - restarting onto checkpoint`);
+    retry.markPendingContinue();   // wq#470: designed restart = gameplay continue, not infra
     metrics.flush("softlock_terminal");
     process.exit(3);
   }
@@ -131,6 +132,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
       }
     }
     bus.emit("turn_summary", { line: "agent rebooting from latest checkpoint" });
+    retry.noteGameplayContinue();   // wq#470: in-process resume = gameplay continue
     metrics.flush("reboot");
     await sleep(5000);
   }
