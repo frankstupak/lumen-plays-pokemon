@@ -31,6 +31,9 @@ export class Agent {
   notepad = "";
   turn = 0;
   noActStreak = 0;
+  // wq#472: planned deterministic turns remaining before the next brain call.
+  // Refilled to CFG.autoTurnRatio after every brain-driven turn; 0 ratio = feature off.
+  private autoBudget = 0;
   private mapHistory: number[] = [];   // recent map ids for oscillation detection
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
@@ -270,6 +273,46 @@ export class Agent {
     return `leave_edge(${dir}) auto -> ${r}`;
   }
 
+  /**
+   * wq#472: PLANNED deterministic turn — the intentional counterpart to
+   * unwedge (which is failure recovery). Only fires while autoBudget > 0 and
+   * only in states where the correct action is not a judgment call:
+   *   - TRAINER battle, main menu, HP > 25%, at least one damaging move with
+   *     PP: strongest-move swing. Wild battles stay with the brain (catch
+   *     decisions); critical HP stays with the brain (item decisions);
+   *     PP-exhausted stays with the brain (Struggle awareness).
+   *   - Dialog/sign text open with NO cursor choice: advance it. Choices
+   *     always go to the brain.
+   * Returns null when the state needs judgment -> normal brain path.
+   */
+  private async plannedAuto(): Promise<{ kind: string; result: string } | null> {
+    if (this.bat.active()) {
+      const b = this.bat.state();
+      if (b.inBattle !== 2) return null;                               // wild: brain decides (catch?)
+      if (b.myMaxHp > 0 && b.myHp / b.myMaxHp <= 0.25) return null;    // critical: brain decides (item?)
+      const usable = b.moves.map((m, i) => (m && (b.pp[i] & 0x3f) > 0) ? i : -1).filter(i => i >= 0);
+      if (!usable.length) return null;                                 // Struggle-only: brain should see it
+      const w = await this.bat.waitForMenu();
+      if (w !== "menu") return null;                                   // battle resolving/over: brain re-reads
+      let best = usable[0], bestPow = -1;
+      for (const i of usable) {
+        const pow = MOVES[b.moves[i]]?.power ?? 30;
+        if (pow > bestPow) { bestPow = pow; best = i; }
+      }
+      this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)], src: "planned_auto" });
+      await this.bat.useMove(best);
+      const b2 = this.bat.state();
+      return { kind: "battle", result: `battle_move(${best}) planned [${moveLabel(b.moves[best])}] my ${b2.myHp}/${b2.myMaxHp} foe ${b2.foeHp}/${b2.foeMaxHp}` };
+    }
+    if ((this.sync.textUp() || this.dlg.open()) && !this.scr.cursor()) {
+      this.bus.emit("tool_call", { tool: "talk", args: [], src: "planned_auto" });
+      const d = await this.dlg.advance(40);
+      if (this.scr.cursor()) return { kind: "talk", result: `talk planned -> ${d.stoppedAt}; CURSOR up - brain next turn` };
+      return { kind: "talk", result: `talk planned -> ${d.stoppedAt}; text: ${d.lines.slice(-2).join(" / ").slice(0, 120)}` };
+    }
+    return null;
+  }
+
   /** wq#423: per-battle counters. HP-only signature: PP is deliberately
    *  excluded so a move that fires but never lands (Normal vs Ghost) still
    *  reads as a stall. Reset the moment the battle is over. */
@@ -320,12 +363,22 @@ export class Agent {
     const stateBlock = this.observe();
     this.bus.emit("state_read", before as unknown as object);
 
-    let think = "", act = "", result: string;
+    let think = "", act = "", result = "";
+    let plannedTurn = false;
     const forced = await this.battleLockForce();
+    // wq#472: planned deterministic turn between brain calls (null = feature
+    // off, budget spent, or state needs judgment -> brain path).
+    const planned = (forced === null && this.autoBudget > 0) ? await this.plannedAuto() : null;
     if (forced !== null) {
       result = forced;
       act = "AUTO:battle_lock";
       think = "[soft-lock escalation - harness action, no brain call]";
+    } else if (planned !== null) {
+      this.autoBudget--;
+      plannedTurn = true;
+      result = planned.result;
+      act = `DET:${planned.kind}`;
+      think = "[planned deterministic turn - no brain call (wq#472)]";
     } else {
       const r0 = await this.brain.complete(buildMessages(this.hist, this.notepad, stateBlock));
       let text = r0.text;
@@ -352,6 +405,9 @@ export class Agent {
         act = `AUTO:${result.split(" ")[0]}`;
       }
       if (act && !act.startsWith("AUTO:")) this.noActStreak = 0;
+      // wq#472: a brain-driven turn just happened - refill the planned-auto
+      // budget. ratio=0 keeps this at 0 -> plannedAuto never gates in.
+      this.autoBudget = CFG.autoTurnRatio;
     }
     this.bus.emit("think_chunk", { turn: this.turn, think });
     await this.sync.settle();
@@ -360,7 +416,10 @@ export class Agent {
     const progressed = after.map !== before.map || after.x !== before.x ||
       after.y !== before.y || after.partyCount !== before.partyCount ||
       after.badgeCount !== before.badgeCount || this.bat.active();
-    this.brain.reportProgress(progressed);
+    // wq#472: planned harness turns don't count toward the brain's stall
+    // escalation - stallTurns measures the BRAIN failing to progress, and no
+    // brain call happened this turn. (No-op while ratio=0: plannedTurn never true.)
+    if (!plannedTurn) this.brain.reportProgress(progressed);
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;
     this.hist.push(line);
@@ -422,8 +481,9 @@ export class Agent {
     saveSnapshotFile(this.emu, path);
     const lead = st.party[0];
     const sidecar = {
-      v: 1, kind, map: st.map, x: st.x, y: st.y,
+      v: 2, kind, map: st.map, x: st.x, y: st.y,
       badges: st.badgeCount, events: this.reader.eventCount(),
+      storyScore: this.reader.storyScore(),  // wq#471: monotonic story flags
       hpPct: lead && lead.maxHp > 0 ? +(lead.hp / lead.maxHp).toFixed(3) : 1,
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),

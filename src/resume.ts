@@ -28,9 +28,11 @@ export interface Sidecar {
   v: number; kind: string; map: number; x: number; y: number;
   badges: number; events: number; hpPct: number; ppOk: boolean;
   money: number; ts: number;
+  storyScore?: number;  // v2+ (wq#471): popcount of STORY_FLAGS at write time
 }
 export interface Progress {
   rank: number; badges: number; events: number;
+  story: number;  // wq#471: monotonic story-flag score; -1 = unknown (v1 sidecar)
   hpPct: number; ppOk: boolean; viable: boolean; mtime: number;
 }
 
@@ -47,6 +49,7 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
     try {
       const j: Sidecar = JSON.parse(readFileSync(sc, "utf8"));
       return { rank: progressRank(j.map), badges: j.badges, events: j.events,
+        story: typeof j.storyScore === "number" ? j.storyScore : -1,  // v1 -> unknown
         hpPct: j.hpPct, ppOk: j.ppOk,
         viable: j.hpPct >= VIABLE_HP_PCT && j.ppOk, mtime };
     } catch {}
@@ -61,9 +64,10 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
     const hpPct = lead && lead.maxHp > 0 ? lead.hp / lead.maxHp : 1;
     const ppOk = !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0);
     return { rank: progressRank(s.map), badges: s.badgeCount, events: rd.eventCount(),
+      story: rd.storyScore(),
       hpPct, ppOk, viable: hpPct >= VIABLE_HP_PCT && ppOk, mtime };
   } catch {
-    return { rank: -2, badges: -1, events: -1, hpPct: 0, ppOk: false, viable: false, mtime: 0 };
+    return { rank: -2, badges: -1, events: -1, story: -1, hpPct: 0, ppOk: false, viable: false, mtime: 0 };
   }
 }
 
@@ -83,14 +87,28 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string): s
     } catch {}
   }
   const scored = cands.map(f => ({ f, ...readProgress(f, sym, romPath) }));
-  // Story rank compares BEFORE event flags, but only when both sides are
-  // ranked: event flags include incidental (non-story) flags, so a wandering
-  // lineage can out-"event" a genuinely further one (the Pewter museum trap).
-  // When either side is unranked (-1: interiors, off-path maps), fall back to
-  // events/mtime as before.
+  // wq#471 ordering: viable -> badges -> storyScore -> STORY_ORDER rank
+  // (tiebreak) -> raw events -> mtime.
+  // storyScore is a popcount over STORY-CRITICAL flags only (src/state.ts
+  // STORY_FLAGS), each permanent once set, so it is monotonic and immune to
+  // the Pewter-museum incidental-flag trap that raw eventCount fell into.
+  // It compares only when both sides know it (-1 = v1 sidecar without the
+  // field); mixed/unknown pairs fall through to rank/events as before.
+  // STORY_ORDER rank stays as a positional tiebreak between states with equal
+  // story flags (e.g. Route 3 vs Route 4, no flag between them) and needs
+  // extending only for that purpose now — the score, not the map list, is the
+  // primary progress signal.
+  // Rank compares DIRECTLY (unranked -1 sorts below any ranked map): at equal
+  // story, an on-critical-path map beats an off-path interior. The old
+  // "both-ranked-only" guard is what let the unranked museum floors (52/53,
+  // rank -1) skip rank and win on incidental events (26 vs Route 4's 24) —
+  // the exact 08-11/12 regression. Worst case for a genuinely-further state
+  // in a not-yet-listed interior: resume steps back to the last ranked map
+  // and re-walks in — a stumble, not a trap loop.
   scored.sort((a, b) =>
     (Number(b.viable) - Number(a.viable)) || (b.badges - a.badges) ||
-    ((a.rank >= 0 && b.rank >= 0) ? (b.rank - a.rank) : 0) ||
-    (b.events - a.events) || (b.rank - a.rank) || (b.mtime - a.mtime));
+    ((a.story >= 0 && b.story >= 0) ? (b.story - a.story) : 0) ||
+    (b.rank - a.rank) ||
+    (b.events - a.events) || (b.mtime - a.mtime));
   return scored[0]?.f ?? cands[0];
 }
