@@ -13,6 +13,8 @@ export interface BrainProfile {
 
 const envS = (k: string, d: string) => process.env[k] ?? d;
 const envN = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : d; };
+// zero-permitted variant: 0 is a meaningful value (off), unlike envN where 0 falls to default
+const envN0 = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v >= 0 ? Math.floor(v) : d; };
 const envEffort = (k: string, d?: "low" | "medium" | "high") => {
   const v = process.env[k];
   if (v === "none") return undefined;            // explicit provider-default
@@ -55,6 +57,12 @@ export const CFG = {
     // screenshot turns only (unused by the text loop)
     vision: { model: "lumen-vision", maxTokensOut: 3200 } as BrainProfile,
   },
+  // wq#472 AUTO-turn rate lever: max PLANNED deterministic turns the harness
+  // may run between brain calls (trainer-battle strongest-move, choice-free
+  // dialog advance — see Agent.plannedAuto for the exact safety gates).
+  // 0 = OFF = brain every turn (current behavior; policy default is Frank's
+  // call — see wq decision ticket). N>0 = up to N harness turns per brain turn.
+  autoTurnRatio: envN0("LPP_AUTO_TURN_RATIO", 0),
   historyKeepVerbatim: 30,    // recent turn summaries kept verbatim
   historyCompactAt: 80,       // fold-forward compaction threshold
   escalateAfterStallTurns: 12,

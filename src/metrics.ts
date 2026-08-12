@@ -19,6 +19,7 @@ interface RunMetrics {
   toolCalls: Record<string, number>;   // brain-chosen only (src:"brain"); parse junk -> _invalid
   autoCalls: Record<string, number>;   // harness/internal-layer emissions (nav, battle, unwedge...)
   autoTurns: number;                   // turns recovered by unwedge/soft-lock (no usable brain ACT)
+  plannedAutoTurns: number;            // wq#472: intentional harness turns (DET:) - NOT the failure mode above
   brainTruncations: number;            // completions that hit the token cap with empty content
   itemsBought: number; itemsUsed: number;
   catchesAttempted: number; catchesSucceeded: number;
@@ -43,7 +44,7 @@ export class Metrics {
       turns: 0, wallMs: 0, tokensPrompt: 0, tokensCompletion: 0,
       whiteouts: 0, reboots: 0,
       battlesEntered: 0, battlesWild: 0, battlesTrainer: 0,
-      toolCalls: {}, autoCalls: {}, autoTurns: 0, brainTruncations: 0, itemsBought: 0, itemsUsed: 0,
+      toolCalls: {}, autoCalls: {}, autoTurns: 0, plannedAutoTurns: 0, brainTruncations: 0, itemsBought: 0, itemsUsed: 0,
       catchesAttempted: 0, catchesSucceeded: 0, healsAtCenter: 0,
       badges: 0, maxEventCount: 0, mapsSeen: [],
     };
@@ -106,6 +107,7 @@ export class Metrics {
       case "turn_summary":
         if (typeof e.line === "string" && e.line.includes("rebooting")) this.m.reboots++;
         if (typeof e.line === "string" && e.line.includes("AUTO:")) this.m.autoTurns++;
+        if (typeof e.line === "string" && e.line.includes("DET:")) this.m.plannedAutoTurns++;
         break;
       case "checkpoint":
         if (typeof e.events === "number") this.m.maxEventCount = Math.max(this.m.maxEventCount, e.events);
@@ -126,6 +128,9 @@ export class Metrics {
       whiteoutsPerBadge: this.m.badges > 0 ? +(this.m.whiteouts / this.m.badges).toFixed(2) : null,
       catchRate: this.m.catchesAttempted > 0 ? +(this.m.catchesSucceeded / this.m.catchesAttempted).toFixed(2) : null,
       autoRate: this.m.turns > 0 ? +(this.m.autoTurns / this.m.turns).toFixed(2) : null,
+      // wq#472: share of turns carried deterministically on purpose; brain-call
+      // saving per run = plannedAutoTurns brain round-trips avoided.
+      plannedAutoRate: this.m.turns > 0 ? +(this.m.plannedAutoTurns / this.m.turns).toFixed(2) : null,
     };
     try {
       writeFileSync(`${this.dir}/run-summary-${this.m.runTag}.json`,

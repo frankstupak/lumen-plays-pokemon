@@ -8,3 +8,4 @@
 2026-08-12T20:49Z claude-web-a1 wq#470 NOTE: code done + tsc-clean vs HEAD in isolated worktree; shared tree fails tsc from wq#471 WIP (state.ts STORY_FLAGS); deferring service restart until tree is runnable
 2026-08-12T20:52ZZ claude-web-a1 wq#471 SHIPPED: storyScore (25 RAM-verified story flags) + direct-rank tiebreak; sim over 68 sidecars: Route4 beats Pewter trap; tsc clean; no restart needed
 2026-08-12T20:54Z claude-web-a1 wq#470 SHIPPED: d900285 live — /retries.json {continues:0,gameplayContinues:0,serviceBoots:65,whiteouts:7}; HUD CONTINUES=gameplay, RESTARTS dim; ledger history annotated not zeroed
+2026-08-12T21:02Z claude-web-0812b wq#472 SHIPPED: LPP_AUTO_TURN_RATIO lever (default 0=off), DET: planned turns, plannedAutoRate metric, decision ticket wq#473; deployed+turning
