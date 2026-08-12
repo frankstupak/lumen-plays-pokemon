@@ -3,6 +3,10 @@ import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { PowerMeter } from "./power";
 
+// Changes on every server (re)start; the page polls /version.json and
+// reloads itself on mismatch so kiosk clients never run a stale page.
+const BOOT_STAMP = Date.now();
+
 const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Lumen Plays Pokemon</title><style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0d1117; color:#c9d1d9; font-family:'SF Mono',Menlo,monospace; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
@@ -106,6 +110,19 @@ async function pollRetries() {
   } catch (e) { retriesTxt = { c: "…", w: "…" }; }
 }
 pollRetries(); setInterval(pollRetries, 30000);
+
+// Kiosk staleness guard: the tablet's Firefox loads this page ONCE and then
+// runs it for days — server restarts reconnect the WS but never re-fetch the
+// HTML, so HUD features shipped after page-load silently don't exist on the
+// kiosk. Poll the server's boot stamp; when it changes, hard-reload the page.
+let bootStamp = null;
+setInterval(async () => {
+  try {
+    const v = await (await fetch("/version.json", { cache: "no-store" })).json();
+    if (bootStamp === null) bootStamp = v.boot;
+    else if (v.boot !== bootStamp) location.reload();
+  } catch (e) {}
+}, 60000);
 </script></body></html>`;
 
 export class StreamServer {
@@ -133,6 +150,11 @@ export class StreamServer {
       if (req.url?.startsWith("/power.json")) {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(this.power.stats()));
+        return;
+      }
+      if (req.url?.startsWith("/version.json")) {
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify({ boot: BOOT_STAMP }));
         return;
       }
       if (req.url?.startsWith("/retries.json")) {

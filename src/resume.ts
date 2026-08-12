@@ -6,9 +6,18 @@ import { Emulator, loadSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { StateReader } from "./state";
 
-// Story progress order for Kanto maps on the critical path (early game).
+// Story progress order for Kanto maps on the critical path.
+// 2026-08-12: extended past Pewter Gym — Route 3 (14), Mt Moon Pokecenter (68),
+// Mt Moon 1F/B1F/B2F (59/60/61), Route 4 (15), Cerulean (3). The old list ended
+// one step past Pewter Gym, so post-Pewter checkpoints ranked -1 and resume
+// selection fell to Pewter-era states whose incidental event flags (museum
+// NPCs) ran higher — that is how the run regressed from Route 4 to Pewter.
+// Extend this list at the START of each new campaign leg.
+// Pewter Mart (56) + Pewter Pokecenter (58) are ranked below the gym so their
+// heal-milestones can't out-"event" Route 4 states (they carry events=25 from
+// museum wandering vs Route 4's 24).
 export const STORY_ORDER: number[] = [
-  38, 37, 0, 40, 12, 1, 42, 13, 51, 2, 54, 3,
+  38, 37, 0, 40, 12, 1, 42, 13, 51, 2, 56, 58, 54, 14, 68, 59, 60, 61, 15, 3,
 ];
 export function progressRank(mapId: number): number {
   const i = STORY_ORDER.indexOf(mapId);
@@ -74,8 +83,14 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string): s
     } catch {}
   }
   const scored = cands.map(f => ({ f, ...readProgress(f, sym, romPath) }));
+  // Story rank compares BEFORE event flags, but only when both sides are
+  // ranked: event flags include incidental (non-story) flags, so a wandering
+  // lineage can out-"event" a genuinely further one (the Pewter museum trap).
+  // When either side is unranked (-1: interiors, off-path maps), fall back to
+  // events/mtime as before.
   scored.sort((a, b) =>
     (Number(b.viable) - Number(a.viable)) || (b.badges - a.badges) ||
+    ((a.rank >= 0 && b.rank >= 0) ? (b.rank - a.rank) : 0) ||
     (b.events - a.events) || (b.rank - a.rank) || (b.mtime - a.mtime));
   return scored[0]?.f ?? cands[0];
 }
