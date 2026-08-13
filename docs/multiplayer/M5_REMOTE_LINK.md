@@ -1,8 +1,9 @@
 # M5 — Remote link over BGB TCP
 
-**Status 2026-08-10: transport layer BUILT AND VERIFIED. The ROM-over-TCP
-bridge is not built yet** — see "What is still missing" at the bottom. Nothing
-here claims a remote battle has happened.
+**Status 2026-08-13: transport layer VERIFIED; the ROM<->TCP bridge is BUILT
+and VERIFIED through the Cable Club room-select handshake against a scripted
+mock peer over a real localhost socket (M5a, wq#481).** A remote battle/trade
+between two full game instances has still not happened — that is M5b+.
 
 This document doubles as the **spec for the other side**: if you want to
 challenge our agent, this is what your end has to speak.
@@ -77,8 +78,8 @@ stated as such.
 
 ## What is still missing
 
-The transport is the easy half. Three things genuinely change when the peer is
-remote, and none are solved yet:
+The transport was the easy half. Three things genuinely change when the peer is
+remote; **problem 3 is now solved** (M5a, wq#481), 1 and 2 are not:
 
 1. **The peer's RAM is unreadable.** Every verification in M3/M4 reads both
    cores in one process — the mirror check compares A's HP against B's view of
@@ -88,9 +89,31 @@ remote, and none are solved yet:
    until its partner arrives, decided by reading both. Against a remote agent
    each side drives only itself and the rendezvous becomes a real distributed
    protocol problem.
-3. **Latency replaces lockstep.** In-process we choose exactly when a byte
-   lands. Over TCP our core has to be able to wait — which is what the
-   timestamps are for, and the reason ours tracks emulated cycles.
+3. **Latency replaces lockstep — SOLVED (M5a).** `src/link/bridge.ts` binds a
+   core's SB/SC to a `BgbLink` endpoint; a master transfer stays OPEN until the
+   remote sync2 arrives, and the core is NOT stepped while a byte is pending,
+   so emulated time freezes through network latency (timestamps advance with
+   emulated cycles only — spec rule 5 — so the remote side sees us waiting).
+   Measured: a 250ms injected delay froze the link timestamp exactly, executed
+   zero frames, faked zero completions, and the handshake still finished.
 
-Next tranche, in order: a scripted mock peer over the socket against our real
-ROM's Cable Club handshake, then two full processes over Tailscale.
+### M5a evidence (wq#481)
+
+- `src/link/capture_handshake.ts` — taps the in-process M3 rig and captures the
+  handshake byte tape: `docs/multiplayer/evidence/m5a-handshake-tape.json`
+  (30 exchanges: `01->02` connect, `$60<->$60` nybble syncs, `$D0`-family room
+  selection, warp to map `$EF`).
+- `src/link/mock_peer.ts` — scripted slave speaking bgblink, phase machine
+  derived from the tape + pokered `main_menu.asm` ground truth (selection byte
+  = `$D0 + item + 4*(A pressed)`; the master's exchange loop needs a received
+  `$D0`-family byte, so the mock answers its `$D0` TRADE CENTER selection to
+  everything once selection talk starts — a premature `$FE` starves the loop).
+- `src/link/probe_bridge.ts` — 13/13: our REAL ROM core walks to the attendant
+  and completes room-select against the mock over localhost TCP in 36
+  exchanges (in-process ground truth: 30), including the 250ms-delay stall
+  case. `npm run verify` (P0) and `npm run p1` untouched and passing;
+  `probe_bgblink` still 16/16 after the backward-compatible `DEFER_REPLY`
+  addition that lets the mock inject latency.
+
+Next tranche: one-sided invariants (M5b), then the distributed rendezvous, then
+two full processes over Tailscale.

@@ -82,8 +82,13 @@ export const sync3Time = (timestamp: number): BgbPacket =>
 export const versionMatches = (p: BgbPacket): boolean =>
   p.b1 === CMD.version && p.b2 === 1 && p.b3 === 4 && p.b4 === 0;
 
+/** onMasterByte sentinel: "I will send the reply myself, later" (wq#481). */
+export const DEFER_REPLY = -2;
+
 export interface BgbHandlers {
-  /** Peer is master: return OUR staged byte, which is sent back as sync2. */
+  /** Peer is master: return OUR staged byte, which is sent back as sync2.
+   *  Return DEFER_REPLY to take over the reply yourself (send sync2Packet /
+   *  sync3Ack later via send()) — wq#481, lets a mock peer inject latency. */
   onMasterByte?: (data: number, control: number, timestamp: number) => number;
   /** Peer answered our sync1: this is the byte our core receives. */
   onSlaveByte?: (data: number) => void;
@@ -175,6 +180,7 @@ export class BgbLink {
       case CMD.sync1: {
         this.peerTimestamp = p.i1;
         const reply = this.h.onMasterByte?.(p.b2, p.b3, p.i1);
+        if (reply === DEFER_REPLY) return;         // handler sends its own reply (wq#481)
         // No passive transfer staged -> sync3 ack rather than a bogus byte.
         this.send(reply === undefined || reply === null ? sync3Ack() : sync2Packet(reply));
         return;

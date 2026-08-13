@@ -1,0 +1,230 @@
+{
+ "captured": "2026-08-13T02:14:53.165Z",
+ "skew": 27,
+ "finalA": {
+  "role": 2,
+  "ls": 0,
+  "map": 239,
+  "menu": false,
+  "txt": "OK, please wait just a mom"
+ },
+ "finalB": {
+  "role": 1,
+  "ls": 0,
+  "map": 58,
+  "menu": true,
+  "txt": "Where would you like to go"
+ },
+ "tape": [
+  {
+   "n": 0,
+   "master": 0,
+   "out": 1,
+   "in": 2,
+   "phase": "connect"
+  },
+  {
+   "n": 1,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 2,
+   "master": 0,
+   "out": 0,
+   "in": 254,
+   "phase": "connect"
+  },
+  {
+   "n": 3,
+   "master": 0,
+   "out": 0,
+   "in": 254,
+   "phase": "connect"
+  },
+  {
+   "n": 4,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 5,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 6,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 7,
+   "master": 0,
+   "out": 96,
+   "in": 254,
+   "phase": "connect"
+  },
+  {
+   "n": 8,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 9,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 10,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 11,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 12,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 13,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 14,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 15,
+   "master": 0,
+   "out": 96,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 16,
+   "master": 0,
+   "out": 0,
+   "in": 96,
+   "phase": "connect"
+  },
+  {
+   "n": 17,
+   "master": 0,
+   "out": 0,
+   "in": 254,
+   "phase": "connect"
+  },
+  {
+   "n": 18,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 19,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 20,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 21,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 22,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 23,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 24,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "connect"
+  },
+  {
+   "n": 25,
+   "master": 0,
+   "out": 0,
+   "in": 0,
+   "phase": "menu"
+  },
+  {
+   "n": 26,
+   "master": 0,
+   "out": 212,
+   "in": 0,
+   "phase": "menu"
+  },
+  {
+   "n": 27,
+   "master": 0,
+   "out": 212,
+   "in": 254,
+   "phase": "menu"
+  },
+  {
+   "n": 28,
+   "master": 0,
+   "out": 0,
+   "in": 208,
+   "phase": "menu"
+  },
+  {
+   "n": 29,
+   "master": 0,
+   "out": 0,
+   "in": 254,
+   "phase": "menu"
+  }
+ ]
+}
