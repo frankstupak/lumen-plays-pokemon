@@ -23,8 +23,16 @@ import { StateReader } from "./state";
 // the post-cave east run to Cerulean — so one rank cannot order it. The west
 // occurrence sits before the cave, the east occurrence after it. See
 // SPLIT_MAPS for the ROM-measured boundary and progressRank() for the lookup.
+//
+// wq#534: map 60 (Mt Moon B1F) ALSO appears twice, for a different reason than
+// map 15. B1F is not two halves of one floor — it is FOUR mutually unreachable
+// pockets, and only one of them (16 tiles, x=20..27 y=2..3) contains the (27,3)
+// exit onto Route 4 east. That pocket's only other connection is (23,3), which
+// leads UP to B2F, so B2F is not a dead end: it is the mandatory way in to the
+// pocket that holds the exit. The first 60 ranks the three dead pockets BELOW
+// B2F; the second ranks the exit pocket ABOVE it. See POCKET_MAPS.
 export const STORY_ORDER: number[] = [
-  38, 37, 0, 40, 12, 1, 42, 13, 51, 2, 56, 58, 54, 14, 15, 68, 59, 60, 61, 15, 3,
+  38, 37, 0, 40, 12, 1, 42, 13, 51, 2, 56, 58, 54, 14, 15, 68, 59, 60, 61, 60, 15, 3,
 ];
 
 /** Maps that are TWO places sharing one map id, separated by terrain the player
@@ -47,11 +55,52 @@ export const SPLIT_MAPS: Record<number, { axis: "x" | "y"; beyond: number; befor
   15: { axis: "x", beyond: 20, before: "Route 4 west (pre-Mt Moon)", after: "Route 4 east (post-Mt Moon)" },
 };
 
+/** Maps whose walkable area is several MUTUALLY UNREACHABLE pockets rather than
+ *  two halves cut by one straight wall. SPLIT_MAPS cannot express these: a
+ *  {axis, beyond} line only works when the two places fall on opposite sides of
+ *  one coordinate, and here the pockets are spatially INTERLEAVED, so no such
+ *  line exists. `tiles` therefore enumerates the pocket that is FURTHER along
+ *  the story; every other position on the map is the earlier occurrence.
+ *
+ *  wq#534, measured from RAM+ROM and NOT from the ticket, whose topology was
+ *  wrong. probe_pocket534 re-derives this set by flood-filling the live map on
+ *  every run and fails if it drifts by a single tile, the same contract
+ *  SPLIT_MAPS keeps.
+ *
+ *  map 60 (Mt Moon B1F), 28x28 walk units, ZERO sprites — so the decomposition
+ *  is pure terrain and no NPC can move it. Four components:
+ *      84 tiles  warps (5,5)->59   (21,17)->61
+ *      84 tiles  warps (25,15)->59 (13,27)->61
+ *      48 tiles  warps (17,11)->61 (25,9)->59
+ *      16 tiles  warps (23,3)->61  (27,3)->OUTSIDE   <- the exit pocket, below
+ *  The exit pocket's only non-outside warp is (23,3), whose destination is
+ *  map61 warp #3 = (5,7) — and map61 (5,7) points back at map60 warp #6 =
+ *  (23,3). The pair is bijective, so B2F is the ONLY way in and the ticket's
+ *  "B2F is a dead end" premise is false. A run standing in this pocket is
+ *  genuinely further along than one in the fossil room; a run in any other
+ *  pocket is genuinely further BACK, because none of them can reach (27,3). */
+export const POCKET_MAPS: Record<number, { tiles: ReadonlySet<string>; before: string; after: string }> = {
+  60: {
+    tiles: new Set([
+      "20,2", "21,2", "22,2", "23,2", "24,2", "25,2", "26,2", "27,2",
+      "20,3", "21,3", "22,3", "23,3", "24,3", "25,3", "26,3", "27,3",
+    ]),
+    before: "Mt Moon B1F (dead pocket)",
+    after: "Mt Moon B1F (exit pocket)",
+  },
+};
+
 /** Rank a POSITION on the story path. Coordinates are optional for callers that
- *  genuinely lack them; a split map with unknown coordinates resolves to the
- *  EARLIER half, because claiming progress that cannot be proved is the exact
- *  failure this ticket exists to fix. */
+ *  genuinely lack them; a split or pocket map with unknown coordinates resolves
+ *  to the EARLIER half, because claiming progress that cannot be proved is the
+ *  exact failure this ticket exists to fix. */
 export function progressRank(mapId: number, x?: number, y?: number): number {
+  const pocket = POCKET_MAPS[mapId];
+  if (pocket) {
+    const known = typeof x === "number" && typeof y === "number";
+    return known && pocket.tiles.has(`${x},${y}`)
+      ? STORY_ORDER.lastIndexOf(mapId) : STORY_ORDER.indexOf(mapId);
+  }
   const split = SPLIT_MAPS[mapId];
   if (split) {
     const v = split.axis === "x" ? x : y;
@@ -64,6 +113,11 @@ export function progressRank(mapId: number, x?: number, y?: number): number {
 
 /** Human-readable place name for a position, for boot logs and reports. */
 export function rankLabel(mapId: number, x?: number, y?: number): string {
+  const pocket = POCKET_MAPS[mapId];
+  if (pocket) {
+    const known = typeof x === "number" && typeof y === "number";
+    return known && pocket.tiles.has(`${x},${y}`) ? pocket.after : pocket.before;
+  }
   const split = SPLIT_MAPS[mapId];
   if (!split) return `map${mapId}`;
   const v = split.axis === "x" ? x : y;

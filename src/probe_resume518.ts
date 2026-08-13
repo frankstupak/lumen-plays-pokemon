@@ -8,20 +8,47 @@
 //   C. GUARD      — red AND green cases for the repeat-resume backstop, plus the
 //                   wq#471 cases it must not regress.
 // Usage: npx tsx src/probe_resume518.ts
-import { mkdtempSync, writeFileSync, readFileSync, utimesSync, rmSync } from "fs";
+import { mkdtempSync, writeFileSync, readFileSync, utimesSync, rmSync, readdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { Emulator, loadSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel } from "./map";
 import { StateReader } from "./state";
-import { pickResume, readProgress, progressRank, rankLabel, SPLIT_MAPS, STORY_ORDER, VIABLE_HP_PCT } from "./resume";
+import { pickResume, readProgress, progressRank, rankLabel, SPLIT_MAPS, POCKET_MAPS, STORY_ORDER, VIABLE_HP_PCT } from "./resume";
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
 const LIVE_SAVES = "/home/lumen/pokemon/saves";
 const LIVE_CKPTS = "/home/lumen/pokemon/checkpoints";
-const WEST_STATE = `${LIVE_CKPTS}/auto-msqlak0v-map15.state.gz`;
+// wq#534: WEST_STATE USED TO BE A HARDCODED FILENAME AND THAT FILENAME HAS
+// ROTATED OFF DISK. This probe therefore CRASHED at line 39 on pristine
+// origin/main — ENOENT, before a single assertion ran, so its "38/38" had
+// silently become "0/0 and a stack trace". Same class as the empty-corpus rot
+// rabbit13 flagged in probe_phase514 at 08:23Z: a test pinned to a specific
+// checkpoint dies the moment checkpoint rotation reaches it.
+//
+// Resolved from the sidecars instead: any map-15 checkpoint on the WEST side of
+// the split will do, and the sidecar JSON gives {map,x,y} without booting an
+// emulator per candidate. If none exists, the sections that need one say so and
+// are skipped explicitly rather than crashing the run.
+function findWestState(): string | null {
+  for (const dir of [LIVE_CKPTS, LIVE_SAVES]) {
+    let files: string[] = [];
+    try { files = readdirSync(dir).filter(f => f.endsWith(".json")).sort(); } catch { continue; }
+    for (const j of files) {
+      try {
+        const s = JSON.parse(readFileSync(`${dir}/${j}`, "utf8"));
+        if (s.map !== 15 || typeof s.x !== "number") continue;
+        if (s.x >= SPLIT_MAPS[15].beyond) continue;          // east half: wrong pocket
+        const state = `${dir}/${j.replace(/\.json$/, ".state.gz")}`;
+        if (existsSync(state)) return state;
+      } catch {}
+    }
+  }
+  return null;
+}
+const WEST_STATE = findWestState();
 
 let pass = 0, fail = 0;
 const chk = (name: string, ok: boolean, detail = "") => {
@@ -34,7 +61,11 @@ const quiet = { log: () => {} };
 
 // ---------- A. ROM TRUTH: Route 4 really is two places ----------
 console.log("=== A. ROM truth: map 15 geometry ===");
-{
+if (!WEST_STATE) {
+  chk("a Route-4-WEST checkpoint exists to derive the split geometry from", false,
+    "none on disk — section A skipped. This is corpus rot, not a code defect: " +
+    "re-run once a run passes back through Route 4 west.");
+} else {
   const e = new Emulator(ROM);
   loadSnapshotFile(e, WEST_STATE);
   const rd = new StateReader(e, sym);
@@ -105,8 +136,19 @@ console.log("\n=== B. rank order ===");
     west > progressRank(56) && west > progressRank(58) && west > progressRank(54) && west > progressRank(2));
   chk("STORY_ORDER lists map 15 exactly twice",
     STORY_ORDER.filter(m => m === 15).length === 2, STORY_ORDER.join(","));
-  chk("no OTHER map is duplicated in STORY_ORDER",
-    STORY_ORDER.filter(m => m !== 15).length === new Set(STORY_ORDER.filter(m => m !== 15)).size);
+  // wq#534 GENERALISED THIS ASSERTION RATHER THAN DELETING IT. It used to read
+  // "no map other than 15 is duplicated", which was true only while map 15 was
+  // the only two-position map. Map 60 is now a second one (POCKET_MAPS), so the
+  // invariant is restated in terms of the tables themselves: a map appears
+  // twice IF AND ONLY IF a table says it has two story positions. That still
+  // catches the copy-paste duplicate the original was written to catch.
+  const twoPos = new Set([...Object.keys(SPLIT_MAPS), ...Object.keys(POCKET_MAPS)].map(Number));
+  chk("every SPLIT_MAPS/POCKET_MAPS entry appears exactly twice in STORY_ORDER",
+    [...twoPos].every(m => STORY_ORDER.filter(v => v === m).length === 2),
+    `two-position maps: ${[...twoPos].join(",")}`);
+  chk("no map WITHOUT a two-position entry is duplicated in STORY_ORDER",
+    STORY_ORDER.filter(m => !twoPos.has(m)).length ===
+      new Set(STORY_ORDER.filter(m => !twoPos.has(m))).size);
 }
 
 // ---------- C. the real corpus on disk ----------
