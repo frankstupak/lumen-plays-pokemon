@@ -17,10 +17,10 @@ import { Items, ITEM } from "./items";
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
 
-const sym = new SymbolTable("roms/pokeblue.sym");
-const emu = new Emulator("roms/pokeblue.gb");
-loadSnapshotFile(emu, "checkpoints/archive-pre-s2/auto-msbuxqpm-map1.state.gz");
-const rom = new Rom("roms/pokeblue.gb");
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
+loadSnapshotFile(emu, "/home/lumen/pokemon/checkpoints/archive-pre-s2/auto-msbuxqpm-map1.state.gz");
+const rom = new Rom("/home/lumen/pokemon/roms/pokeblue.gb");
 const bus = new EventBus("/tmp", "probe-s3-" + Date.now());
 const map = new MapModel(emu, sym, rom);
 const scr = new Screen(emu, sym);

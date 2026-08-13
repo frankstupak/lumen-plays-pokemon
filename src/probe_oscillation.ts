@@ -18,10 +18,17 @@ import { Agent } from "./agent";
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
 
-const sym = new SymbolTable("roms/pokeblue.sym");
-const emu = new Emulator("roms/pokeblue.gb");
-loadSnapshotFile(emu, "checkpoints/auto-msjdams8-t230.state.gz");
-const rom = new Rom("roms/pokeblue.gb");
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
+// wq#540: FIXTURE RESOLVED BY PROPERTY, NOT BY NAME. This probe used to load
+// checkpoints/auto-msjdams8-t230.state.gz (map 51, Viridian Forest), which rotated off disk, so it died
+// with an ENOENT stack trace before its first assertion. It only needs SOME
+// loaded state to inspect, so it now takes the newest checkpoint on disk.
+import { findFixture, requireFixture } from "./fixtures";
+const ANY_FIXTURE = requireFixture("any checkpoint with a sidecar",
+                                   findFixture(() => true));
+loadSnapshotFile(emu, ANY_FIXTURE);
+const rom = new Rom("/home/lumen/pokemon/roms/pokeblue.gb");
 const bus = new EventBus("/tmp", "probe-osc-" + Date.now());
 const map = new MapModel(emu, sym, rom);
 const scr = new Screen(emu, sym);

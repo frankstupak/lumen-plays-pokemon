@@ -13,10 +13,10 @@ import { Battle } from "./battle";
 import { StateReader } from "./state";
 import { Items, ITEM } from "./items";
 
-const sym = new SymbolTable("roms/pokeblue.sym");
-const emu = new Emulator("roms/pokeblue.gb");
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
 loadSnapshotFile(emu, "/tmp/in-mart.state.gz");
-const rom = new Rom("roms/pokeblue.gb");
+const rom = new Rom("/home/lumen/pokemon/roms/pokeblue.gb");
 const bus = new EventBus("/tmp", "probe-diag-" + Date.now());
 const map = new MapModel(emu, sym, rom);
 const scr = new Screen(emu, sym);

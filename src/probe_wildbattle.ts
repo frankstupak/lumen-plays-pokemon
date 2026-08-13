@@ -11,10 +11,23 @@ import { Dialog } from "./dialog";
 import { Battle } from "./battle";
 import { StateReader } from "./state";
 
-const sym = new SymbolTable("roms/pokeblue.sym");
-const emu = new Emulator("roms/pokeblue.gb");
-loadSnapshotFile(emu, "checkpoints/auto-msjdams8-t230.state.gz");  // map 51 forest overworld
-const rom = new Rom("roms/pokeblue.gb");
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
+// wq#540: FIXTURE RESOLVED BY PROPERTY, NOT BY NAME. This probe used to load
+// checkpoints/auto-msjdams8-t230.state.gz (map 51, Viridian Forest) (map 51, Viridian Forest). That file
+// rotated off disk, so the probe died with an ENOENT stack trace BEFORE its
+// first assertion -- it emitted no FAIL line at all, and its last known score
+// was a memory. Any state standing in wild-encounter terrain will do here, so
+// ask for that property instead of naming a file.
+import { findFixture, requireFixture } from "./fixtures";
+// Maps whose overworld generates wild encounters, in preference order:
+// Viridian Forest, then the Mt Moon interiors and the routes either side.
+const WILD_MAPS = [51, 59, 60, 61, 15, 14, 13, 12];
+const WILD_FIXTURE = requireFixture(
+  "a checkpoint standing on wild-encounter terrain (map " + WILD_MAPS.join("/") + ")",
+  findFixture(sc => WILD_MAPS.includes(sc.map)));
+loadSnapshotFile(emu, WILD_FIXTURE);
+const rom = new Rom("/home/lumen/pokemon/roms/pokeblue.gb");
 const bus = new EventBus("/tmp", "probe-wild-" + Date.now());
 const map = new MapModel(emu, sym, rom);
 const scr = new Screen(emu, sym);

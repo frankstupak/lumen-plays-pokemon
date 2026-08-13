@@ -8,8 +8,8 @@ import { Dialog } from "./dialog";
 import { EventBus } from "./events";
 import { Battle } from "./battle";
 
-const sym = new SymbolTable("roms/pokeblue.sym");
-const emu = new Emulator("roms/pokeblue.gb");
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
 const scr = new Screen(emu, sym);
 const sync = new Sync(emu, sym);
 const bus = new EventBus("/tmp", "probe-movemenu-" + Date.now());
@@ -24,7 +24,7 @@ const dump = (tag: string) => {
 };
 
 (async () => {
-  loadSnapshotFile(emu, "saves/wild-battle-items.state.gz");
+  loadSnapshotFile(emu, "/home/lumen/pokemon/saves/wild-battle-items.state.gz");
   await emu.framesAsync(120); await sync.settle();
   dump("loaded");
   // advance to main menu (press A until atMainMenu, up to 40)
