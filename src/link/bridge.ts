@@ -52,6 +52,12 @@ export class SerialBridge {
   /** The bridge OWNS its link end (handlers must be ours); callers use
    *  bridge.link.listen(...) or bridge.link.connect(...). */
   readonly link: BgbLink;
+  /** wq#483: set when the peer's socket goes away. A pending transfer can
+   *  never complete after this, so waiters are failed immediately instead of
+   *  each burning the full settled() timeout — measured in vivo: a dropper
+   *  spent 15s PER FRAME after closing, wedging the abort path for minutes. */
+  closed = false;
+  private closeReason = "";
 
   constructor(private core: Core) {
     this.stagedOut = core.memory[SB] & 0xFF;
@@ -60,9 +66,20 @@ export class SerialBridge {
       onSlaveByte: (data: number) => this.deliver(data),
       // Peer is master: serve our staged byte back, deliver theirs to the core.
       onMasterByte: (data: number) => { this.stats.slaveServed++; const out = this.stagedOut; this.deliver(data); return out; },
+      onClose: (why: string) => this.onLinkClosed(why),
     });
     this.installSbWrap();
     this.installScWrap();
+  }
+
+  /** Fail fast on disconnect: no byte can arrive, so release every waiter. */
+  private onLinkClosed(why: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeReason = why;
+    this.inflight = false;
+    const ws = this.waiters; this.waiters = [];
+    for (const w of ws) w();          // resolve; callers check .closed
   }
 
   /** True while a master transfer awaits its remote reply. Do not step the
@@ -73,9 +90,10 @@ export class SerialBridge {
   /** Advance the link timestamp by EMULATED cycles (call per executed step). */
   advance(cycles: number): void { this.link.advance(cycles); }
 
-  /** Resolves when no remote byte is pending (immediately if none). */
+  /** Resolves when no remote byte is pending (immediately if none, or if the
+   *  link is gone — callers check .closed to distinguish). */
   settled(timeoutMs = 5000): Promise<void> {
-    if (!this.inflight) return Promise.resolve();
+    if (!this.inflight || this.closed) return Promise.resolve();
     return new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error("bridge: remote byte still pending after " + timeoutMs + "ms")), timeoutMs);
       this.waiters.push(() => { clearTimeout(t); res(); });

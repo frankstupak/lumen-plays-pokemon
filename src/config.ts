@@ -83,6 +83,13 @@ export const CFG = {
     60: envN("LPP_BUDGET_MAP60", 150),   // Mt Moon B1F (connector)
     61: envN("LPP_BUDGET_MAP61", 450),   // Mt Moon B2F (fossil floor)
   } as Record<number, number>,
+  // wq#483 (M5c): distributed rendezvous timeouts. All env-tunable so a slow
+  // or cross-continent link can be accommodated without a code change.
+  rendezvous: {
+    partnerTimeoutMs: envN("LPP_RDV_PARTNER_MS", 120_000),   // wait for the peer socket (late join)
+    handshakeTimeoutMs: envN("LPP_RDV_HANDSHAKE_MS", 90_000),// ROM connection loop + attendant dialog
+    roomTimeoutMs: envN("LPP_RDV_ROOM_MS", 60_000),          // room-select agreement
+  },
   historyKeepVerbatim: 30,    // recent turn summaries kept verbatim
   historyCompactAt: 80,       // fold-forward compaction threshold
   escalateAfterStallTurns: 12,

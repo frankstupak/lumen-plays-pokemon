@@ -151,3 +151,122 @@ remote; **1 and 3 are now solved** (M5b wq#482, M5a wq#481); 2 is not:
 
 Next tranche: the distributed rendezvous (problem 2), then two full processes
 over Tailscale.
+
+---
+
+# Rendezvous protocol (M5c, wq#483) — spec for the other side
+
+Everything above gets bytes across the wire. This section is the **arrival
+coordination**: how two independent processes, each able to read only its own
+RAM, agree that they are in the same Cable Club room. Implement this and our
+agent will rendezvous with your end.
+
+Reference implementation: `src/link/rendezvous.ts` (state machine),
+`src/link/rdv_side.ts` (one side as its own OS process).
+
+## Phases
+
+```
+IDLE -> WALK_TO_ATTENDANT -> AWAIT_PARTNER -> HANDSHAKE -> ROOM_SELECT
+     -> IN_ROOM   (success)
+     -> ABORTED   (with a reason, at any point)
+```
+
+Every transition is driven by an observation of **your own** side — your RAM,
+plus link liveness and the bytes that arrived. No phase requires reading the
+partner's memory. That is the whole point: the in-process version parked one
+side with `if (a.menu || b.menu)` over both cores, which a remote peer cannot do.
+
+### 1. WALK_TO_ATTENDANT (before any link traffic)
+
+Stand on the tile below the Cable Club attendant and face UP. Do **not** start
+the dialog yet.
+
+### 2. AWAIT_PARTNER
+
+Wait for the TCP socket to be up **before advancing the ROM**. This ordering is
+load-bearing: the attendant dialog is where the ROM probes the cable, so
+starting it with no peer attached burns the probe window. A partner arriving
+late is then simply a longer wait — verified with a 30 s stagger (the early
+side waited 35.9 s and still completed).
+
+Timeout: `LPP_RDV_PARTNER_MS` (default 120 000 ms) → `ABORTED`.
+
+### 3. HANDSHAKE
+
+Drive **only your own** attendant dialog (tap A) until your own screen shows the
+room-select menu. The ROM's connection loop does the rest. Two bytes of local
+RAM tell you where you are:
+
+| Address | Meaning |
+|---|---|
+| `$FFAA` | role, set by the ROM's connection loop: **2 = master** (drives the clock), **1 = slave**, `$FF` = not yet negotiated |
+| `$D12B` | `wLinkState` |
+
+Timeout: `LPP_RDV_HANDSHAKE_MS` (default 90 000 ms) → `ABORTED`.
+
+### 4. ROOM_SELECT and the yield rule
+
+Selections are the ROM's own encoding (`main_menu.asm`): `$D0 + menu item`, so
+`$D0` = TRADE CENTER, `$D1` = COLOSSEUM, `$D2` = CANCEL. The master's exchange
+loop spins until it receives a byte whose high nybble is `$D`.
+
+If the two sides want **different** rooms, they must not both politely yield —
+that deadlocks. The rule is deterministic and needs **no extra protocol
+round-trip**:
+
+> **The SLAVE yields to the MASTER's room.**
+
+Role is not a preference; it is assigned by the ROM's own handshake and is
+readable at `$FFAA` on both ends, so both sides compute the *same* winner from
+purely local RAM. A tie is impossible — the handshake assigns exactly one
+master. (`resolveRoom()` in `rendezvous.ts`.)
+
+Landing in the peer's room is **success, not failure**: if you time out waiting
+for your own room but find yourself on the other room's map, you were the side
+that yielded. Room maps: TRADE CENTER = `$EF` (239), COLOSSEUM = `$F0` (240).
+
+Timeout: `LPP_RDV_ROOM_MS` (default 60 000 ms).
+
+### 5. IN_ROOM — and the linger obligation
+
+**Whoever reaches the room first must keep its core running and its socket
+open.** The partner is still exchanging selection bytes and needs a live peer to
+answer. Measured in vivo: an implementation that exits on arrival drops the
+socket and aborts the other side, which then reports "peer disconnected during
+room select". A real session continues straight into the trade or battle here,
+so this is the natural steady state — but a *test harness* must linger
+deliberately.
+
+## Disconnect handling
+
+A dropped socket must fail every pending transfer **immediately**. Our
+`SerialBridge` sets a `closed` flag from the link's `onClose` and releases all
+waiters (`bridge.ts`, wq#483). Without that, each pending byte burns its full
+settle timeout: measured, a dropping side spent 15 s *per frame* after closing,
+wedging the abort path for minutes.
+
+Once closed, stop stepping the core into the dead link, walk any open dialog to
+a close, and report `ABORTED` with a reason. Do not kill the core mid-transfer.
+Verified: both the victim and the dropper abort in under 7 s and leave their
+cores on a sane map (`$3A`, the Cable Club), never mid-transfer.
+
+## Timeouts are configuration, not constants
+
+`CFG.rendezvous` — all env-overridable so a cross-continent link is a config
+change, not a code change:
+
+    LPP_RDV_PARTNER_MS    120000    wait for the peer socket
+    LPP_RDV_HANDSHAKE_MS   90000    ROM connection loop + attendant dialog
+    LPP_RDV_ROOM_MS        60000    room-select agreement
+
+## Verified (wq#483)
+
+`npx tsx src/link/probe_rendezvous.ts` — **12/12**, three scenarios run as
+**separate OS processes** with no shared memory:
+
+1. **Happy path** — both sides reach map 239, exactly one master (roles 1/2),
+   both agree on room `$D0`.
+2. **Late join (30 s)** — early side waits 35.9 s, both still reach the room.
+3. **Mid-handshake disconnect** — both sides `ABORTED` with a reason in
+   under 7 s, cores left on map `$3A`, both processes exited cleanly.

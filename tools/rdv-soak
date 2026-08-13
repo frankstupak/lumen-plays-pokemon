@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# wq#483 soak harness — the repeat-run rig my 03:36Z board NOTE said this needed
+# before anyone calls the rendezvous stable. Runs the happy-path scenario N
+# times and reports the pass rate plus a per-run failure mode, so an
+# intermittent race shows up as a rate rather than a lucky green.
+#
+# Usage: tools/rdv-soak [runs] [base_port]
+#   RDV_SOAK_DELAY=30000  also soak the late-join variant
+set -uo pipefail
+[ "$(hostname)" = lumen ] || exit 9
+cd /home/lumen/pokemon || exit 1
+
+RUNS=${1:-8}
+BASE=${2:-9500}
+DELAY=${RDV_SOAK_DELAY:-0}
+OUT=/tmp/rdv-soak
+mkdir -p "$OUT"
+pass=0; fail=0
+echo "soak: $RUNS runs, base port $BASE, late-join delay ${DELAY}ms, load: $(cut -d' ' -f1-3 /proc/loadavg)"
+
+for i in $(seq 1 "$RUNS"); do
+  port=$((BASE + i))
+  RDV_ROLE=listen RDV_PORT=$port RDV_TAG=A timeout 240 npx tsx src/link/rdv_side.ts >"$OUT/a$i.log" 2>&1 &
+  apid=$!
+  [ "$DELAY" = 0 ] && sleep 3
+  RDV_ROLE=connect RDV_PORT=$port RDV_TAG=B RDV_DELAY_MS=$DELAY timeout 240 npx tsx src/link/rdv_side.ts >"$OUT/b$i.log" 2>&1 &
+  bpid=$!
+  wait $apid; ca=$?
+  wait $bpid; cb=$?
+  ma=$(grep -o '"map":[0-9]*' "$OUT/a$i.log" | tail -1 | cut -d: -f2)
+  mb=$(grep -o '"map":[0-9]*' "$OUT/b$i.log" | tail -1 | cut -d: -f2)
+  if [ "$ca" = 0 ] && [ "$cb" = 0 ] && [ "${ma:-0}" = 239 ] && [ "${mb:-0}" = 239 ]; then
+    pass=$((pass+1)); echo "run $i: PASS (maps $ma/$mb)"
+  else
+    fail=$((fail+1))
+    ra=$(grep -o '"reason":"[^"]*"' "$OUT/a$i.log" | tail -1)
+    rb=$(grep -o '"reason":"[^"]*"' "$OUT/b$i.log" | tail -1)
+    echo "run $i: FAIL exits=$ca/$cb maps=${ma:-?}/${mb:-?} A:${ra:-none} B:${rb:-none}"
+  fi
+done
+echo "SOAK RESULT: $pass pass / $fail fail out of $RUNS (load now: $(cut -d' ' -f1-3 /proc/loadavg))"
+[ "$fail" = 0 ]
