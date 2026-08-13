@@ -6,7 +6,7 @@ import * as path from "path";
 import { corridorPhase, phaseWarnings, ROUTE4_EAST_RANK, ROUTE4_WEST_RANK,
          F_SUPER_NERD, F_DOME, F_HELIX, type CorridorPhase } from "./phase";
 import { SPLIT_MAPS, progressRank } from "./resume";
-import { haveSamples } from "./fixtures";
+import { haveSamples, CKPTS, SAVES } from "./fixtures";
 import type { GameState } from "./state";
 
 let PASS = 0, FAIL = 0;
@@ -88,7 +88,7 @@ ok("guidance is no longer pinned once at boot",
    "must be called inside the turn loop");
 
 console.log("\n-- the REAL checkpoint set (honest about what it can prove) --");
-const dirs = ["checkpoints"];
+const dirs = [CKPTS, SAVES];
 const found: { file: string; x: number; y: number }[] = [];
 const walk = (d: string) => {
   for (const e of fs.readdirSync(d, { withFileTypes: true })) {
@@ -104,20 +104,34 @@ const walk = (d: string) => {
 };
 for (const d of dirs) if (fs.existsSync(d)) walk(d);
 console.log(`   ${found.length} map15 checkpoints on disk; x values: ${[...new Set(found.map(f => f.x))].join(",")}`);
-// wq#540: THIS IS THE EMPTY-CORPUS SHAPE, AND IT IS THE DANGEROUS ONE.
-// `found.every(...)` is TRUE on an empty array, so once the map15 checkpoints
-// rotated off disk this assertion became a FREE PASS that checked nothing —
-// it only reads as a failure here because of the `found.length > 0` conjunct
-// somebody had the sense to add. Most assertions of this shape do not have
-// one. haveSamples() makes the distinction explicit in the OUTPUT: a reader
-// can now tell "checked N samples, all passed" from "there was nothing to
-// check", which was impossible before.
+// wq#540: THIS ASSERTION'S FAILURE WAS MISDIAGNOSED FOR HALF A DAY, INCLUDING
+// BY ME, AND THE CORRECTION IS WORTH MORE THAN THE FIX.
+//
+// It was reported (wq#535 08:23Z, and repeated in my own wq#534 notes) as an
+// EMPTY-CORPUS failure: "these checkpoints rotated off disk once wq#518 stopped
+// resuming there, so the assertion runs over an empty set and fails forever."
+// THAT IS WRONG. The map15 checkpoints are still on disk — three of them. The
+// probe simply could not SEE them, because `dirs` was `["checkpoints"]`,
+// relative to the CWD. Run from the primary tree it found 3 and passed; run
+// from any `lumen-pr start --worktree` checkout it found 0 and failed. Every
+// agent who saw it red was working in a worktree, and every agent who spot-
+// checked it on main saw it green, which is exactly how the wrong explanation
+// survived so long.
+//
+// So this is R2 (tree-relative corpus path), not R3 (rotation) — the SAME
+// defect wq#520 found in verify_489.py, in a second file. Absolute paths from
+// fixtures.ts fix it.
+//
+// The haveSamples() guard below stays anyway: it is now the honest reporter of
+// a real empty set rather than the explanation for a phantom one. `[].every(p)`
+// is TRUE, so without it a genuinely emptied corpus would read as a pass.
 const haveMap15 = haveSamples("map15 checkpoints for phase classification", found.length);
 ok("every real map15 checkpoint classifies as MT_MOON_TRANSIT",
    haveMap15 && found.every(f => corridorPhase(st(15, f.x, f.y)) === "MT_MOON_TRANSIT"),
    haveMap15 ? `${found.length} samples` :
-     `VACUOUS: 0 samples — corpus rot, not a code defect. These states stopped ` +
-     `being written once wq#518 stopped resuming there.`);
+     `VACUOUS: 0 samples — nothing was checked, so this is not a pass. If the ` +
+     `corpus still contains map15 states, suspect the path this probe scans ` +
+     `before you suspect rotation.`);
 // Stated plainly rather than dressed up as validation: every sample is west,
 // so this set CANNOT discriminate the threshold's value. Any boundary from
 // 12 to the map width classifies all of them identically. The boundary's
