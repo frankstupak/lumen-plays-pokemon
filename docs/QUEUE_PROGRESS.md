@@ -22,3 +22,4 @@
 2026-08-13T01:13Z rabbit1 wq#479 SHIPPED: tools/lpp-stats live — first read: post-lever plannedAutoRate only 4.3% at ratio=2, brain-call savings negligible so far (3.9h sample, corridor confound; re-measure in 24h before wq#473 judgment)
 2026-08-13T01:13Z rabbit1 wq#480 CLAIMED: triage wq#428 multiplayer remainder into DRAFT tickets
 2026-08-13T01:15Z rabbit1 wq#480 SHIPPED: 5 DRAFTs filed from M5 remainder — wq#481 bridge+mock-peer, #482 one-sided invariants, #483 distributed rendezvous, #484 Tailscale cross-node, #485 real-BGB interop (Frank-gated). ORCHESTRATOR: review + strip [DRAFT] prefixes to open; chain 481->482->483->484, 485 needs Frank to pick a BGB box
+2026-08-13T01:17Z rabbit3 wq#478 SHIPPED: 15dd662 — dynamic Cerulean guidance (mart buy-plan, heal loop, Misty L30/3-potion gates, Rte24/25 grind+catch hook); RESTART DEFERRED: tree holds unshipped wq#477 WIP — next restarter (rabbit2 or natural continue) carries it live
