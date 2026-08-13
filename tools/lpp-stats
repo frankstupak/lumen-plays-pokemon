@@ -12,6 +12,27 @@
 import json, glob, gzip, argparse, os
 from datetime import datetime, timezone
 
+# wq#515: the frontier number is printed here too, because this is the tool
+# people actually run when they want to know how the campaign is going. The
+# 5-day freeze was visible in this CLI's own output as "storyScore 6->6" in
+# both columns and everyone read past it. A flat efficiency metric is not
+# progress; the frontier line says so in words. Imported, never reimplemented.
+import sys
+# Resolved defensively: verify_489.py loads this file with exec(compile(...)),
+# a context where __file__ does not exist. rabbit8's original line raised
+# NameError there and silently broke the wq#489 regression suite while the
+# sentinel itself kept working as a script -- a test-only failure is exactly
+# the kind that goes unnoticed.
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
+sys.path.insert(0, _HERE)
+try:
+    import lpp_frontier
+except Exception:
+    lpp_frontier = None
+
 BASE = "/home/lumen/pokemon"
 # Agent coordination board — an operations artifact, kept outside this repo.
 BOARD = os.environ.get(
@@ -118,6 +139,46 @@ def fmt(a, label):
         out += f", storyScore {a['storySpan'][0]}->{a['storySpan'][1]}"
     return out
 
+def _safe_json(fn):
+    if lpp_frontier is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def _safe_line(fn, label):
+    """A monitor that silently stops monitoring is the wq#515 failure mode.
+    Unavailable is printed, never swallowed."""
+    if lpp_frontier is None:
+        return f"{label}: unavailable (lpp_frontier import failed)"
+    try:
+        return fn()
+    except Exception as e:
+        return f"{label}: unavailable ({type(e).__name__}: {e})"
+
+
+def restart_line():
+    """Restart-loop status (wq#515 absorbed scope)."""
+    return _safe_line(lambda: lpp_frontier.restart_line(lpp_frontier.restart_loop()), "RESTARTS")
+
+
+def drift_line():
+    """Running vs tree vs origin (wq#515). Three shas, so nobody reports one."""
+    return _safe_line(lambda: lpp_frontier.drift_line(lpp_frontier.deploy_drift()), "DEPLOY")
+
+
+def frontier_line():
+    """One-line cross-run frontier (wq#515), or an honest note if unavailable."""
+    if lpp_frontier is None:
+        return "FRONTIER: unavailable (lpp_frontier import failed)"
+    try:
+        return lpp_frontier.one_line(lpp_frontier.compute())
+    except Exception as e:
+        return f"FRONTIER: unavailable ({type(e).__name__}: {e})"
+
+
 def main():
     ap = argparse.ArgumentParser(description="LPP turn-economics stats (read-only)")
     ap.add_argument("--lever-ts", default=LEVER_TS_DEFAULT,
@@ -146,12 +207,24 @@ def main():
         # "current" = the newest run summary on disk. metrics.flush("periodic")
         # rewrites it every 60s, so this tracks the live run within a minute.
         cur = rows[-1] if rows else None
+        # wq#515: additive key. The kiosk panel (wq#503) reads current/before/
+        # after; adding "frontier" cannot disturb those, and it lets the tablet
+        # show the same frozen-frontier number the board and ntfy see.
+        fr = None
+        if lpp_frontier is not None:
+            try:
+                fr = lpp_frontier.compute()
+            except Exception:
+                fr = None
         print(json.dumps({
             "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "leverTs": args.lever_ts,
             "current": cur,
             "before": aggregate(before),
             "after": aggregate(after),
+            "frontier": fr,
+            "restartLoop": _safe_json(lambda: lpp_frontier.restart_loop()),
+            "deployDrift": _safe_json(lambda: lpp_frontier.deploy_drift()),
         }))
         return
 
@@ -163,6 +236,11 @@ def main():
                   + (f" story={r['story'][0]}->{r['story'][1]}" if r.get("story") else ""))
         print()
     a_before, a_after = aggregate(before), aggregate(after)
+    # wq#515: FIRST, above the efficiency numbers. Turns/h and tokens/h are how
+    # fast the wheels turn; the frontier is whether the car moved.
+    print(frontier_line())
+    print(restart_line())
+    print(drift_line())
     print(fmt(a_before, f"BEFORE lever ({args.lever_ts})"))
     print(fmt(a_after, f"AFTER  lever ({args.lever_ts})"))
     if a_before and a_after and a_before["brainPerH"] > 0:
@@ -172,7 +250,8 @@ def main():
 
     if args.board:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-        line = (f"{now} lpp-stats -- NOTE: {fmt(a_after, 'post-lever')} || "
+        line = (f"{now} lpp-stats -- NOTE: {frontier_line()} || "
+                f"{fmt(a_after, 'post-lever')} || "
                 f"{fmt(a_before, 'pre-lever')}\n")
         with open(BOARD, "a") as f:
             f.write(line)
