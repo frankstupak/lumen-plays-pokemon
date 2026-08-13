@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+# lpp-stats — read-only turn-economics CLI for Lumen Plays Pokemon (wq#479).
+# Sources: events/run-summary-*.json (authoritative per-run counters, one file
+# per runTag, overwritten on each metrics flush) + events/live-agent-*.jsonl[.gz]
+# (optional enrichment: state_read counts, storyScore trajectory).
+# Definitions:
+#   brainCalls  = turns - plannedAutoTurns  (AUTO/no-ACT turns still burned a
+#                 brain call; planned turns (wq#472) are the only brain-free ones)
+#   rates       = per wall-hour, wall time from the run's own wallMs
+# Before/after comparison keys on LPP_AUTO_TURN_RATIO=2 enable time
+# (2026-08-12T21:17Z per QUEUE_PROGRESS board; override with --lever-ts).
+import json, glob, gzip, argparse, os
+from datetime import datetime, timezone
+
+BASE = "/home/lumen/pokemon"
+LEVER_TS_DEFAULT = "2026-08-12T21:16:00Z"
+
+def parse_ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+def load_runs():
+    runs = []
+    for p in sorted(glob.glob(f"{BASE}/events/run-summary-*.json")):
+        try:
+            runs.append(json.load(open(p)))
+        except Exception:
+            continue
+    runs.sort(key=lambda j: j.get("startedAt", ""))
+    return runs
+
+def enrich_from_jsonl(run):
+    """state_read count + storyScore first/last, from the run's event log if on disk."""
+    tag = run.get("runTag", "")
+    for path, op in ((f"{BASE}/events/{tag}.jsonl", open),
+                     (f"{BASE}/events/{tag}.jsonl.gz", lambda p: gzip.open(p, "rt"))):
+        if not os.path.exists(path):
+            continue
+        n, first, last = 0, None, None
+        try:
+            with op(path) as f:
+                for line in f:
+                    if '"kind":"state_read"' in line:
+                        n += 1
+                    i = line.find('"storyScore":')   # any event kind carries it
+                    if i >= 0:
+                        v = ""
+                        for c in line[i + 13:]:
+                            if c.isdigit(): v += c
+                            else: break
+                        if v:
+                            last = int(v)
+                            if first is None: first = int(v)
+        except Exception:
+            return None
+        return {"stateReads": n, "storyFirst": first, "storyLast": last}
+    return None
+
+def per_run(run, enrich):
+    h = max(run.get("wallMs", 0) / 3_600_000, 1e-9)
+    turns = run.get("turns", 0)
+    pat = run.get("plannedAutoTurns", 0) or 0
+    brain = turns - pat
+    row = {
+        "runTag": run.get("runTag", "?"),
+        "startedAt": run.get("startedAt", "?"),
+        "hours": h, "turns": turns,
+        "turnsPerH": turns / h, "brainPerH": brain / h,
+        "plannedAutoTurns": pat,
+        "plannedAutoRate": (run.get("derived") or {}).get("plannedAutoRate"),
+        "whiteouts": run.get("whiteouts", 0),
+        "badges": run.get("badges", 0),
+        "tokensTotal": (run.get("derived") or {}).get("tokensTotal", 0),
+    }
+    e = enrich_from_jsonl(run) if enrich else None
+    if e:
+        row["stateReadsPerTurn"] = (e["stateReads"] / turns) if turns else None
+        row["story"] = (e["storyFirst"], e["storyLast"])
+    return row
+
+def aggregate(rows):
+    """Wall-time-weighted aggregate over runs with turns>0."""
+    live = [r for r in rows if r["turns"] > 0]
+    if not live:
+        return None
+    H = sum(r["hours"] for r in live)
+    T = sum(r["turns"] for r in live)
+    P = sum(r["plannedAutoTurns"] for r in live)
+    agg = {
+        "runs": len(live), "skippedEmpty": len(rows) - len(live),
+        "hours": H, "turns": T,
+        "turnsPerH": T / H, "brainPerH": (T - P) / H,
+        "plannedAutoRate": P / T if T else None,
+        "whiteouts": sum(r["whiteouts"] for r in live),
+        "tokensTotal": sum(r["tokensTotal"] for r in live),
+    }
+    srt = [r for r in live if r.get("stateReadsPerTurn") is not None]
+    if srt:
+        agg["stateReadsPerTurn"] = sum(r["stateReadsPerTurn"] * r["turns"] for r in srt) / sum(r["turns"] for r in srt)
+    stories = [r["story"] for r in live if r.get("story") and r["story"][1] is not None]
+    if stories:
+        agg["storySpan"] = (min(s[0] for s in stories if s[0] is not None), max(s[1] for s in stories))
+    return agg
+
+def fmt(a, label):
+    if not a:
+        return f"{label}: no runs with turns"
+    out = (f"{label}: {a['runs']} runs ({a['skippedEmpty']} empty skipped), "
+           f"{a['hours']:.1f}h, {a['turns']} turns | {a['turnsPerH']:.0f} turns/h, "
+           f"{a['brainPerH']:.0f} brain calls/h, plannedAutoRate "
+           f"{(a['plannedAutoRate'] or 0)*100:.1f}%, whiteouts {a['whiteouts']}, "
+           f"tokens {a['tokensTotal']/1e6:.2f}M")
+    if a.get("stateReadsPerTurn") is not None:
+        out += f", state_reads/turn {a['stateReadsPerTurn']:.2f}"
+    if a.get("storySpan"):
+        out += f", storyScore {a['storySpan'][0]}->{a['storySpan'][1]}"
+    return out
+
+def main():
+    ap = argparse.ArgumentParser(description="LPP turn-economics stats (read-only)")
+    ap.add_argument("--lever-ts", default=LEVER_TS_DEFAULT,
+                    help="LPP_AUTO_TURN_RATIO enable time for before/after split")
+    ap.add_argument("--window", type=int, default=0, help="only the last N runs (0=all)")
+    ap.add_argument("--runs", action="store_true", help="print per-run rows")
+    ap.add_argument("--no-enrich", action="store_true", help="skip jsonl scan (faster)")
+    ap.add_argument("--board", action="store_true",
+                    help="append one-line summary to docs/QUEUE_PROGRESS.md (append-only)")
+    args = ap.parse_args()
+
+    runs = load_runs()
+    if args.window:
+        runs = runs[-args.window:]
+    rows = [per_run(r, not args.no_enrich) for r in runs]
+    lever = parse_ts(args.lever_ts)
+    before = [r for r in rows if r["startedAt"] != "?" and parse_ts(r["startedAt"]) < lever]
+    after = [r for r in rows if r["startedAt"] != "?" and parse_ts(r["startedAt"]) >= lever]
+
+    if args.runs:
+        for r in rows:
+            print(f"{r['startedAt']}  {r['runTag']:<28} {r['hours']:6.2f}h "
+                  f"{r['turns']:5d}t {r['turnsPerH']:6.0f}t/h pa={r['plannedAutoTurns']:<4d} "
+                  f"w={r['whiteouts']} b={r['badges']}"
+                  + (f" story={r['story'][0]}->{r['story'][1]}" if r.get("story") else ""))
+        print()
+    a_before, a_after = aggregate(before), aggregate(after)
+    print(fmt(a_before, f"BEFORE lever ({args.lever_ts})"))
+    print(fmt(a_after, f"AFTER  lever ({args.lever_ts})"))
+    if a_before and a_after and a_before["brainPerH"] > 0:
+        d = (a_after["brainPerH"] / a_before["brainPerH"] - 1) * 100
+        t = (a_after["turnsPerH"] / a_before["turnsPerH"] - 1) * 100
+        print(f"DELTA: turns/h {t:+.0f}%, brain calls/h {d:+.0f}%")
+
+    if args.board:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        line = (f"{now} lpp-stats -- NOTE: {fmt(a_after, 'post-lever')} || "
+                f"{fmt(a_before, 'pre-lever')}\n")
+        with open(f"{BASE}/docs/QUEUE_PROGRESS.md", "a") as f:
+            f.write(line)
+        print(f"[board] appended: {line.strip()}")
+
+if __name__ == "__main__":
+    main()
