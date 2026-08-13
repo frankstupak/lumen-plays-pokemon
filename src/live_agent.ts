@@ -18,6 +18,7 @@ import { Agent } from "./agent";
 import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
 import { Notepad } from "./notepad";   // wq#486
+import { makeBorrowGuard } from "./borrow_guard";   // wq#488
 import { ceruleanGuidance } from "./guidance";   // wq#478
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
@@ -218,6 +219,11 @@ function corridorNotepad(badgeCount: number): string {
   // brain's notes survive; the guidance channel is re-derived each boot.
   const pad = new Notepad();
   pad.bind(`${RUNTIME}/notepad.txt`);
+  // wq#488: guard every brain note write against borrowed content (guidance
+  // markers, tool-call syntax, code, verbatim guidance copies). Checks against
+  // the LIVE guidance text so a >=15-word parrot of the current corridor/stage
+  // pack is caught. Rejections feed back to the brain + emit rule_violation.
+  pad.sanitizer = makeBorrowGuard({ guidanceText: () => pad.renderGuidance(), bus });
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
