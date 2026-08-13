@@ -27,11 +27,12 @@ import { readLinkState } from "./linkstate";
 import { SerialBus } from "./serialbus";
 import { installSerialHook } from "./hook";
 import { runCycles } from "./lockstep";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function stack(tag: string) {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym"); const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `m3b-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym")); const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `m3b-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom); const scr = new Screen(emu, sym); const sync = new Sync(emu, sym);
   const nav = new Navigator(emu, sym, map, ebus, sync); const dlg = new Dialog(emu, scr, sync, ebus, sym);
   return { emu, nav, dlg, scr, map, tag };
@@ -80,8 +81,8 @@ function microStep(totalCycles: number, ka?: number, kb?: number) {
 }
 
 (async () => {
-  loadSnapshotFile(A.emu, "checkpoints/center-m2b.state.gz");
-  loadSnapshotFile(B.emu, "checkpoints/center-m2b.state.gz");
+  loadSnapshotFile(A.emu, ckptPath("center-m2b.state.gz"));
+  loadSnapshotFile(B.emu, ckptPath("center-m2b.state.gz"));
   A.emu.frames(6); B.emu.frames(6);
   await A.nav.goto(11, 3); await B.nav.goto(11, 3);
   step(20, KEYS.UP, KEYS.UP); step(20);

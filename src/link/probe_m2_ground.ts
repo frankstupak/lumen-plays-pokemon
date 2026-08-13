@@ -12,17 +12,18 @@ import { readLinkState, isLinkIdle, LINK_ADDR } from "./linkstate";
 import { SerialBus } from "./serialbus";
 import { installSerialHook } from "./hook";
 import { readdirSync } from "fs";
+import { repoPath, romPath } from "../fixtures";
 
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
 
-const CKPTS = "checkpoints";
+const CKPTS = repoPath("checkpoints");
 // pick any recent live checkpoint (overworld, mid-run)
 const snaps = readdirSync(CKPTS).filter(f => f.endsWith(".state.gz")).sort();
 const snap = snaps[snaps.length - 1];
 if (!snap) { console.log("no checkpoint found — skipping (need a live .state.gz)"); process.exit(0); }
 
-const emu = new Emulator("roms/pokeblue.gb");
+const emu = new Emulator(romPath("pokeblue.gb"));
 loadSnapshotFile(emu, `${CKPTS}/${snap}`);
 emu.frames(4);
 const mem = emu.mem();

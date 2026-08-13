@@ -16,12 +16,13 @@ import { Screen } from "../screen";
 import { Sync } from "../sync";
 import { writeIdentity } from "./identity";
 import { LinkBattleSession, BattleSide } from "./battle";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function side(tag: string): BattleSide {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym");
-  const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `rec-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym"));
+  const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `rec-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);
@@ -31,7 +32,7 @@ function side(tag: string): BattleSide {
 
 (async () => {
   const A = side("A"), B = side("B");
-  const snap = process.env.SNAP ?? "checkpoints/center-m2b.state.gz";
+  const snap = process.env.SNAP ?? ckptPath("center-m2b.state.gz");
   loadSnapshotFile(A.emu, snap); loadSnapshotFile(B.emu, snap);
   A.emu.frames(6); B.emu.frames(6);
   writeIdentity(B.emu.mem(), { playerName: "BOB", playerID: 0x1122, mon1Level: 25, mon1Nick: "BOBMON" });

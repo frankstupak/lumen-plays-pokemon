@@ -98,3 +98,61 @@ export function haveSamples(label: string, n: number, min = 1): boolean {
               `Any assertion over this set is VACUOUS, not passing.`);
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// wq#543: REPO-ROOT RESOLUTION FOR CAMPAIGN DATA (not just probe fixtures).
+//
+// WHY THIS IS A SECOND HELPER AND NOT JUST `REPO`. wq#540 exported REPO/CKPTS/
+// SAVES as consts, which is right for probes: they are read at import time and
+// nobody retargets them. The link/ drivers need the same anchor but they also
+// need it to be TESTABLE — a guard that cannot point the resolver somewhere
+// harmless can only verify the real directory by writing to it, and writing to
+// the real events/ is not free (see the retention note below). So these are
+// FUNCTIONS reading LPP_REPO at call time, with REPO as the default. Nothing
+// sets LPP_REPO in production; probe_linkpaths543.ts sets it, and that is the
+// point.
+//
+// WHY CWD-RELATIVE WAS WRONG IN THE FIRST PLACE, stated by consequence rather
+// than by principle, because the two halves of this class fail DIFFERENTLY and
+// only one of them is loud:
+//   checkpoints/ saves/ events/ runtime/ are GITIGNORED, so a `--worktree`
+//   checkout does not have them at all.
+//     - `checkpoints/foo.state.gz` -> ENOENT. Loud, immediate, honest.
+//     - `new EventBus("events", ...)` -> mkdirSync(recursive) CREATES an empty
+//       events/ inside the worktree and returns happily. The run emits into a
+//       directory nobody reads, and any later scan of it is the wq#540 R3
+//       empty-corpus shape: `[].every(p)` is true, so it goes GREEN.
+//   roms/ IS tracked, so it resolves from a worktree root and only breaks from
+//   an arbitrary CWD. Same class, narrower blast radius; anchored here anyway
+//   rather than left as the one exception a future reader has to re-derive.
+//
+// SAFETY NOTE FOR ANYONE POINTING A BUS AT THE REAL events/: EventBus's
+// constructor calls retain(), which UNLINKS every .jsonl beyond the newest
+// LPP_EVENTS_KEEP_FILES (default 30). events/ held 31 logs when this was
+// written, so merely CONSTRUCTING a bus there deletes the oldest one. That is
+// why the guard for this ticket resolves and asserts paths, and only ever
+// constructs a bus under a temporary LPP_REPO.
+
+/** The repository root that campaign data hangs off. LPP_REPO overrides it for
+ *  tests; production never sets it. */
+export function repoRoot(): string {
+  return process.env.LPP_REPO || REPO;
+}
+
+/** Join segments onto the repo root. Always absolute, never CWD-dependent. */
+export function repoPath(...segs: string[]): string {
+  const root = repoRoot().replace(/\/+$/, "");
+  const rest = segs.join("/").replace(/^\/+/, "").replace(/\/+$/, "");
+  return rest ? `${root}/${rest}` : root;
+}
+
+/** The one events directory the kiosk, metrics and replay actually read. */
+export function eventsDir(): string { return repoPath("events"); }
+
+/** A ROM or symbol file. Tracked, but anchored so drivers run from any CWD. */
+export function romPath(file: string): string { return repoPath("roms", file); }
+
+/** A checkpoint by NAME. Named snapshots (seed-*, center-*) are inputs a driver
+ *  legitimately knows; rotating campaign checkpoints must still go through
+ *  findFixture(), which resolves BY PROPERTY. */
+export function ckptPath(file: string): string { return repoPath("checkpoints", file); }

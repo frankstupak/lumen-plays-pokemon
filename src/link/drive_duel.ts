@@ -20,12 +20,13 @@ import { writeIdentity } from "./identity";
 import { LinkBattleSession, BattleSide, BattleView } from "./battle";
 import { DuelBrain, duelProfile } from "./duel";
 import { DuelStream } from "./duel_stream";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function side(tag: string): BattleSide {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym");
-  const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `duel-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym"));
+  const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `duel-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);
@@ -34,14 +35,14 @@ function side(tag: string): BattleSide {
 }
 
 (async () => {
-  const snap = process.env.SNAP ?? "checkpoints/center-m2b.state.gz";
+  const snap = process.env.SNAP ?? ckptPath("center-m2b.state.gz");
   const A = side("A"), B = side("B");
   loadSnapshotFile(A.emu, snap); loadSnapshotFile(B.emu, snap);
   A.emu.frames(6); B.emu.frames(6);
   // Trainer identity only — never level (see M3_BATTLE.md, fixture note).
   writeIdentity(B.emu.mem(), { playerName: "BOB", playerID: 0x1122, mon1Nick: "BOBMON" });
 
-  const bus = new EventBus("events", `duel-brains-${Date.now()}`);
+  const bus = new EventBus(eventsDir(), `duel-brains-${Date.now()}`);
   const profA = duelProfile("A", "cerebras-oss-120b");
   const profB = duelProfile("B", "deepseek-v4-flash");
   const brainA = new DuelBrain("A", profA, bus, console.log);

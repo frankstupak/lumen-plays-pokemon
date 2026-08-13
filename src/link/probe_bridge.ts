@@ -14,6 +14,7 @@ import { Sync } from "../sync";
 import { Dialog } from "../dialog";
 import { SerialBridge } from "./bridge";
 import { MockPeer, MockPeerOptions } from "./mock_peer";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, note = "") => {
@@ -24,9 +25,9 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const hex = (n: number) => n.toString(16);
 
 function stack() {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym"); const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `m5a-probe-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym")); const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `m5a-probe-${Date.now()}`);
   const map = new MapModel(emu, sym, rom); const scr = new Screen(emu, sym); const sync = new Sync(emu, sym);
   const nav = new Navigator(emu, sym, map, ebus, sync); const dlg = new Dialog(emu, scr, sync, ebus, sym);
   return { emu, nav, dlg, scr };
@@ -42,7 +43,7 @@ interface RunResult {
 
 async function run(port: number, mockOpts: MockPeerOptions): Promise<{ r: RunResult; mock: MockPeer; bridge: SerialBridge }> {
   const S = stack();
-  loadSnapshotFile(S.emu, "checkpoints/center-m2b.state.gz");
+  loadSnapshotFile(S.emu, ckptPath("center-m2b.state.gz"));
   S.emu.frames(6);
   await S.nav.goto(11, 3);
 

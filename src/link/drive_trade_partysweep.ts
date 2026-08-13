@@ -24,12 +24,13 @@ import { Sync } from "../sync";
 import { writeIdentity } from "./identity";
 import { addPartyMonClone, readParty, describeParty, partyCount } from "./party";
 import { TradeSession, TradeSide } from "./trade";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function side(tag: string): TradeSide {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym");
-  const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `m3ps-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym"));
+  const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `m3ps-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);
@@ -80,7 +81,7 @@ async function runSize(size: number, snap: string): Promise<Row> {
 }
 
 (async () => {
-  const snap = process.env.SNAP ?? "checkpoints/center-m2b.state.gz";
+  const snap = process.env.SNAP ?? ckptPath("center-m2b.state.gz");
   const sizes = (process.env.SIZES ?? "1,2,3,4,5,6").split(",").map(Number);
   const rows: Row[] = [];
   for (const s of sizes) rows.push(await runSize(s, snap));

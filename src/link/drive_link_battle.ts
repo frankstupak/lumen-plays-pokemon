@@ -16,12 +16,13 @@ import { Sync } from "../sync";
 import { writeIdentity } from "./identity";
 import { readParty, describeParty } from "./party";
 import { LinkBattleSession, BattleSide } from "./battle";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function side(tag: string): BattleSide {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym");
-  const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `m3b-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym"));
+  const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `m3b-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);
@@ -30,7 +31,7 @@ function side(tag: string): BattleSide {
 }
 
 (async () => {
-  const snap = process.env.SNAP ?? "checkpoints/center-m2b.state.gz";
+  const snap = process.env.SNAP ?? ckptPath("center-m2b.state.gz");
   const A = side("A"), B = side("B");
   loadSnapshotFile(A.emu, snap); loadSnapshotFile(B.emu, snap);
   A.emu.frames(6); B.emu.frames(6);

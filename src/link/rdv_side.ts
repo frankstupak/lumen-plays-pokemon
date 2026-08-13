@@ -16,6 +16,7 @@ import { SerialBridge } from "./bridge";
 import { Rendezvous, CoreView, RoomName } from "./rendezvous";
 import { offsetsFromSymbols, verifyTradeBlock, viewBlock } from "./invariants";   // wq#483: M5b check on the received block
 import { readLinkState } from "./linkstate";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 const PORT = Number(process.env.RDV_PORT ?? 9351);
 const MODE = process.env.RDV_ROLE ?? "listen";
@@ -33,15 +34,15 @@ const TAG = process.env.RDV_TAG ?? MODE;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 (async () => {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym");
-  const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `rdv-${TAG}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym"));
+  const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `rdv-${TAG}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom), scr = new Screen(emu, sym), sync = new Sync(emu, sym);
   const nav = new Navigator(emu, sym, map, ebus, sync);
   const dlg = new Dialog(emu, scr, sync, ebus, sym);
 
-  loadSnapshotFile(emu, "checkpoints/center-m2b.state.gz");
+  loadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));
   emu.frames(6);
   await nav.goto(11, 3);                      // tile below the attendant
 
