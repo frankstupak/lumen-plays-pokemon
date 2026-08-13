@@ -21,6 +21,8 @@ import { moveLabel, MOVES } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
+import { economyAdvice } from "./economy";           // wq#516
+import { MISTY_MIN_LEVEL } from "./guidance";        // wq#516: next-gym level target
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
@@ -122,6 +124,24 @@ export class Agent {
         wants.push(`repel (have ${this.items.count(ITEM.REPEL)}, want 2 - $350, blocks cave encounters for 100 steps)`);
       if (wants.length)
         block += `\nTIP: in a Mart with $${st.money} - stock up via buy_item: ${wants.join(", ")}`;
+    }
+    // wq#516: the mart TIP above is gated on money >= 100, and the catch and
+    // transit guards are gated on balls > 0, so at $71 with an empty bag every
+    // one of them goes silent — which is how the campaign sat at exactly $71
+    // for 81 hours of play with nothing ever telling the brain it was broke.
+    // This says the quiet part, and says only the one thing that is binding.
+    {
+      const eco = economyAdvice({
+        money: st.money,
+        balls: this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL)
+             + this.items.count(ITEM.ULTRA_BALL),
+        partyCount: st.party.length,
+        leadLevel: st.party[0]?.level ?? 0,
+        inMart: !!stock,
+        martStock: stock,
+        gymMinLevel: MISTY_MIN_LEVEL,
+      });
+      if (eco) block += `\n${eco}`;
     }
     block += `\nBAG ${this.items.bagLine()}`;
     // wq#487: transit handback (a goto target that has burned its resume cap)
