@@ -40,6 +40,14 @@ export function astar(map: MapModel, sx: number, sy: number, tx: number, ty: num
       const ok = isTarget ? (nx >= 0 && ny >= 0 && nx < map.gw && ny < map.gh)
                           : map.passable(nx, ny);
       if (!ok || extraBlocked.has(nk)) continue;
+      // wq#552: Gen 1 refuses movement between certain tile pairs even when both
+      // tiles are passable, so this is checked on the EDGE and applies to the
+      // target cell too — unlike the terrain test above, whose isTarget bypass
+      // exists because doors and other warp tiles read impassable. A tile-pair
+      // collision is a real refusal by the emulator, not a modelling artefact:
+      // planning through one is what taught learnedBlocked a phantom wall on
+      // every replan and produced the wq#542 east-west shuffle.
+      if (map.pairBlocked(best.x, best.y, nx, ny)) continue;
       // Never route THROUGH an unrelated warp tile: stepping onto it triggers a
       // map transition we didn't ask for. Only the target warp is allowed.
       if (!isTarget && map.isWarp(nx, ny)) continue;
