@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# lpp-sentinel — standing READ-ONLY monitor for Lumen Plays Pokemon (wq#489).
+#
+# Frank wants to hear about pathologies without watching the tablet. This is an
+# OBSERVER: it reads the live event log, the run summaries, the notepad file and
+# the progress board, and it ALERTS. It never touches the game, never restarts
+# the service, never writes to events/ or checkpoints/.
+#
+# Checks (ticket wq#489):
+#   loop          same map + position bbox <=3 tiles across the last 20 turns,
+#                 OR >=5 identical tool_call+result pairs in that window
+#   notepad       runtime/notepad.txt size, pinned-region integrity, and
+#                 guidance/notes separation (guidance markers must NOT appear
+#                 in stored notes — that is the wq#486/#488 invariant).
+#                 Degrades gracefully if the file does not exist yet.
+#   stall         storyScore unchanged across the window AND a step-budget SOFT
+#                 alarm was seen for the current map
+#   violations    rule_violation events from the wq#488 borrow guard
+#   turnrate      turns/h below 30% of the 24h mean
+#
+# Outputs: one-line NOTE appended to docs/QUEUE_PROGRESS.md + ntfy via the fleet
+# choke point (/home/lumen/bin/ntfy-send). Dedupe: the same alert key fires at
+# most once per hour, state in runtime/sentinel_state.json.
+#
+# Usage: lpp-sentinel [--dry-run] [--window N] [--events FILE] [--quiet]
+#   --dry-run     print alerts, do not append to the board or send ntfy
+#   --events      analyse a specific log (used by the synthetic-loop test)
+import argparse, glob, gzip, json, os, subprocess, sys, time
+from datetime import datetime, timezone
+
+BASE = "/home/lumen/pokemon"
+BOARD = f"{BASE}/docs/QUEUE_PROGRESS.md"
+NOTEPAD = f"{BASE}/runtime/notepad.txt"
+STATE = f"{BASE}/runtime/sentinel_state.json"
+NTFY = "/home/lumen/bin/ntfy-send"
+DEDUPE_SEC = 3600
+
+
+def newest_log():
+    logs = sorted(glob.glob(f"{BASE}/events/live-agent-*.jsonl"), key=os.path.getmtime)
+    return logs[-1] if logs else None
+
+def read_events(path, limit=6000):
+    """Tail-load JSONL events (plain or gz). Returns a list of dicts, oldest first."""
+    if not path or not os.path.exists(path):
+        return []
+    op = (lambda p: gzip.open(p, "rt")) if path.endswith(".gz") else open
+    out = []
+    try:
+        with op(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return out[-limit:]
+
+def load_state():
+    try:
+        return json.load(open(STATE))
+    except Exception:
+        return {}
+
+def save_state(st):
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        tmp = STATE + ".tmp"
+        json.dump(st, open(tmp, "w"))
+        os.replace(tmp, STATE)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- checks
+
+def check_loop(evs, window):
+    """same map + tight position bbox over the window, or repeated identical actions."""
+    states = [e for e in evs if e.get("kind") == "state_read" and isinstance(e.get("map"), int)][-window:]
+    alerts = []
+    if len(states) >= window:
+        maps = {s["map"] for s in states}
+        if len(maps) == 1:
+            xs = [s.get("x", 0) for s in states]
+            ys = [s.get("y", 0) for s in states]
+            bbox = max(max(xs) - min(xs), max(ys) - min(ys))
+            if bbox <= 3:
+                alerts.append(("loop_position",
+                    f"LOOP: {window} turns inside map{states[-1]['map']} within a {bbox}-tile box "
+                    f"(x{min(xs)}-{max(xs)} y{min(ys)}-{max(ys)}) — agent is not making progress"))
+    # identical tool_call + result pairs: pair each brain tool_call with the
+    # turn_summary line that follows it (the line carries "=> <result>")
+    pairs, pending = {}, None
+    for e in evs[-(window * 6):]:
+        k = e.get("kind")
+        if k == "tool_call" and e.get("src") == "brain":
+            pending = f"{e.get('tool')}({','.join(str(a) for a in (e.get('args') or []))})"
+        elif k == "turn_summary" and pending and isinstance(e.get("line"), str):
+            res = e["line"].split("=>", 1)[1].strip()[:60] if "=>" in e["line"] else ""
+            key = f"{pending} => {res}"
+            pairs[key] = pairs.get(key, 0) + 1
+            pending = None
+    for key, n in pairs.items():
+        if n >= 5:
+            alerts.append(("loop_repeat", f"LOOP: identical action+result x{n} in the last {window} turns — `{key}`"))
+            break
+    return alerts
+
+def check_notepad():
+    if not os.path.exists(NOTEPAD):
+        return []          # pre-wq#486 deploy or fresh boot: degrade gracefully
+    try:
+        j = json.load(open(NOTEPAD))
+    except Exception as e:
+        return [("notepad_unreadable", f"NOTEPAD: {NOTEPAD} is unreadable ({type(e).__name__}) — persistence may be broken")]
+    alerts = []
+    pinned = j.get("pinned") or []
+    rolling = j.get("rolling") or []
+    summary = j.get("summary") or ""
+    chars = len("\n".join(pinned)) + len(summary) + len("\n".join(rolling))
+    if chars > 6000:
+        alerts.append(("notepad_size", f"NOTEPAD: {chars} chars exceeds the 6000 ceiling — eviction may be stuck"))
+    pin_chars = len("\n".join(pinned))
+    if pin_chars > 1500:
+        alerts.append(("notepad_pins", f"NOTEPAD: pinned region {pin_chars} chars over its 1500 budget"))
+    # the wq#486/#488 invariant: guidance never lands in stored notes
+    blob = "\n".join(pinned + rolling) + summary
+    if "[[" in blob or "]]" in blob:
+        alerts.append(("notepad_guidance_leak",
+            "NOTEPAD: guidance markers found INSIDE stored notes — the wq#486 channel separation has regressed"))
+    return alerts
+
+
+def check_stall(evs, window):
+    """storyScore flat across the window AND a step-budget SOFT alarm seen."""
+    scores = [e["storyScore"] for e in evs if isinstance(e.get("storyScore"), int)]
+    soft = [e for e in evs[-(window * 6):]
+            if e.get("kind") == "turn_summary" and isinstance(e.get("line"), str)
+            and "step budget SOFT" in e["line"]]
+    if len(scores) >= 2 and scores[0] == scores[-1] and soft:
+        return [("stall", f"STALL: storyScore flat at {scores[-1]} while a step-budget SOFT alarm is active "
+                          f"— `{soft[-1]['line'][:70]}`")]
+    return []
+
+def check_violations(evs, window):
+    v = [e for e in evs[-(window * 6):] if e.get("kind") == "rule_violation"]
+    if not v:
+        return []
+    return [("rule_violation", f"RULE VIOLATIONS: {len(v)} borrow-guard rejection(s) in the recent window "
+                               f"— last: {str(v[-1].get('reason'))[:70]}")]
+
+def check_turnrate():
+    """turns/h below 30% of the 24h mean, from run-summary files."""
+    now = time.time()
+    runs = []
+    for p in glob.glob(f"{BASE}/events/run-summary-*.json"):
+        try:
+            j = json.load(open(p))
+        except Exception:
+            continue
+        turns, wall = j.get("turns") or 0, j.get("wallMs") or 0
+        if turns < 5 or wall < 300000:        # ignore stubs: <5 turns or <5min
+            continue
+        started = j.get("startedAt") or ""
+        try:
+            ts = datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = os.path.getmtime(p)
+        runs.append((ts, turns / (wall / 3_600_000.0), p))
+    if len(runs) < 3:
+        return []
+    runs.sort()
+    recent = [r for r in runs if now - r[0] <= 86400]
+    if len(recent) < 3:
+        return []
+    latest = recent[-1]
+    prior = recent[:-1]
+    mean = sum(r[1] for r in prior) / len(prior)
+    if mean > 0 and latest[1] < 0.30 * mean:
+        return [("turnrate", f"TURN-RATE COLLAPSE: newest run {latest[1]:.1f} turns/h vs 24h mean "
+                             f"{mean:.1f} ({latest[1]/mean:.0%} of normal)")]
+    return []
+
+
+# ---------------------------------------------------------------- output
+
+def emit(alerts, args, state):
+    """Board NOTE + ntfy, deduped per key for DEDUPE_SEC. Returns fired list."""
+    now = time.time()
+    last = state.setdefault("last_fired", {})
+    fired, suppressed = [], []
+    for key, msg in alerts:
+        if now - last.get(key, 0) < DEDUPE_SEC:
+            suppressed.append(key)
+            continue
+        fired.append((key, msg))
+        last[key] = now
+    if suppressed and not args.quiet:
+        print(f"[dedupe] suppressed (fired <1h ago): {', '.join(suppressed)}")
+    for key, msg in fired:
+        line = f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')} lpp-sentinel -- ALERT [{key}]: {msg}"
+        if not args.quiet:
+            print(line)
+        if args.dry_run:
+            continue
+        try:
+            with open(BOARD, "a") as f:      # append-only, never rewrite
+                f.write(line + "\n")
+        except Exception as e:
+            print(f"[warn] board append failed: {e}", file=sys.stderr)
+        try:
+            subprocess.run([NTFY, "-t", "lumen-fleet", "-T", f"LPP {key}", msg],
+                           timeout=20, check=False, capture_output=True)
+        except Exception as e:
+            print(f"[warn] ntfy-send failed: {e}", file=sys.stderr)
+    return fired
+
+def main():
+    ap = argparse.ArgumentParser(description="LPP standing monitor (read-only)")
+    ap.add_argument("--dry-run", action="store_true", help="print only; no board write, no ntfy")
+    ap.add_argument("--window", type=int, default=20, help="turns in the analysis window")
+    ap.add_argument("--events", help="analyse this event log instead of the newest")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+
+    path = args.events or newest_log()
+    evs = read_events(path)
+    if not args.quiet:
+        print(f"lpp-sentinel: {len(evs)} events from {path or '(none)'}")
+
+    alerts = []
+    alerts += check_loop(evs, args.window)
+    alerts += check_notepad()
+    alerts += check_stall(evs, args.window)
+    alerts += check_violations(evs, args.window)
+    alerts += check_turnrate()
+
+    state = load_state()
+    fired = emit(alerts, args, state)
+    if not args.dry_run:
+        state["last_run"] = datetime.now(timezone.utc).isoformat()
+        save_state(state)
+    if not alerts and not args.quiet:
+        print("lpp-sentinel: all checks clear")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

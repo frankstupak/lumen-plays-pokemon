@@ -1,0 +1,11 @@
+[Unit]
+Description=LPP sentinel — standing read-only monitor for Lumen Plays Pokemon (wq#489)
+Documentation=file:///home/lumen/pokemon/docs/SENTINEL.md
+
+[Service]
+Type=oneshot
+User=lumen
+WorkingDirectory=/home/lumen/pokemon
+ExecStart=/home/lumen/pokemon/tools/lpp-sentinel --quiet
+# read-only observer: never touches the game, the service, or the work queue
+Nice=10

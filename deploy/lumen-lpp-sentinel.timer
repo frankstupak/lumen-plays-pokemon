@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the LPP sentinel every 10 minutes (wq#489)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=45s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
