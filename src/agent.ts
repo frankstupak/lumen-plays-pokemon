@@ -22,6 +22,7 @@ import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { catchAdvice } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
+import { RecoveryTracker } from "./recovery";
 import { CFG } from "./config";
 
 const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on disk
@@ -34,6 +35,10 @@ export class Agent {
   // wq#472: planned deterministic turns remaining before the next brain call.
   // Refilled to CFG.autoTurnRatio after every brain-driven turn; 0 ratio = feature off.
   private autoBudget = 0;
+  // wq#477: whiteout/regression recovery goal injection. Set by live_agent
+  // after construction (survives in-process agent reboots there); undefined
+  // in probes/run_agent = feature simply absent, zero behavior change.
+  recovery?: RecoveryTracker;
   private mapHistory: number[] = [];   // recent map ids for oscillation detection
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
@@ -360,8 +365,16 @@ export class Agent {
     await this.sync.settle();
     this.trackBattleLock();
     const before = this.reader.read();
-    const stateBlock = this.observe();
+    let stateBlock = this.observe();
     this.bus.emit("state_read", before as unknown as object);
+
+    // wq#477: regression detector runs EVERY turn (edge detection needs the
+    // sampling) but only augments the prompt; frontier turns return null.
+    if (this.recovery) {
+      const goal = this.recovery.evaluate(before, this.reader.storyScore(),
+        idx => this.reader.eventFlag(idx), this.bus, this.turn);
+      if (goal) stateBlock += `\n${goal}`;
+    }
 
     let think = "", act = "", result = "";
     let plannedTurn = false;
@@ -484,6 +497,8 @@ export class Agent {
       v: 2, kind, map: st.map, x: st.x, y: st.y,
       badges: st.badgeCount, events: this.reader.eventCount(),
       storyScore: this.reader.storyScore(),  // wq#471: monotonic story flags
+      // wq#477: campaign-level frontier, seeds regression detection on restart
+      maxStoryScore: Math.max(this.reader.storyScore(), this.recovery?.maxStoryScore ?? 0),
       hpPct: lead && lead.maxHp > 0 ? +(lead.hp / lead.maxHp).toFixed(3) : 1,
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),

@@ -30,3 +30,4 @@
 2026-08-13T01:20Z rabbit3 wq#483 BLOCKED: parked (DRAFT not stripped, claim-loop guard) — orchestrator: unblock + strip to open
 2026-08-13T01:21Z rabbit3 wq#484 BLOCKED: parked (DRAFT not stripped, claim-loop guard) — orchestrator: unblock + strip to open
 2026-08-13T01:21Z rabbit3 wq#485 BLOCKED: parked (DRAFT + Frank-gated: BGB box designation needed) per ticket instruction
+2026-08-13T01:16Z rabbit2 wq#477 SHIPPED: recovery.ts (corridor table + RecoveryTracker), goal injection via agent hook, maxStoryScore in sidecars (live-verified 6/6), regression events on ticker; probe 16/16; deployed, T3 turning

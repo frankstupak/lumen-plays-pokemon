@@ -4,7 +4,8 @@
 import { appendFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 
 export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
-  | "turn_summary" | "checkpoint" | "boot" | "verify" | "battle_softlock";
+  | "turn_summary" | "checkpoint" | "boot" | "verify" | "battle_softlock"
+  | "regression";   // wq#477: whiteout/story-regression detected or cleared
 
 const ROTATE_BYTES = Number(process.env.LPP_EVENTS_ROTATE_BYTES ?? 25 * 1024 * 1024);
 const KEEP_FILES = Number(process.env.LPP_EVENTS_KEEP_FILES ?? 30);

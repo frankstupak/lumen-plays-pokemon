@@ -18,6 +18,7 @@ import { Agent } from "./agent";
 import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
 import { ceruleanGuidance } from "./guidance";   // wq#478
+import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
 import { CFG } from "./config";   // wq#476: mapStepBudgets
@@ -206,13 +207,22 @@ function corridorNotepad(badgeCount: number): string {
 
 
 (async () => {
+  // wq#477: one tracker for the whole process (survives in-process agent
+  // reboots), seeded from sidecars so restarts onto older checkpoints are
+  // still detected as regressions.
+  const recovery = new RecoveryTracker(seedMaxFromSidecars([SAVES, CKPTS]));
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
     const brain = new Brain(bus);
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
     agent.notepad = corridorNotepad(reader.read().badgeCount);   // wq#476
+    agent.recovery = recovery;   // wq#477: regression detector + goal injection
     liveAgent = agent;   // wq#476: expose to step-budget watchdog
+    // wq#478: dynamic Cerulean/Misty stage guidance in a tagged notepad
+    // section, refreshed every turn (money/potions/level move constantly);
+    // tag-replace keeps brain note() appends intact. If note()'s 1500-char
+    // slice ate the open tag, we just re-append a fresh section.
     const G_OPEN = "[[CERULEAN]]", G_CLOSE = "[[/CERULEAN]]";
     const refreshStageGuidance = () => {
       const g = ceruleanGuidance(emu, sym, reader);
