@@ -39,6 +39,59 @@ export interface NotepadState { v: 1; pinned: string[]; summary: string; rolling
  *  no-op passthrough (wq#486 ships this; wq#488 sets it after bind()). */
 export type NotepadSanitizer = (raw: string) => { ok: boolean; clean?: string; reason?: string };
 
+/** wq#519. A pin that asserts the agent POSSESSES something, with the subject
+ *  extracted. Deliberately text-only: notepad.ts stays free of items.ts and the
+ *  emulator, so the pad remains testable on its own and the domain knowledge
+ *  (item ids, RAM offsets) lives in the checker where the domain already is. */
+export interface PossessionClaim { raw: string; subject: string }
+
+/** Verdict on a possession claim. `null` means CANNOT CHECK -- the pin is then
+ *  kept untouched, because the failure mode this ticket exists to stop is
+ *  confident assertions about things nobody read, and inventing a negative is
+ *  the same sin as inventing a positive. */
+export type ClaimCheck = (c: PossessionClaim) => { holds: boolean; evidence: string } | null;
+
+/** Possession phrasings observed in the live pin loop (T37/T38/T41/T47/T48 on
+ *  2026-08-13) plus the obvious neighbours. Each captures the SUBJECT. */
+const POSSESSION_PATTERNS: RegExp[] = [
+  /^(.+?)\s+(?:is\s+|are\s+)?(?:now\s+)?(?:(?:acquired|obtained|confirmed|verified|secured|picked\s*up)\b[\s,-]*)*(?:and\s+)?(?:acquired|obtained|confirmed|verified|secured)?\s*in\s+(?:my\s+|the\s+)?(?:inventory|bag|pack)\b/i,
+  /^(?:i\s+)?(?:now\s+)?(?:have|hold|own|carry|possess)\s+(?:the\s+|a\s+|an\s+|my\s+)?(.+?)\s*$/i,
+  /^(.+?)\s+(?:is\s+|was\s+)?(?:acquired|obtained|secured|collected)\b\s*$/i,
+];
+
+/** Extract a possession claim, or null if the line does not assert possession.
+ *  Exported so the probe can pin the exact strings the live agent wrote. */
+export function parsePossessionClaim(text: string): PossessionClaim | null {
+  const t = String(text ?? "").trim();
+  if (!t) return null;
+  for (const re of POSSESSION_PATTERNS) {
+    const m = t.match(re);
+    if (m && m[1]) {
+      const subject = normaliseSubject(m[1]);
+      if (subject) return { raw: t, subject };
+    }
+  }
+  return null;
+}
+
+/** Strip the assertion vocabulary so "Dome Fossil acquired - verify" and
+ *  "Dome Fossil" collapse to the same subject. Base forms as well as past
+ *  participles: the live loop's very first pin was "Dome Fossil acquired -
+ *  verify in inventory", and stripping only "verified" left the subject as
+ *  "dome fossil verify", which is a different key and let the loop through. */
+function normaliseSubject(s: string): string {
+  return String(s)
+    .toLowerCase()
+    .replace(/\b(?:acquired|acquire|acquires|acquiring|obtained|obtain|obtains|obtaining|confirmed|confirm|confirms|confirming|verified|verify|verifies|verifying|checked|check|checks|checking|secured|secure|secures|collected|collect|collects|picked\s*up|pickup|now|already|still|the|a|an|my|is|are|was|and|to|be)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Whitespace/punctuation/case-insensitive form, for exact-duplicate detection. */
+function normaliseLine(s: string): string {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
 export class Notepad {
   pinned: string[] = [];
   summary = "";
@@ -46,6 +99,14 @@ export class Notepad {
   evictions = 0;
   restoredChars = 0;
   sanitizer?: NotepadSanitizer;   // wq#488 hook; unset = passthrough
+  /** wq#519 hook; unset = no-op. Set it the same way wq#488 sets `sanitizer`:
+   *  `pad.claimChecker = fn` after bind(). Verification then runs LAZILY on the
+   *  first render, so the whole feature lives inside notepad.ts and no caller
+   *  has to remember to invoke it (wq#514 will be editing live_agent.ts). */
+  claimChecker?: ClaimCheck;
+  /** Set by verifyClaims(); surfaced so a caller can emit an event/metric. */
+  lastVerification: { checked: number; dropped: string[]; kept: number } | null = null;
+  private verified = false;
   private guidance = new Map<string, string>();
   private path: string | null = null;
 
@@ -99,6 +160,31 @@ export class Notepad {
   private pinRaw(text: string): string {
     const t = String(text ?? "").trim().slice(0, 300);
     if (!t) return "pin: empty, ignored";
+
+    // wq#519 DUPLICATE GUARD. Between 05:47Z and 06:09Z on 2026-08-13 the live
+    // agent pinned the same false fossil claim SEVEN times, and its own think
+    // text at T41 and T48 was "the notepad is cluttered with redundant fossil
+    // confirmations; I need to clear it" -- each time, the only notepad verb it
+    // has is note()/PIN, so every attempt to clean up made the pad worse. The
+    // reject message therefore names the pin that already exists and says the
+    // request is already satisfied, so the brain has a reason to stop instead
+    // of rephrasing. Two precise rules, no fuzzy similarity:
+    //   (a) same line modulo case/punctuation
+    //   (b) same possession SUBJECT already pinned as possessed
+    const norm = normaliseLine(t);
+    const dup = this.pinned.find(p => normaliseLine(p) === norm);
+    if (dup) return `pin REDUNDANT: already pinned verbatim as "${dup}" - it is permanent, nothing to re-pin, do not restate it`;
+
+    const claim = parsePossessionClaim(t);
+    if (claim) {
+      const same = this.pinned.find(p => {
+        const c = parsePossessionClaim(p);
+        return c !== null && c.subject === claim.subject;
+      });
+      if (same)
+        return `pin REDUNDANT: "${same}" already pins possession of "${claim.subject}" - pins are permanent, so this fact is already recorded and re-pinning cannot make it more true; if you are trying to CORRECT or clear it, a pin cannot be edited, write a normal note instead`;
+    }
+
     const would = this.pinned.join("\n").length + t.length + 1;
     if (would > PIN_BUDGET)
       return `pin REJECTED: pinned region full (${this.pinned.join("\n").length}/${PIN_BUDGET} chars) - unpin nothing, pins are permanent; use a normal note`;
@@ -137,7 +223,63 @@ export class Notepad {
     return [...this.guidance.entries()].map(([k, v]) => `-- ${k} --\n${v}`).join("\n");
   }
 
+  /** wq#519: the inverse operation the pad never had. The live transcript shows
+   *  a brain diagnosing its own false-pin clutter at T41 and T48 and being
+   *  structurally unable to act on it, because note()/PIN was the only verb and
+   *  pinRaw() answers over-budget with "unpin nothing, pins are permanent". An
+   *  append-only store that outlives the save state it describes (wq#486 made
+   *  notes persist; resume rolls the save BACK) cannot self-correct without
+   *  this. Returns the lines removed. */
+  unpin(match: string | RegExp): string[] {
+    const before = this.pinned.slice();
+    const hit = typeof match === "string"
+      ? (p: string) => normaliseLine(p).includes(normaliseLine(match))
+      : (p: string) => match.test(p);
+    this.pinned = this.pinned.filter(p => !hit(p));
+    const removed = before.filter(p => !this.pinned.includes(p));
+    if (removed.length) this.save();
+    return removed;
+  }
+
+  /** wq#519: check every pinned POSSESSION claim against reality and drop the
+   *  ones reality contradicts, leaving a correction the brain can read.
+   *
+   *  Only positive disagreement removes a pin. A checker returning null (cannot
+   *  read RAM, unknown subject) leaves the pin exactly as it was: this ticket
+   *  is about unverified confidence, and deleting on a guess would be the same
+   *  error pointed the other way. Idempotent per session. */
+  verifyClaims(): { checked: number; dropped: string[]; kept: number } {
+    const result = { checked: 0, dropped: [] as string[], kept: 0 };
+    if (!this.claimChecker) { this.lastVerification = result; return result; }
+    const survivors: string[] = [];
+    for (const p of this.pinned) {
+      const claim = parsePossessionClaim(p);
+      if (!claim) { survivors.push(p); continue; }
+      result.checked++;
+      let verdict: { holds: boolean; evidence: string } | null = null;
+      try { verdict = this.claimChecker(claim); }
+      catch { verdict = null; }               // a broken checker must not drop pins
+      if (verdict && !verdict.holds) {
+        result.dropped.push(p);
+        this.rolling.push(`CORRECTION (boot check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
+      } else {
+        survivors.push(p);
+        result.kept++;
+      }
+    }
+    if (result.dropped.length) {
+      this.pinned = survivors;
+      this.compact();
+      this.save();
+    }
+    this.lastVerification = result;
+    return result;
+  }
+
   renderNotes(): string {
+    // Lazy trigger: first render after a checker is installed. Keeps the whole
+    // hook inside notepad.ts -- callers only assign `claimChecker`.
+    if (!this.verified && this.claimChecker) { this.verified = true; this.verifyClaims(); }
     const parts: string[] = [];
     if (this.pinned.length) parts.push("PINNED:\n" + this.pinned.map(p => "* " + p).join("\n"));
     if (this.summary) parts.push("OLDER (compacted): " + this.summary);

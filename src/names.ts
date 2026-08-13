@@ -26,8 +26,17 @@ import { SymbolTable } from "./symbols";
 
 /** Gen 1 string encoding -> ASCII. 0x50 terminates. Unknown bytes decode to
  *  "?" so a misaligned read is visibly wrong instead of quietly plausible. */
-export function decodeGen1(bytes: ArrayLike<number>): string {
+/** Decode Gen 1 text AND report which bytes had no mapping.
+ *
+ *  wq#519: the "?" character is genuinely part of Gen 1 text (0xE6) -- items 7
+ *  and 44 are really named "?????" in this ROM -- so a caller cannot tell a
+ *  correct name from a broken decode by looking for "?" in the OUTPUT. It has
+ *  to know which INPUT bytes were unmapped. decodeGen1() keeps its old
+ *  signature and delegates here, so the mapping table has exactly one home and
+ *  the two functions cannot drift. */
+export function decodeGen1Bytes(bytes: ArrayLike<number>): { text: string; unmapped: number[] } {
   let s = "";
+  const unmapped: number[] = [];
   for (let i = 0; i < bytes.length; i++) {
     const t = bytes[i];
     if (t === 0x50) break;
@@ -46,11 +55,31 @@ export function decodeGen1(bytes: ArrayLike<number>): string {
     else if (t === 0xe2) s += "MN";
     else if (t === 0xe3) s += "-";
     else if (t === 0xe8) s += ".";
+    // wq#519, all three read out of ItemNames (01:472b) in this ROM, not recalled:
+    //   0xBA sits one past 'z' (0xb9) and is "e-acute" -- id 4 is
+    //        8f 8e 8a BA 7f 81 80 8b 8b, i.e. POKE BALL, and ids 9/51/73 use it
+    //        too. This is the SAME gap class wq#503 fixed for MonsterNames, one
+    //        table over, landing on the most common item in the game; wq#503's
+    //        own drop-names-containing-"?" guard would have deleted POKE BALL
+    //        from a ROM-derived table exactly the way NIDORAN went missing.
+    //   0xBD is the "'s" ligature -- id 70 is 8e 80 8a BD 7f 8f 80 91 82 84 8b,
+    //        which is OAK's PARCEL and reads correctly no other way.
+    //   0xE6 is a literal question mark: ids 7 and 44 are five 0xE6 bytes and
+    //        really are the unused "?????" slots. It used to decode correctly
+    //        only by falling through to the "?" default, which is why the
+    //        output could not be used to detect a broken decode.
+    else if (t === 0xba) s += "\u00e9";
+    else if (t === 0xbd) s += "'s";
+    else if (t === 0xe6) s += "?";
     else if (t === 0xf6) s += "0";
     else if (t >= 0xf7 && t <= 0xff) s += String.fromCharCode(0x31 + t - 0xf7);    // 1-9
-    else s += "?";
+    else { s += "?"; unmapped.push(t); }
   }
-  return s;
+  return { text: s, unmapped };
+}
+
+export function decodeGen1(bytes: ArrayLike<number>): string {
+  return decodeGen1Bytes(bytes).text;
 }
 
 /** Split a pokered CamelCase label into words without breaking floor labels.
