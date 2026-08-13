@@ -17,3 +17,4 @@
 2026-08-13T01:05Z rabbit3 wq#478 CLAIMED: Cerulean prep — MART_ORDER + heal loop + Misty gates
 2026-08-13T01:08Z rabbit1 wq#476 NOTE: pack built (badge-phase corridorNotepad + step-budget watchdog reusing exit(3) continue path); tsc clean vs HEAD in isolated worktree (shared tree has untracked recovery.ts WIP failing tsc — not mine)
 2026-08-13T01:09Z rabbit1 wq#476 SHIPPED: cad7041 deployed — badge-phase corridorNotepad (Mt Moon pack: DOME policy, RAM-verified claims, east-exit intent) + mapStepBudgets 59/60/61 watchdog (soft 2x notepad, hard 3x continue); live on map15 badges=1
+2026-08-13T01:10Z rabbit1 wq#479 CLAIMED: lpp-stats measurement CLI (turn economics + lever impact)

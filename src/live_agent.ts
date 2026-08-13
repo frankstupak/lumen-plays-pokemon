@@ -17,6 +17,7 @@ import { Brain } from "./brain";
 import { Agent } from "./agent";
 import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
+import { ceruleanGuidance } from "./guidance";   // wq#478
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
 import { CFG } from "./config";   // wq#476: mapStepBudgets
@@ -212,10 +213,20 @@ function corridorNotepad(badgeCount: number): string {
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
     agent.notepad = corridorNotepad(reader.read().badgeCount);   // wq#476
     liveAgent = agent;   // wq#476: expose to step-budget watchdog
+    const G_OPEN = "[[CERULEAN]]", G_CLOSE = "[[/CERULEAN]]";
+    const refreshStageGuidance = () => {
+      const g = ceruleanGuidance(emu, sym, reader);
+      const i = agent.notepad.indexOf(G_OPEN), j = agent.notepad.indexOf(G_CLOSE);
+      const sec = g ? `${G_OPEN}\n${g}\n${G_CLOSE}` : "";
+      if (i >= 0 && j > i)
+        agent.notepad = (agent.notepad.slice(0, i) + sec + agent.notepad.slice(j + G_CLOSE.length)).trim();
+      else if (g) agent.notepad = `${agent.notepad}\n${sec}`;
+    };
     bus.emit("boot", { mode: "live-agent", resumedFrom: snap.split("/").pop() });
     let failStreak = 0;
     for (;;) {
       try {
+        refreshStageGuidance();   // wq#478
         await agent.runTurn();
         failStreak = 0;
         await sleep(1500);   // stream readability: let viewers read the THINK line
