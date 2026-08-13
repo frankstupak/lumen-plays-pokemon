@@ -1,5 +1,11 @@
 // Unit-test the anti-oscillation guard in isolation via a tiny Agent subclass
 // that exposes the private method through a cast.
+//
+// wq#517: this probe drives the REAL Agent method, which now persists warp
+// history across runs. Without this redirect it would write to
+// runtime/warp_history.json under cwd -- the LIVE deployment's history -- and
+// inject map ids the agent never visited. Set before any note() call.
+process.env.LPP_OSC_HISTORY = `/tmp/osc-probe-${process.pid}-${Date.now()}.json`;
 import { Emulator, loadSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
@@ -47,11 +53,16 @@ let out = "";
 for (const m of [51, 50, 13, 46]) out = note(m);
 chk("linear progression: no warning", out === "", `last="${out}"`);
 
-// oscillation 51<->50 repeated -> warning fires
+// oscillation 51<->50 repeated -> notice fires
+// wq#517: the message is now "LOOP NOTICE" rather than "OSCILLATION", and it no
+// longer asserts a direction. wq#535 proved the only exit from Mt Moon runs
+// 61->60, so text calling a repeat "BACKWARD" argues against the one move that
+// leaves the cave. The guard reports repetition and nothing more.
 out = "";
 for (const m of [51, 50, 51, 50, 51, 50]) out = note(m);
-chk("oscillation flagged", /OSCILLATION/.test(out), out.slice(0, 80));
+chk("oscillation flagged", /LOOP NOTICE/.test(out), out.slice(0, 80));
 chk("warning names the map", /map50/.test(out), out.slice(0, 60));
+chk("warning does NOT claim the warp was backward", !/BACKWARD/i.test(out));
 
 // after moving on to new maps, warning clears
 out = "";

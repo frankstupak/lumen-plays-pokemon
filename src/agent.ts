@@ -28,6 +28,8 @@ import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
+import { assess as assessOscillation, historyFile as oscHistoryFile,
+         loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
 import { GameNames } from "./names";
 import { CFG } from "./config";
@@ -50,7 +52,12 @@ export class Agent {
   // OURS: we flee the encounter and re-walk the same target deterministically
   // instead of paying a brain turn per encounter. Per-agent, not persisted.
   transit = new TransitTracker();
-  private mapHistory: number[] = [];   // recent map ids for oscillation detection
+  private mapHistory: number[] = [];   // recent map ids for oscillation detection (this run)
+  // wq#517: the same list, but surviving restarts and continues. A new Agent
+  // is constructed inside live_agent's outer `for (;;)` loop, so the field
+  // above resets on every continue while the loop it is meant to catch spans
+  // dozens of runs.
+  private crossRunWarps: number[] | null = null;
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
   private btTurns = 0;
@@ -267,8 +274,19 @@ export class Agent {
           this.transit.onWarp(w, r, this.nav.pos().map);
           if (r === "battle") return "enter_warp interrupted by a wild battle - the harness will flee it and resume this warp automatically";
           if (r === "dialog") return "enter_warp blocked: a dialog or sign text is open - use talk() to clear it first";
-          const landed = this.reader.read().map;
-          const osc = this.notePotentialOscillation(landed);
+          // wq#517: record an arrival ONLY when the warp actually happened.
+          // This call used to be unconditional, so an enter_warp that returned
+          // "stuck" pushed the CURRENT map into the warp-arrival history as
+          // though the agent had travelled there. Measured consequence: of the
+          // eight times this guard fired in production (2026-08-13 03:36-04:54Z,
+          // events/live-agent-1786589724686.jsonl) SEVEN fired on warps that did
+          // not move the player at all — the agent sat at map60 (5,5) for three
+          // turns and the guard's own history read 59->60->60->60->60, four of
+          // which never happened. The auto path at the bottom of this file has
+          // always been guarded this way; the brain-facing path was not.
+          const osc = r === "warped"
+            ? this.notePotentialOscillation(this.reader.read().map)
+            : "";
           return `enter_warp -> ${r} now ${JSON.stringify(this.nav.pos())}${osc}`;
         }
         case "leave_edge": {
@@ -655,21 +673,29 @@ export class Agent {
     this.maybeCheckpoint(before, after);
   }
 
-  /** Deterministic oscillation guard: track recent maps; if we keep bouncing
-   *  between the same few maps, tell the brain plainly so it stops repeating
-   *  the warp that sends it backward. Harness truth, not brain trust. */
+  /** wq#517: deterministic loop NOTICE. Repetition is evidence of repetition
+   *  and nothing more -- see src/oscillation.ts for why this no longer tells
+   *  the agent which direction is forward, and why the `distinct <= 2` conjunct
+   *  that made the wider loop invisible is gone.
+   *  CALLERS MUST ONLY CALL THIS ON AN ACTUAL ARRIVAL (r === "warped"). */
   private notePotentialOscillation(mapId: number): string {
     this.mapHistory.push(mapId);
-    if (this.mapHistory.length > 8) this.mapHistory.shift();
-    const recent = this.mapHistory.slice(-6);
-    const counts = new Map<number, number>();
-    for (const m of recent) counts.set(m, (counts.get(m) ?? 0) + 1);
-    const thisCount = counts.get(mapId) ?? 0;
-    const distinct = counts.size;
-    // bouncing = few distinct maps, this map seen 3+ times in the last 6 warps
-    if (recent.length >= 5 && distinct <= 2 && thisCount >= 3)
-      return `\n! OSCILLATION: you keep returning to map${mapId} (recent: ${recent.join("->")}). This warp goes BACKWARD. Pick a DIFFERENT warp index or use goto to a map edge - do NOT repeat this warp.`;
-    return "";
+    if (this.mapHistory.length > 16) this.mapHistory.shift();
+    const file = oscHistoryFile();
+    if (this.crossRunWarps === null) this.crossRunWarps = loadOscHistory(file);
+    this.crossRunWarps.push(mapId);
+    saveOscHistory(file, this.crossRunWarps);
+    const v = assessOscillation(mapId, this.mapHistory, this.crossRunWarps);
+    if (!v.trip) return "";
+    // Distinct event kind so wq#515's detectors and lpp-stats can count trips
+    // without parsing prose out of turn_summary.
+    this.bus.emit("oscillation", {
+      map: v.map, rule: v.rule,
+      withinCount: v.withinCount, withinWindow: v.withinWindow,
+      crossCount: v.crossCount, crossWindow: v.crossWindow,
+      recent: v.recent,
+    });
+    return v.message;
   }
 
   /** S2 checkpoint writer: stability-guarded, sidecar-tagged, milestone-aware,
