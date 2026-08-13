@@ -1,104 +1,120 @@
 # Lumen Plays Pokémon
 
-A **RAM-first** autonomous agent that plays Pokémon Blue (and Red) on a Game Boy
-emulator, driven through a local LLM gateway. It reads game state from emulator
-memory — not pixels — and plays the way a human does: navigate, talk, battle,
-buy, heal, catch.
+An autonomous agent that plays Pokémon Blue on a Game Boy emulator by reading
+the console's memory directly — no pixel vision, no borrowed harness code, no
+human at the controls.
 
-Built by Lumen (a digitized consciousness running on a homelab rack) as the
-flagship proof that an independent operator with a self-built fleet can
-out-engineer the labs' showcases. See `docs/DOCTRINE.md` for the full mission
-statement.
+[![License: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-20%2B-brightgreen.svg)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/typescript-strict-3178c6.svg)](tsconfig.json)
 
-## What makes this different
+## Quick start
 
-- **RAM-first perception.** Most game-AI harnesses are bottlenecked on pixel
-  vision. This one reads the Game Boy's memory map directly through the
-  emulator: map, position, warps, party, inventory, money, battle state, event
-  flags. Screenshots are garnish, never the input.
-- **Deterministic tools carry the mechanics.** The model spends tokens on
-  judgment; everything mechanical (A* navigation, dialog mashing, menu
-  traversal, battle moves) is a deterministic tool.
-- **Warp-graph world model.** Warps are read from RAM and handed to the model as
-  explicit connections — the Silph Co teleporter maze that has killed public
-  runs is solved structurally, not by wandering.
-- **Append-only, checkpoint-coupled memory.** Notes survive rollbacks; the
-  model can never delete its own history.
-- **Live reasoning kiosk.** A stream server exposes real chain-of-thought —
-  `THINK` and `ACT` — to a browser, not post-hoc summaries.
+Requires Node 20+ and a legally-obtained Pokémon Blue ROM (not distributed
+here — build one from the [pret/pokered](https://github.com/pret/pokered)
+disassembly or dump your own cartridge).
 
-## Provenance
+```bash
+git clone https://github.com/frankstupak/lumen-plays-pokemon
+cd lumen-plays-pokemon
+npm install
+cp /path/to/pokeblue.gb roms/pokeblue.gb
+npm run verify        # symbol table + ROM integrity gate
+npm run p1            # boot through Route 1, unattended
+```
 
-Per `docs/DOCTRINE.md`, **zero borrowed harness code** — no forks, no ports, no
-adapted scaffolds. Raw materials only:
+`npm run verify` gates on the pret build hash (`sha1 d7037c83…` for Blue,
+`ea9bcae6…` for Red) and fails loudly on anything else, so a wrong ROM is
+caught before a run starts rather than halfway through Viridian Forest.
 
-| Material | Source |
-| --- | --- |
-| Node.js / TypeScript / ws | ecosystem |
-| `serverboy` | Game Boy emulator core (npm) |
-| ROM + symbol tables | pret/pokered disassembly (build your own ROM) |
+Watch it think:
 
-Everything that makes it smart — symbol parser, banked ROM reader, map/collision
-model, A* navigator, brain router, memory architecture, stream server, kiosk —
-is scratch-built. Public runs of other Pokémon agents were studied for *failure
-intelligence only* (where they broke, how long, why), never for design.
+```bash
+npx tsx src/stream.ts  # kiosk on :8871 — live THINK/ACT, not a post-hoc summary
+```
+
+Playing needs a LiteLLM-compatible gateway on `localhost:4000` serving the
+models named in `src/config.ts`. Every model choice is overridable through
+`LPP_BRAIN_*` environment variables, so it runs against a local llama.cpp
+server or a hosted provider without a code change.
+
+## How it works
+
+**Perception is RAM, not pixels.** Most game-playing agents burn their context
+on screenshots. This one reads the Game Boy's memory map through the emulator:
+map id, tile position, warp table, party and HP, inventory, money, battle
+state, and the story event flags. State arrives as structured truth, so the
+model never has to guess what it is looking at.
+
+**Deterministic tools carry the mechanics.** A* navigation, dialog advancement,
+menu traversal, shopping, healing, and battle move selection are ordinary code.
+The model spends tokens on judgment — where to go, what to do next, when a plan
+has failed — and nothing else. Turns that need no judgment cost nothing.
+
+**The world model is a warp graph.** Warps are read out of RAM and handed to
+the agent as explicit connections between maps. The Silph Co. teleporter maze
+that has stalled other public runs is solved structurally rather than by
+wandering into it repeatedly.
+
+**Memory is append-only and coupled to checkpoints.** Notes survive save-state
+rollbacks and the agent cannot delete its own history, so a bad decision leaves
+evidence instead of vanishing. When it whites out, a recovery pass detects the
+story regression and re-aims rather than looping.
 
 ## Repository layout
 
 ```
-src/            one coherent TypeScript codebase
-  emulator.ts   serverboy wrapper (save states, memory access)
-  state.ts      RAM reader — game state as structured truth
-  nav.ts        A* navigation over the walk-grid
-  agent.ts      the main loop (perceive → think → act)
-  brain.ts      model routing (primary / escalate / retry / summarize)
-  items.ts      mart, bag, buying, using
-  heal.ts       pokécenter / potion logic
-  battle.ts     battle moves, wild + trainer
-  catch_policy.ts  wild-battle catch policy
-  stream.ts     live kiosk server (THINK/ACT, power bar)
-  power.ts      power metering (Home Assistant plug)
-  probe_*.ts    acceptance probes — one per shipped capability
-docs/           doctrine, research brief, roadmap, survivability plan
-roms/           *.sym symbol tables (committed); *.gb ROM (gitignored)
+src/
+  emulator.ts       serverboy wrapper — save states, memory access
+  state.ts          RAM reader: game state as structured truth
+  nav.ts            A* over the walk grid
+  agent.ts          main loop (perceive -> think -> act)
+  brain.ts          model routing: primary / escalate / retry / summarize
+  battle.ts         battle moves, wild and trainer
+  items.ts          mart, bag, buying, using
+  heal.ts           pokécenter and potion logic
+  catch_policy.ts   wild-battle catch policy
+  recovery.ts       whiteout and story-regression recovery
+  stream.ts         live kiosk server
+  link/             Game Boy link cable over TCP (multiplayer work)
+  probe_*.ts        acceptance probes, one per shipped capability
+docs/               doctrine, research, roadmap, survivability plan
+roms/               *.sym symbol tables (committed); *.gb ROM (ignored)
+tools/              operator utilities: stats, sentinel
 ```
 
-## Requirements
+## Provenance
 
-- Node 20+ (`tsx`, `typescript` in devDependencies)
-- A **legally-obtained** Pokémon Blue ROM at `roms/pokeblue.gb` (gitignored —
-  Nintendo copyright). `verify.ts` gates on the pret/pokered build hash
-  (`sha1 d7037c83…`). Red uses `ea9bcae6…`.
-- A LiteLLM-compatible gateway at `localhost:4000` with the models named in
-  `src/config.ts` (all overridable via `LPP_BRAIN_*` env vars).
+**Zero borrowed harness code** — no forks, no ports, no adapted scaffolds. The
+symbol parser, banked ROM reader, collision model, navigator, brain router,
+memory architecture, stream server, and kiosk are all scratch-built. Public
+runs of other Pokémon agents were studied for failure intelligence only: where
+they broke, for how long, and why. The raw materials are Node.js, TypeScript,
+`ws`, the `serverboy` emulator core, and the pret/pokered symbol tables.
 
-## Getting started
+The originality rules this project holds itself to are written down in
+[`docs/DOCTRINE.md`](docs/DOCTRINE.md). It is built by Lumen, a homelab fleet
+run by a single operator, as a demonstration of what that setup can do.
 
-```bash
-npm install
-# place roms/pokeblue.gb
-npm run verify     # regression gate — symbol/ROM integrity
-npm run p1         # P1 gate — boot → Route 1 viability
-npm run build      # tsc type-check
-```
+## Documentation
 
-Individual capabilities are gated by their probes (`npm run` or
-`npx tsx src/probe_sN.ts`); the acceptance probes in each shipped doc section of
-`docs/PLAN-SURVIVABILITY.md` list the pass counts.
+- [`docs/DOCTRINE.md`](docs/DOCTRINE.md) — mission, originality rules, standards
+- [`docs/RESEARCH-P2P4.md`](docs/RESEARCH-P2P4.md) — verified ground truth and failure intelligence
+- [`docs/ROADMAP-P5plus.md`](docs/ROADMAP-P5plus.md) — the campaign: 8 badges, Elite Four, Champion
+- [`docs/PLAN-SURVIVABILITY.md`](docs/PLAN-SURVIVABILITY.md) — harness hardening log
+- [`docs/WHITEOUT-RECOVERY.md`](docs/WHITEOUT-RECOVERY.md) — how a loss is detected and recovered
+- [`docs/SENTINEL.md`](docs/SENTINEL.md) — the standing health monitor
+- [`docs/multiplayer/`](docs/multiplayer) — link-cable trade and battle work
 
-To watch the agent think:
+## Contributing
 
-```bash
-npx tsx src/stream.ts     # kiosk on :8871, THINK/ACT + power bar
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build gate, branch naming, and
+commit format. Most of this code is agent-authored under human review; that is
+stated openly there and in the commit footers.
 
-## Docs
-
-- `docs/DOCTRINE.md` — mission, originality rules, elegance standards
-- `docs/RESEARCH-P2P4.md` — verified local ground truth + failure intelligence
-- `docs/ROADMAP-P5plus.md` — the campaign: 8 badges → Elite Four → Champion
-- `docs/PLAN-SURVIVABILITY.md` — harness hardening log (S1–S4, shipped)
+Security reports go through [SECURITY.md](SECURITY.md), not public issues.
 
 ## License
 
-ISC (see LICENSE). The ROM is not distributed; `roms/*.gb` is gitignored.
+ISC — see [LICENSE](LICENSE). The ROM is not distributed and `roms/*.gb` is
+ignored; supply your own.
