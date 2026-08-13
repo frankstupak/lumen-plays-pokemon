@@ -263,6 +263,13 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): strin
     "THE EXIT IS ONE FORCED ROUTE - trust this over exploring:",
     "    B2F(map61) (5,7) -> B1F(map60) (23,3) -> walk to (27,3) -> Route 4 EAST.",
     "  No other ladder anywhere in the mountain reaches the outside.",
+    "DEAD-POCKET RECOVERY (read this the FIRST time a goto answers 'stuck'):",
+    "  If a goto on B1F returns stuck, (27,3) is NOT connected to the tile you",
+    "  are standing on and no amount of re-targeting will change that. Re-issuing",
+    "  the same goto, or interact on a tile you cannot reach, only burns turns.",
+    "  THE WAY OUT IS THE LADDER YOU ARRIVED BY, AND YOU ARE USUALLY STANDING ON",
+    "  IT: enter_warp the warp at your OWN coordinates to go back up to B2F,",
+    "  then take B2F (5,7). goto can never cross a warp - only enter_warp can.",
   ];
   // wq#535: the two fossils are SOLID objects sitting in the only corridor to
   // (5,7). This is not flavour text - while both stand there the exit is
@@ -279,6 +286,9 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): strin
     "  ((11,6) also works as the standing tile.) Then goto(5,7) and enter_warp it.",
     "  You need exactly ONE fossil. Taking it is not optional content - it is",
     "  the door.",
+    "  DO THIS WHILE YOU ARE STILL ON B2F, BEFORE TAKING ANY LADDER DOWN. Every",
+    "  other B2F ladder ((25,9), (21,17), (15,27)) drops into a B1F pocket with",
+    "  no way out, and you will have to climb back up to here anyway.",
   ];
   return [
     "GOAL: cross MT MOON and come out its EAST side.",
