@@ -12,6 +12,8 @@ checkpoints/
 saves/
 logs-24h/
 events/
+# wq#490: runtime/ holds notepad.txt (wq#486) + sentinel_state.json (wq#489)
+runtime/
 
 # ── Backups / superseded ────────────────────────────────
 *.bak*

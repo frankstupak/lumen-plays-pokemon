@@ -2,6 +2,11 @@
 _2026-08-06. Overall plan skeleton. Sections filled in as work progresses — do not pre-detail future sections._
 _Origin: post-launch outage review + external research notes, re-verified against live harness (turn 383, map 51, $22, 0 items, ranking sort at live_agent.ts:71)._
 
+> **Path note (wq#490, 2026-08-13):** the `src/*.bak.*` snapshots cited in the
+> entries below were swept into `backups/src-bak/src/` (filenames unchanged,
+> nothing deleted — see `backups/src-bak/README.md`). Dated entries are left as
+> written; they record what was true at the time.
+
 ## S1 — Harness truth fixes (SHIPPED 2026-08-06)
 Goal: brain can no longer be lied to or left blind by the harness. No new capabilities, only correctness.
 1. Trainer-battle gate: when inBattle=2, goto/enter_warp/leave_edge/press(B-out) return "trainer battle — must fight (battle_move)". Battle state block announces type (wild/trainer).
