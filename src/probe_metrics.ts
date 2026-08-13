@@ -22,11 +22,26 @@ bus.emit("state_read", { inBattle: 1, map: 51, badgeCount: 0, party: [{ hp: 20 }
 bus.emit("tool_call", { tool: "catch", args: { ball: "poke_ball", caught: true } } as any);
 bus.emit("think_chunk", { turn: 5, tokens: { prompt: 2000, completion: 300, model: "x" } } as any);
 bus.emit("state_read", { inBattle: 2, map: 54, badgeCount: 0, party: [{ hp: 5 }] } as any);    // trainer battle
-bus.emit("state_read", { inBattle: 0, map: 54, badgeCount: 0, party: [{ hp: 0 }] } as any);    // whiteout (all fainted)
+// wq#547: the whiteout fixture used to be a single all-fainted state_read.
+// That shape PROVED THE ARITHMETIC AND NOTHING ELSE — production never emits
+// it, because the all-fainted window closes inside one poll interval and was
+// caught in ZERO of the 1381 party-bearing state_reads on disk. The detector
+// now counts a blackout from its DURABLE CONSEQUENCES, so the fixture is the
+// consequence shape: purse halved, warped to a Center (58 = Pewter), party
+// back at full HP. Money must be present on BOTH reads for the transition to
+// exist, so the preceding trainer-battle read above carries it too.
+bus.emit("state_read", { inBattle: 0, map: 54, badgeCount: 0, money: 400, party: [{ hp: 5, maxHp: 76 }] } as any);
+bus.emit("state_read", { inBattle: 0, map: 58, badgeCount: 0, money: 200, party: [{ hp: 76, maxHp: 76 }] } as any);  // BLACKOUT
 bus.emit("tool_call", { tool: "heal_at_center", args: { map: 41, ok: true } } as any);
 bus.emit("tool_call", { tool: "buy_item", args: { item: "poke_ball", qty: 3, spent: 600 } } as any);
 bus.emit("tool_call", { tool: "use_item", args: { item: "potion", used: true } } as any);
-bus.emit("checkpoint", { file: "x", events: 42 } as any);
+// wq#522: this fixture used to be `{ file: "x", events: 42 }` — a payload that
+// production NEVER sends. The real writeCheckpoint spreads a sidecar carrying
+// its own `kind`, which clobbered the envelope and made maxEventCount read 0
+// in every run summary ever written. The test passed throughout because the
+// fixture omitted the one field that caused the bug. It now carries the shape
+// production actually emits, including a `kind` that must NOT win.
+bus.emit("checkpoint", { file: "x", kind: "periodic", events: 42 } as any);
 // wq#424 brain/internal split: brain-chosen tools count under toolCalls (junk
 // bucketed to _invalid); internal-layer emissions land in autoCalls.
 bus.emit("tool_call", { tool: "goto", args: ["10", "5"], src: "brain" } as any);

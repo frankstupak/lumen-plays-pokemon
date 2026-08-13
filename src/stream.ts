@@ -82,9 +82,19 @@ function renderEvent(m) {
     hud.innerHTML = "<b>MAP</b> " + m.map + " &nbsp;<b>POS</b> " + m.x + "," + m.y +
       "<br><b>BADGES</b> " + m.badgeCount + " &nbsp;<b>MONEY</b> ₽" + m.money +
       "<br><b>PARTY</b> " + (m.partyCount || "none") + "<br><b>BATTLE</b> " + (m.inBattle ? "YES" : "no") +
-      "<br><b style='color:#d29922'>CONTINUES</b> <span style='color:#f0b429;font-weight:bold'>" + retriesTxt.c + "</span>" +
+      // wq#547: the CONTINUES tile is GONE from the gameplay block. It was not
+      // miscounting - it counts brain-fail-streak/softlock resumes, which fired
+      // 217 times in August - but that is a HARNESS statistic sitting next to
+      // badges, and it has read 0 since the counter was created on 08-12. It
+      // now sits on the infra line beside RESTARTS, which is where wq#547 itself
+      // argues it belongs. WHITE-OUTS shows the MEASURED count; the hand-typed
+      // pre-instrumentation estimate is rendered separately and dim so it can
+      // never be mistaken for a live number.
       "<br><b style='color:#d29922'>WHITE-OUTS</b> <span style='color:#f0b429;font-weight:bold'>" + retriesTxt.w + "</span>" +
-      "<br><span style='color:#8b949e;font-size:10px'>RESTARTS (infra) " + retriesTxt.b + "</span>";
+      (retriesTxt.e && retriesTxt.e !== "0"
+        ? "<span style='color:#8b949e;font-size:10px'> +" + retriesTxt.e + " est. pre-08-13</span>" : "") +
+      "<br><span style='color:#8b949e;font-size:10px'>RESTARTS (infra) " + retriesTxt.b
+        + " &middot; resumes " + retriesTxt.c + "</span>";
     renderStats(m);   // wq#503
   }
   const cls = m.kind === "tool_call" ? "k-tool" : m.kind === "state_read" ? "k-state" : m.kind === "think_chunk" ? "k-think" : "k-sys";
@@ -143,14 +153,16 @@ pollPower(); setInterval(pollPower, 15000);
 // Lumen continue counter: lifetime resets (boots) + in-game white-outs.
 // Rendered inside the HUD stats list (under BATTLE); the hud is rebuilt on
 // every state_read, so we just keep the latest text in a var it reads.
-let retriesTxt = { c: "…", w: "…", b: "…" };
+let retriesTxt = { c: "…", w: "…", b: "…", e: "" };
 async function pollRetries() {
   try {
     const r = await (await fetch("/retries.json", { cache: "no-store" })).json();
-    if (r.continues === null || r.continues === undefined) { retriesTxt = { c: "…", w: "…", b: "…" }; return; }
-    // wq#470: continues = gameplayContinues; serviceBoots = infra restarts (dim line)
-    retriesTxt = { c: r.continues, w: r.whiteouts, b: (r.serviceBoots ?? "…") };
-  } catch (e) { retriesTxt = { c: "…", w: "…", b: "…" }; }
+    if (r.continues === null || r.continues === undefined) { retriesTxt = { c: "…", w: "…", b: "…", e: "" }; return; }
+    // wq#470: continues = gameplayContinues (now the dim infra "resumes").
+    // wq#547: w = OBSERVED blackouts only; e = frozen pre-instrumentation estimate.
+    retriesTxt = { c: r.continues, w: r.whiteouts, b: (r.serviceBoots ?? "…"),
+                   e: String(r.whiteoutsEstimatePre ?? "") };
+  } catch (e) { retriesTxt = { c: "…", w: "…", b: "…", e: "" }; }
 }
 pollRetries(); setInterval(pollRetries, 30000);
 
@@ -260,7 +272,8 @@ export class StreamServer {
   private power = new PowerMeter();
   // set by live_agent after RetryCounter construction; null-safe until then
   // wq#470: continues = gameplayContinues (kiosk number); serviceBoots = infra restarts
-  retryStats: (() => { continues: number; gameplayContinues: number; serviceBoots: number; whiteouts: number }) | null = null;
+  // wq#547: whiteouts is OBSERVED-only; whiteoutsEstimatePre rides alongside.
+  retryStats: (() => { continues: number; gameplayContinues: number; serviceBoots: number; whiteouts: number; whiteoutsEstimatePre: number }) | null = null;
   // wq#503: set by live_agent once the ROM name tables and the progress
   // trackers exist. Null-safe until then — the page renders "--" and the raw
   // map id rather than blocking on them.
@@ -296,7 +309,7 @@ export class StreamServer {
       }
       if (req.url?.startsWith("/retries.json")) {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(this.retryStats ? this.retryStats() : { continues: null, gameplayContinues: null, serviceBoots: null, whiteouts: null }));
+        res.end(JSON.stringify(this.retryStats ? this.retryStats() : { continues: null, gameplayContinues: null, serviceBoots: null, whiteouts: null, whiteoutsEstimatePre: null }));
         return;
       }
       // wq#503: static-per-ROM name tables, fetched once per page load.

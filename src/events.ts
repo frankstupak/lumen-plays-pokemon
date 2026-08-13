@@ -24,7 +24,23 @@ export class EventBus {
     this.retain();
   }
   emit(kind: EventKind, data: object) {
-    const e = { t: new Date().toISOString(), kind, ...data };
+    // wq#522: the ENVELOPE WINS. This used to be `{ t, kind, ...data }`, so any
+    // payload carrying its own `kind` silently rewrote the event kind. That is
+    // not hypothetical: writeCheckpoint spreads a sidecar whose own `kind` is
+    // "periodic" | "map" | "milestone", so EVERY checkpoint event in this
+    // project's history was emitted as kind="periodic". metrics.ts switches on
+    // "checkpoint", which therefore never matched, and maxEventCount read 0 in
+    // every run summary ever written. Spreading data FIRST and pinning the
+    // envelope last makes that class of collision impossible rather than
+    // fixing one instance of it.
+    // NOTE: pinning `kind` alone was not enough — my own probe caught that a
+    // payload `t` could still rewrite the timestamp. No current emitter
+    // sends one (verified: 0 of 443 on-disk events carry a bad `t`), but it is
+    // the identical latent collision and costs one line to close. The `t: ""`
+    // placeholder exists only to PIN KEY ORDER so log lines still lead with the
+    // timestamp; its value is overwritten immediately below.
+    const e: any = { t: "", ...data, kind };
+    e.t = new Date().toISOString();
     const line = JSON.stringify(e) + "\n";
     if (this.bytes + line.length > ROTATE_BYTES) {
       this.part++;
