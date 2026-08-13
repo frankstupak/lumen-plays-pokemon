@@ -11,7 +11,7 @@ import { WANTED, catchAdvice } from "./catch_policy";
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
 
-const rom = new Rom("roms/pokeblue.gb");
+const rom = new Rom("/home/lumen/pokemon/roms/pokeblue.gb");
 // MonsterNames is ROM-banked (07:421e per roms/pokeblue.sym); SymbolTable.addr
 // is WRAM-oriented, so the banked address is pinned here and asserted by the
 // CHARMELEON anchor below.

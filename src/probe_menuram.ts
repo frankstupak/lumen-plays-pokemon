@@ -8,8 +8,8 @@ import { Dialog } from "./dialog";
 import { EventBus } from "./events";
 import { Battle } from "./battle";
 
-const sym = new SymbolTable("roms/pokeblue.sym");
-const emu = new Emulator("roms/pokeblue.gb");
+const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
+const emu = new Emulator("/home/lumen/pokemon/roms/pokeblue.gb");
 const scr = new Screen(emu, sym);
 const sync = new Sync(emu, sym);
 const bus = new EventBus("/tmp", "probe-menuram-" + Date.now());
@@ -20,7 +20,7 @@ const rd = (n: string) => { try { return M()[sym.addr(n)]; } catch { return -1; 
 const dump = (tag: string) => console.log(`[${tag}] inBattle=${rd("wIsInBattle")} textBox=${rd("wTextBoxID")} curMenu=${rd("wCurrentMenuItem")} lowAlarm=${rd("wLowHealthAlarm")} watchedKeys=${rd("wMenuWatchedKeys")} savedMenu=${rd("wBattleAndStartSavedMenuItem")} cursor=${JSON.stringify(scr.cursor())} atMainMenu=${bat.atMainMenu()}`);
 
 (async () => {
-  loadSnapshotFile(emu, "saves/rival1-battle.state.gz");
+  loadSnapshotFile(emu, "/home/lumen/pokemon/saves/rival1-battle.state.gz");
   await emu.framesAsync(120); await sync.settle();
   console.log("=== rival1-battle (trainer, should reach menu) ===");
   dump("loaded");

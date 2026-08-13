@@ -6,6 +6,7 @@ import * as path from "path";
 import { corridorPhase, phaseWarnings, ROUTE4_EAST_RANK, ROUTE4_WEST_RANK,
          F_SUPER_NERD, F_DOME, F_HELIX, type CorridorPhase } from "./phase";
 import { SPLIT_MAPS, progressRank } from "./resume";
+import { haveSamples } from "./fixtures";
 import type { GameState } from "./state";
 
 let PASS = 0, FAIL = 0;
@@ -103,9 +104,20 @@ const walk = (d: string) => {
 };
 for (const d of dirs) if (fs.existsSync(d)) walk(d);
 console.log(`   ${found.length} map15 checkpoints on disk; x values: ${[...new Set(found.map(f => f.x))].join(",")}`);
+// wq#540: THIS IS THE EMPTY-CORPUS SHAPE, AND IT IS THE DANGEROUS ONE.
+// `found.every(...)` is TRUE on an empty array, so once the map15 checkpoints
+// rotated off disk this assertion became a FREE PASS that checked nothing —
+// it only reads as a failure here because of the `found.length > 0` conjunct
+// somebody had the sense to add. Most assertions of this shape do not have
+// one. haveSamples() makes the distinction explicit in the OUTPUT: a reader
+// can now tell "checked N samples, all passed" from "there was nothing to
+// check", which was impossible before.
+const haveMap15 = haveSamples("map15 checkpoints for phase classification", found.length);
 ok("every real map15 checkpoint classifies as MT_MOON_TRANSIT",
-   found.length > 0 && found.every(f => corridorPhase(st(15, f.x, f.y)) === "MT_MOON_TRANSIT"),
-   `${found.length} samples`);
+   haveMap15 && found.every(f => corridorPhase(st(15, f.x, f.y)) === "MT_MOON_TRANSIT"),
+   haveMap15 ? `${found.length} samples` :
+     `VACUOUS: 0 samples — corpus rot, not a code defect. These states stopped ` +
+     `being written once wq#518 stopped resuming there.`);
 // Stated plainly rather than dressed up as validation: every sample is west,
 // so this set CANNOT discriminate the threshold's value. Any boundary from
 // 12 to the map width classifies all of them identically. The boundary's

@@ -7,14 +7,35 @@ import { Emulator, loadSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { StateReader } from "./state";
 import { ceruleanGuidance, ceruleanBuyPlan } from "./guidance";
+// wq#540: TWO OF THIS PROBE'S THREE CASES NAMED CHECKPOINTS THAT HAVE ROTATED
+// OFF DISK, so it died with an ENOENT stack trace on the FIRST case and never
+// reached the third — which does still exist. What each case needs is a map,
+// not a filename: "a Route 4 state", "a Mt Moon 1F state", "a pre-Brock
+// museum state". Resolved by property, and a case whose map is no longer
+// represented is reported and skipped rather than killing the run.
+import { findFixture } from "./fixtures";
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
-const CASES = [
-  ["Route4 live", "/home/lumen/pokemon/checkpoints/auto-msqhs94q-map15.state.gz"],
-  ["MtMoon 1F", "/home/lumen/pokemon/checkpoints/auto-msqhs94q-map59.state.gz"],
-  ["preBrock museum", "/home/lumen/pokemon/checkpoints/archive-regressed-20260812/auto-mspxdhzz-map52.state.gz"],
+const WANTED: [string, number, string][] = [
+  ["Route4 live", 15, "guidance ACTIVE: post-Brock, inside the Cerulean approach"],
+  ["MtMoon 1F", 59, "guidance EMPTY: pre-Misty, inside the cave"],
+  ["preBrock museum", 52, "guidance EMPTY: pre-Brock archive state"],
 ];
+const CASES: [string, string][] = [];
+for (const [label, map, why] of WANTED) {
+  const f = findFixture(sc => sc.map === map,
+    [`${"/home/lumen/pokemon"}/checkpoints`, `${"/home/lumen/pokemon"}/saves`,
+     `${"/home/lumen/pokemon"}/checkpoints/archive-regressed-20260812`,
+     `${"/home/lumen/pokemon"}/checkpoints/archive-pre-s2`]);
+  if (f) CASES.push([label, f]);
+  else console.log(`SKIP ${label} (map ${map}) — no such state on disk. ` +
+                   `Expected ${why}. This is corpus rot, not a code defect.`);
+}
+if (!CASES.length) {
+  console.log("FAIL FIXTURE MISSING: not one of this probe's map cases is represented on disk.");
+  process.exit(1);
+}
 for (const [label, file] of CASES) {
   const e = new Emulator(ROM);
   loadSnapshotFile(e, file);
