@@ -4,7 +4,14 @@
 # Read-only against live data; writes only to /tmp.
 import json, os, subprocess, sys, time
 
-SENT = "/home/lumen/pokemon/tools/lpp-sentinel"
+# Resolve the tool UNDER TEST relative to this file, not to a fixed path.
+# wq#520: this was hardcoded to /home/lumen/pokemon/tools/lpp-sentinel, so
+# running the suite from a `lumen-pr start --worktree` checkout silently
+# verified the PRIMARY tree's sentinel instead of the edited one -- a green
+# run that proves nothing about your diff. $LPP_SENTINEL still overrides.
+SENT = os.environ.get(
+    "LPP_SENTINEL",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "lpp-sentinel"))
 TMP = "/tmp/lpp_sentinel_test"
 os.makedirs(TMP, exist_ok=True)
 PASS = FAIL = 0
@@ -122,6 +129,67 @@ mod.NOTEPAD = real
 board_mtime = os.path.getmtime(mod.BOARD)
 run(write("loop2.jsonl", loop))
 ok("dry-run leaves the board untouched", os.path.getmtime(mod.BOARD) == board_mtime, "board mtime unchanged")
+
+# ---- 11. wq#520 no_progress: RED / GREEN ----
+# Synthetic logs carry no "t", so the staleness guard cannot age them out
+# (unparseable timestamp -> no suppression, by design: never invent a clock).
+NOPROG = "--no-frontier", "--no-restart-loop", "--no-drift"
+static4 = [{"kind": "state_read", "map": 61, "x": 20, "y": 18,
+            "inBattle": 0, "storyScore": 6} for _ in range(4)]
+out = run(write("static4.jsonl", static4), NOPROG)
+ok("wq#520 no_progress fires on 4 zero-movement turns",
+   "no_progress" in out and "map61" in out,
+   [l for l in out.splitlines() if "NO PROGRESS" in l][:1])
+
+static3 = static4[:3]
+out = run(write("static3.jsonl", static3), NOPROG)
+ok("wq#520 no_progress silent at 3 turns (below threshold)",
+   "no_progress" not in out, "no alert")
+
+# GREEN: the agent is moving. One tile per turn is progress, not a stall.
+moving = [{"kind": "state_read", "map": 61, "x": 20 + i, "y": 18,
+           "inBattle": 0, "storyScore": 6} for i in range(8)]
+out = run(write("moving.jsonl", moving), NOPROG)
+ok("wq#520 no_progress silent while the agent moves", "no_progress" not in out, "no alert")
+
+# GREEN: standing still THROUGH A BATTLE is the game working, not the agent
+# stuck. This is the check's single most important false-positive guard --
+# 2764 of 7824 state_reads in the 08-07 log were in-battle.
+battle = [{"kind": "state_read", "map": 61, "x": 20, "y": 18,
+           "inBattle": 1, "storyScore": 6} for _ in range(12)]
+out = run(write("battle.jsonl", battle), NOPROG)
+ok("wq#520 no_progress ignores in-battle stationary turns",
+   "no_progress" not in out and "wallclock_stall" not in out, "no alert")
+
+# ---- 12. wq#520 wallclock_stall: RED / GREEN ----
+def stamped(n, minutes_apart, x=20, in_battle=0, start="2026-08-13T04:44:24"):
+    # Explicit UTC. time.mktime/localtime would round-trip through the host's
+    # zone and only happen to be right because this box runs UTC.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    base = _dt.fromisoformat(start).replace(tzinfo=_tz.utc)
+    return [{"kind": "state_read", "map": 61, "x": x, "y": 18, "inBattle": in_battle,
+             "storyScore": 6,
+             "t": (base + _td(minutes=i * minutes_apart)).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+            for i in range(n)]
+
+# 4 reads 9 minutes apart = 27 minutes held. Staleness must be overridden:
+# these timestamps are hours old by wall clock, which is itself the guard working.
+STALE_OFF = (*NOPROG, "--stale-after", "1000000")
+out = run(write("wc_red.jsonl", stamped(4, 9)), STALE_OFF)
+ok("wq#520 wallclock_stall fires after 10+ min without movement",
+   "wallclock_stall" in out,
+   [l for l in out.splitlines() if "WALL-CLOCK" in l][:1])
+
+# 4 reads 2 minutes apart = 6 minutes held: under the 10-minute threshold.
+out = run(write("wc_green.jsonl", stamped(4, 2)), STALE_OFF)
+ok("wq#520 wallclock_stall silent under the minute threshold",
+   "wallclock_stall" not in out, "no alert")
+
+# The staleness guard itself: the same RED log, default --stale-after, must be
+# silent because the run ended long ago and there is nothing to act on.
+out = run(write("wc_stale.jsonl", stamped(4, 9)), NOPROG)
+ok("wq#520 stall checks suppressed on an ended run (staleness guard)",
+   "wallclock_stall" not in out and "no_progress" not in out, "no alert")
 
 print(f"\n{PASS} PASS / {FAIL} FAIL")
 sys.exit(1 if FAIL else 0)
