@@ -21,6 +21,8 @@ Runs every 10 minutes via `lumen-lpp-sentinel.timer` (unit sources kept in
 | `stall` | storyScore flat across the window AND a step-budget SOFT alarm is active |
 | `rule_violation` | wq#488 borrow-guard rejections in the window |
 | `turnrate` | newest run <30% of the 24h mean turns/h (needs ≥3 qualifying runs) |
+| `no_progress` | **(wq#520)** ≥4 consecutive **out-of-battle** turns at one exact tile — zero net displacement. Independent of `--window`. |
+| `wallclock_stall` | **(wq#520)** the same tile held for ≥10 **minutes** of wall clock. Turn-counted thresholds silently rescale when the turn rate changes; a minute does not. |
 | `frontier_stall` | **(wq#515)** cross-run forward progress — badges and critical-path depth both flat for longer than the window (default 12h). See [FRONTIER.md](FRONTIER.md). |
 | `frontier_path_end` | the agent reached the last milestone in `CRITICAL_PATH`; the table needs extending or this check goes blind |
 | `frontier_unavailable` | the frontier engine failed to import or compute — reported loudly, because a monitor that quietly stops monitoring is the wq#515 failure itself |
@@ -48,12 +50,47 @@ Notepad checks degrade gracefully when `runtime/notepad.txt` is absent (fresh
 boot, or a pre-wq#486 binary), so the sentinel never alerts on its own
 prerequisites.
 
+## Sizing the stall checks (wq#520)
+
+`loop_position` needs 20 turns in a bbox. This system runs at roughly **3
+minutes per turn**, so that is a **sixty-minute** blind spot, and `loop_repeat`
+only counts *identical* action+result pairs — an agent can stand still
+indefinitely while varying its arguments and never trip either one. That is not
+hypothetical: on 2026-08-13 the agent held map61 (20,18) for **10 turns / 25
+minutes** issuing `goto(5,7)`, `goto(15,27)` and `enter_warp(3)`, and again held
+map60 (17,11) for 4 turns issuing two *different* `goto` targets. `no_progress`
+and `wallclock_stall` exist to catch exactly that shape.
+
+Both **exclude in-battle states**. Gen 1 holds the player on one tile for the
+length of a battle — 2764 of 7824 state reads in the 08-07 log were in-battle —
+so counting them would make every wild encounter look like a stall. In-battle
+reads are *dropped* rather than treated as movement, so an encounter in the
+middle of a genuine dead stop does not reset the counter.
+
+Both are suppressed by `--stale-after` (default 30 min) when the newest event is
+older than that: the run has ended and there is nothing to act on. **Known gap:**
+a *total* process freeze emits no events at all, so the log stops growing and
+these checks go quiet exactly when things are worst. That is service liveness,
+not agent progress, and it is not covered here.
+
+Backtest: `tools/backtest_520.py` replays every log on 10-minute ticks with the
+real 1h dedupe. At the defaults this is **17 `no_progress` + 4 `wallclock_stall`
+episodes across 9,458 turns** of campaign history — it fires on both documented
+misses without burying the board.
+
 ## Verification
 
-`tools/verify_489.py` — 14/14. Synthesises pathological logs and asserts every
+`tools/verify_489.py` — 21/21. Synthesises pathological logs and asserts every
 check fires, that healthy movement / multi-map windows / varied actions do NOT
 fire, that dedupe suppresses within the hour and releases after it, and that a
-dry run leaves the board untouched.
+dry run leaves the board untouched. The wq#520 checks get a RED and a GREEN case
+each, plus the in-battle and staleness guards.
+
+The tool under test is resolved **relative to `verify_489.py` itself**
+(`$LPP_SENTINEL` overrides). It used to be a hardcoded `/home/lumen/pokemon`
+path, which meant running the suite from a `lumen-pr start --worktree` checkout
+verified the *primary tree's* sentinel and returned green without ever executing
+the diff under review.
 
 `tools/probe_frontier.py` — 48/48 for the wq#515 frontier check, including the
 threshold backtest against the campaign's real history. See

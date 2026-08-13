@@ -17,6 +17,18 @@
 #                 alarm was seen for the current map
 #   violations    rule_violation events from the wq#488 borrow guard
 #   turnrate      turns/h below 30% of the 24h mean
+#   no_progress   (wq#520) ZERO net displacement across >=4 consecutive turns.
+#                 Deliberately independent of --window: `loop` needs 20 turns
+#                 in a bbox, which at the ~3 min/turn this system actually runs
+#                 at is a SIXTY-MINUTE blind spot. Keyed on displacement, not
+#                 on repeated arguments, because the agent can stand still
+#                 while issuing a different (and differently failing) command
+#                 every turn -- which is exactly what it did on 2026-08-13.
+#   wallclock_stall (wq#520) the same thing in WALL-CLOCK terms: no coordinate
+#                 change for >=10 minutes. Turn-counted thresholds silently
+#                 rescale when the turn rate changes; a minute does not.
+#                 Both of these EXCLUDE in-battle states -- standing still
+#                 through a battle is the game working, not the agent stuck.
 #   restart_loop  (wq#515) the harness keeps booting the SAME save, or boots
 #                 shallower than the previous run reached. Visible on the NEXT
 #                 boot, hours before any stall window can close.
@@ -181,6 +193,99 @@ def check_stall(evs, window):
                           f"— `{soft[-1]['line'][:70]}`")]
     return []
 
+def _standing_still(evs):
+    """Trailing run of consecutive OUT-OF-BATTLE state_reads at one exact tile.
+
+    Returns (count, first_event, last_event) for the streak that is still open
+    at the END of the log, or (0, None, None). Only the trailing streak counts:
+    a dead stop the agent has already walked out of is history, not an alarm.
+
+    In-battle reads are DROPPED, not treated as movement. Gen 1 battles hold the
+    player on one tile for many turns, so counting them would make every wild
+    encounter look like a stall (2764 of 7824 reads in the 08-07 log were
+    in-battle). Dropping rather than breaking the streak is deliberate too: an
+    encounter in the middle of a genuine dead stop must not reset the counter,
+    which is what would have hidden the 08-04 note-loop.
+    """
+    states = [e for e in evs
+              if e.get("kind") == "state_read"
+              and isinstance(e.get("map"), int)
+              and not e.get("inBattle")]
+    if not states:
+        return 0, None, None
+    last = states[-1]
+    tile = (last.get("map"), last.get("x"), last.get("y"))
+    streak = []
+    for s in reversed(states):
+        if (s.get("map"), s.get("x"), s.get("y")) != tile:
+            break
+        streak.append(s)
+    streak.reverse()
+    return len(streak), streak[0], streak[-1]
+
+
+def _age_minutes(ev, now=None):
+    """Minutes between an event's ISO timestamp and now. None if unparseable."""
+    try:
+        t = datetime.fromisoformat(str(ev.get("t")).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return (now - t).total_seconds() / 60.0
+
+
+def check_no_progress(evs, min_turns, stale_after):
+    """wq#520 MISS 1(a): zero net displacement across >=min_turns turns.
+
+    Independent of --window by design. See the header note: `loop` is sized in
+    turns and needs 20 of them, which is an hour of wall clock at the rate this
+    system actually runs, so a hard stop drains its whole budget unnoticed.
+    """
+    n, first, last = _standing_still(evs)
+    if n < min_turns or first is None:
+        return []
+    age = _age_minutes(last)
+    if age is not None and age > stale_after:
+        return []                     # run is over; nothing actionable here
+    span = ""
+    try:
+        t0 = datetime.fromisoformat(str(first.get("t")).replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(str(last.get("t")).replace("Z", "+00:00"))
+        span = f" over {(t1 - t0).total_seconds() / 60.0:.0f} min"
+    except Exception:
+        pass
+    return [("no_progress",
+             f"NO PROGRESS: {n} consecutive out-of-battle turns at map{first.get('map')} "
+             f"({first.get('x')},{first.get('y')}) with ZERO movement{span} — the agent is "
+             f"issuing commands that do not move it")]
+
+
+def check_wallclock_stall(evs, minutes, stale_after):
+    """wq#520 MISS 1(b): no coordinate change for >=N minutes of wall clock.
+
+    The turn-counted siblings rescale silently when the turn rate changes; this
+    one does not, which is the entire reason it exists as a separate check.
+    """
+    n, first, last = _standing_still(evs)
+    if n < 2 or first is None:
+        return []
+    age = _age_minutes(last)
+    if age is not None and age > stale_after:
+        return []
+    try:
+        t0 = datetime.fromisoformat(str(first.get("t")).replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(str(last.get("t")).replace("Z", "+00:00"))
+    except Exception:
+        return []                     # unparseable clock: say nothing, never guess
+    held = (t1 - t0).total_seconds() / 60.0
+    if held < minutes:
+        return []
+    return [("wallclock_stall",
+             f"WALL-CLOCK STALL: map{first.get('map')} ({first.get('x')},{first.get('y')}) "
+             f"unchanged for {held:.0f} min across {n} turns — last movement "
+             f"{first.get('t')}")]
+
+
 def check_violations(evs, window):
     v = [e for e in evs[-(window * 6):] if e.get("kind") == "rule_violation"]
     if not v:
@@ -331,6 +436,15 @@ def main():
                     help="skip the wq#515 deployed-vs-origin drift check")
     ap.add_argument("--min-streak", type=int, default=2,
                     help="consecutive boots on one save before restart_loop alarms")
+    ap.add_argument("--min-static-turns", type=int, default=4,
+                    help="wq#520 consecutive zero-movement turns before no_progress alarms")
+    ap.add_argument("--stall-minutes", type=float, default=10.0,
+                    help="wq#520 minutes without a coordinate change before wallclock_stall alarms")
+    ap.add_argument("--stale-after", type=float, default=30.0,
+                    help="wq#520 suppress both stall checks if the newest event is older than "
+                         "this many minutes — the run has ended and nothing is actionable")
+    ap.add_argument("--no-stall-checks", action="store_true",
+                    help="skip the wq#520 no_progress / wallclock_stall checks")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -345,6 +459,9 @@ def main():
     alerts += check_stall(evs, args.window)
     alerts += check_violations(evs, args.window)
     alerts += check_turnrate()
+    if not args.no_stall_checks:
+        alerts += check_no_progress(evs, args.min_static_turns, args.stale_after)
+        alerts += check_wallclock_stall(evs, args.stall_minutes, args.stale_after)
     if not args.no_frontier:
         alerts += check_frontier(args.frontier_hours)
     if not args.no_restart_loop:
