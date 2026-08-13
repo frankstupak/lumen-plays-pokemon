@@ -63,6 +63,16 @@ export const CFG = {
   // 0 = OFF = brain every turn (current behavior; policy default is Frank's
   // call — see wq decision ticket). N>0 = up to N harness turns per brain turn.
   autoTurnRatio: envN0("LPP_AUTO_TURN_RATIO", 0),
+  // wq#476: per-map good-run STEP estimates (manhattan-delta proxy summed over
+  // state_reads; see watchdog in live_agent.ts). Soft alarm at 2x = notepad
+  // warning + turn_summary; hard at 3x = designed continue (exit(3) -> resume
+  // from best checkpoint, milestone-aware via wq#471 storyScore ranking).
+  // Calibration: RESEARCH-P2P4 §2 — Mt Moon good run ~1k steps total.
+  mapStepBudgets: {
+    59: envN("LPP_BUDGET_MAP59", 500),   // Mt Moon 1F (main maze)
+    60: envN("LPP_BUDGET_MAP60", 150),   // Mt Moon B1F (connector)
+    61: envN("LPP_BUDGET_MAP61", 450),   // Mt Moon B2F (fossil floor)
+  } as Record<number, number>,
   historyKeepVerbatim: 30,    // recent turn summaries kept verbatim
   historyCompactAt: 80,       // fold-forward compaction threshold
   escalateAfterStallTurns: 12,
