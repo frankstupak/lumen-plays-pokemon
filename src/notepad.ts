@@ -261,7 +261,7 @@ export class Notepad {
       catch { verdict = null; }               // a broken checker must not drop pins
       if (verdict && !verdict.holds) {
         result.dropped.push(p);
-        this.rolling.push(`CORRECTION (boot check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
+        this.rolling.push(`CORRECTION (state check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
       } else {
         survivors.push(p);
         result.kept++;
@@ -275,6 +275,23 @@ export class Notepad {
     this.lastVerification = result;
     return result;
   }
+
+  /** wq#531. Re-arm the lazy verification so the NEXT renderNotes() re-checks
+   *  the pinned region against RAM.
+   *
+   *  Needed because pickResume sits INSIDE the outer for(;;) in live_agent.ts,
+   *  so a resume can roll the save back WITHOUT a process restart. The Notepad
+   *  outlives that rollback -- it is deliberately one instance for the whole
+   *  process (wq#486) -- so `verified` stays true and the pins are never
+   *  re-checked against the state they now describe. A pin verified against a
+   *  save the game has since abandoned is exactly the stale-claim failure
+   *  wq#519 exists to prevent, reached by a path wq#519 did not cover.
+   *
+   *  Deliberately does NOT verify eagerly. At the moment resume selects a file
+   *  the snapshot may not be loaded yet, so a checker reading RAM would read
+   *  the OUTGOING state and could drop a pin that the incoming state supports.
+   *  Re-arming preserves the lazy-on-render timing that makes the read safe. */
+  rearmClaimVerification(): void { this.verified = false; }
 
   renderNotes(): string {
     // Lazy trigger: first render after a checker is installed. Keeps the whole
