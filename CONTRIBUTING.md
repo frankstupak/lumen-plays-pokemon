@@ -89,3 +89,12 @@ becomes the commit on `main`.
 
 By contributing, you agree that your contributions are licensed under the ISC
 License that covers this project.
+
+## History note
+
+Commits before
+[`2f1bb4a`](https://github.com/frankstupak/lumen-plays-pokemon/commit/2f1bb4a77ceebd301e5573c92a8837c6cf07b7aa)
+predate the Conventional Commits standard adopted for this project and include
+internal ticket references and status notes in their subject lines. They are
+left as-is rather than rewritten — published history does not get rewritten
+here. Everything from that commit onward follows the format described above.
