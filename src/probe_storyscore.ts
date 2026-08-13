@@ -41,7 +41,7 @@ for (const dir of DIRS) {
       const flags = STORY_FLAGS.filter(x => rd.eventFlag(x.idx)).map(x => x.name);
       rows.push({ f, dir: dir.endsWith("20260812") ? "ARCHIVE" : "live",
         map: s.map, badges: s.badgeCount, events: rd.eventCount(),
-        story: rd.storyScore(), rank: progressRank(s.map), hpPct, ppOk,
+        story: rd.storyScore(), rank: progressRank(s.map, s.x, s.y), hpPct, ppOk,
         viable: hpPct >= VIABLE_HP_PCT && ppOk, mtime: 0,
         brock: rd.eventFlag(0x077), flags });
     } catch (err) { console.log(`LOAD-FAIL ${path}: ${err}`); }
