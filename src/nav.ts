@@ -53,10 +53,20 @@ export function astar(map: MapModel, sx: number, sy: number, tx: number, ty: num
   return null;
 }
 
+/** wq#542: per-step visibility. Off costs one boolean read per step; on costs
+ *  one JSONL line per planned step. Default ON — the whole point is that the
+ *  live log can answer "did the agent follow its plan?" without a replay. */
+const TRACE = (process.env.LPP_NAV_TRACE ?? "1") !== "0";
+/** How many planned cells to record per plan. The head is what decides whether
+ *  a journey escapes its starting neighbourhood; the tail is 70 cells of noise. */
+const TRACE_HEAD = Number(process.env.LPP_NAV_TRACE_HEAD ?? 8);
+
 export class Navigator {
   private learnedBlocked = new Set<string>();
   constructor(private emu: Emulator, private sym: SymbolTable, private map: MapModel,
               private bus: EventBus, private sync?: Sync) {}
+
+  private trace(data: object) { if (TRACE) this.bus.emit("nav_trace", data); }
 
   pos() { const m = this.emu.mem();
     return { map: m[this.sym.addr("wCurMap")], x: m[this.sym.addr("wXCoord")], y: m[this.sym.addr("wYCoord")] }; }
@@ -108,11 +118,23 @@ export class Navigator {
         return "stuck";
       }
       noPath = 0;
+      this.trace({ ev: "plan", tx, ty, replan: replans, from: { x: p.x, y: p.y },
+                   len: path.length,
+                   head: path.slice(0, TRACE_HEAD).map(c => [c.x, c.y]),
+                   blocked: [...this.learnedBlocked] });
       for (const cell of path) {
         const cur = this.pos();
         const dx = cell.x - cur.x, dy = cell.y - cur.y;
-        if (Math.abs(dx) + Math.abs(dy) !== 1) break; // desynced from plan -> replan
+        if (Math.abs(dx) + Math.abs(dy) !== 1) {
+          this.trace({ ev: "desync", replan: replans, at: { x: cur.x, y: cur.y },
+                       want: [cell.x, cell.y] });
+          break; // desynced from plan -> replan
+        }
         const r = await this.step(dx, dy);
+        const now = this.pos();
+        this.trace({ ev: "step", replan: replans, from: [cur.x, cur.y],
+                     want: [cell.x, cell.y], d: [dx, dy], r,
+                     to: [now.x, now.y], moved: now.x !== cur.x || now.y !== cur.y });
         if (r === "warped") return "warped";
         if (r === "battle") return "battle";
         if (r === "dialog") return "dialog";
@@ -124,6 +146,13 @@ export class Navigator {
       const q = this.pos();
       if (q.x === tx && q.y === ty) return "arrived";
     }
+    // 25 replans without arriving. learnedBlocked is per-journey and only ever
+    // GROWS inside one goto, so its contents here are the walls this journey
+    // taught itself — the difference between "the map is closed" and "we talked
+    // ourselves into a box".
+    const e = this.pos();
+    this.trace({ ev: "exhausted", tx, ty, at: [e.x, e.y],
+                 blocked: [...this.learnedBlocked] });
     return "stuck";
   }
 
