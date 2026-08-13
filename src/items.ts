@@ -13,15 +13,83 @@ import { Screen } from "./screen";
 import { Sync } from "./sync";
 import { Dialog } from "./dialog";
 import { EventBus } from "./events";
+import { decodeGen1Bytes } from "./names";
+
+/** Structural, so items.ts does not depend on the concrete Rom class (and so
+ *  probes can hand in a stub). Matches Rom.byte(bank, addr). */
+export interface RomLike { byte(bank: number, addr: number): number }
 
 export const ITEM = {
   MASTER_BALL: 1, ULTRA_BALL: 2, GREAT_BALL: 3, POKE_BALL: 4,
   MOON_STONE: 0x0a, ANTIDOTE: 0x0b, BURN_HEAL: 0x0c, ICE_HEAL: 0x0d,
   AWAKENING: 0x0e, PARLYZ_HEAL: 0x0f, FULL_RESTORE: 0x10, MAX_POTION: 0x11,
   HYPER_POTION: 0x12, SUPER_POTION: 0x13, POTION: 0x14, ESCAPE_ROPE: 0x1d, REPEL: 0x1e,
+  // wq#519: quest items the agent can CLAIM to hold. Without these, ITEM_NAME
+  // could not name a fossil, so the corridor pack's "acquisition is TRUE only
+  // if a state read shows it" rule was unenforceable by our own tooling and a
+  // false "Dome Fossil confirmed in inventory" pin survived seven writes.
+  // Ids read out of THIS ROM's ItemNames table (01:472b), not recalled -- the
+  // ticket itself said HELIX was 0x28 and the ROM says 0x2a. probe_claims
+  // asserts all three against the ROM so a recalled id fails a test.
+  OLD_AMBER: 0x1f, DOME_FOSSIL: 0x29, HELIX_FOSSIL: 0x2a,
 } as const;
 export const ITEM_NAME: Record<number, string> = Object.fromEntries(
   Object.entries(ITEM).map(([k, v]) => [v, k.toLowerCase()]));
+
+/** wq#519: backfill ITEM_NAME from THIS ROM's ItemNames table (01:472b, a
+ *  0x50-terminated list, index = id-1) so an inventory read can name what it
+ *  sees instead of printing "id234" -- which is what probe_bag487 printed for
+ *  the one item the agent actually owns.
+ *
+ *  GAPS ONLY, never overwrite. The hand-written names are load-bearing beyond
+ *  display: buy() derives its mart-cursor match from ITEM_NAME[id] (the
+ *  toUpperCase/underscore/"POKe" transform below), so replacing "poke_ball"
+ *  with the ROM's "POKe BALL" would silently break purchasing. Verified
+ *  against the ROM: all 17 pre-existing ids already agree with ItemNames.
+ *
+ *  Table LENGTH is derived, not assumed (wq#503 precedent): ItemNames and
+ *  ItemPrices must agree on the entry count or we throw rather than read past
+ *  the end of a table on a ROM whose layout moved. */
+export function backfillItemNames(rom: RomLike, sym: SymbolTable): { added: number; total: number; placeholders: number } {
+  const t = sym.sym("ItemNames");
+  const end = sym.nextAddr(t.bank, t.addr);
+  const prices = sym.sym("ItemPrices");
+  const priceCount = (sym.nextAddr(prices.bank, prices.addr) - prices.addr) / 3;  // 3-byte BCD each
+  let addr = t.addr, id = 1, added = 0, placeholders = 0, total = 0;
+  while (addr < end && id < 512) {
+    const buf: number[] = [];
+    let b = -1;
+    while (addr < end) { b = rom.byte(t.bank, addr++); if (b === 0x50) break; buf.push(b); }
+    if (b !== 0x50) break;                       // truncated entry: stop, do not guess
+    const { text, unmapped } = decodeGen1Bytes(buf);
+    if (!text) break;
+    total++;
+    // Detect a broken decode from the INPUT BYTES, never from a "?" in the
+    // output: 0xE6 is a real question mark and ids 7 and 44 are genuinely named
+    // "?????" in this ROM. An output-based check would have thrown on a
+    // correctly-decoded name -- it did, on the first run of probe_claims.
+    if (unmapped.length)
+      throw new Error(`ItemNames id ${id} has unmapped byte(s) ${unmapped.map(x => "0x" + x.toString(16)).join(",")} -> "${text}"; extend decodeGen1Bytes before trusting this table`);
+    if (/^\?+$/.test(text)) { placeholders++; id++; continue; }   // unused Gen 1 slot
+    if (ITEM_NAME[id] === undefined) { ITEM_NAME[id] = text.toLowerCase().replace(/\s+/g, "_"); added++; }
+    id++;
+  }
+  if (total !== priceCount)
+    throw new Error(`item table mismatch: ItemNames=${total} entries but ItemPrices=${priceCount} -- ROM layout moved`);
+  return { added, total, placeholders };
+}
+
+/** Human label for ANY id, including ones no table can name. Returns an
+ *  explicitly-unknown string rather than undefined, because the failure this
+ *  ticket exists to stop is a confident claim about an item nobody checked.
+ *  Ids above the named table are Gen 1 machines (TM/HM); their base is a ROM
+ *  CONSTANT, not a symbol, so it is not derivable from pokeblue.sym and this
+ *  deliberately does NOT guess a TM number -- see the wq#519 report. */
+export function itemLabel(id: number): string {
+  const n = ITEM_NAME[id];
+  if (n) return n;
+  return `unknown_item_${id}`;
+}
 
 const BALLS: number[] = [ITEM.MASTER_BALL, ITEM.ULTRA_BALL, ITEM.GREAT_BALL, ITEM.POKE_BALL];
 const HP_HEAL: number[] = [ITEM.POTION, ITEM.SUPER_POTION, ITEM.HYPER_POTION, ITEM.MAX_POTION, ITEM.FULL_RESTORE];
