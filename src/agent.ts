@@ -366,6 +366,15 @@ export class Agent {
     const goal = this.transit.goal!;
 
     if (this.bat.active()) {
+      // The battle-intro frames leave wBattleMonHP at 0 until the HP bar
+      // finishes drawing, so reading state here would read "0/76" and the
+      // HP<=25% gate would hand every FRESH encounter back to the brain —
+      // exactly the loop this ticket exists to kill (observed live 02:49Z:
+      // full-HP Charmeleon, 0 balls, wild Zubat, still handed back). Wait for
+      // the main menu first: menu-up is the harness's existing proof that
+      // battle RAM has settled (battle.ts gates every move the same way).
+      const wm = await this.bat.waitForMenu();
+      if (wm !== "menu") return null;      // ended/resolving: brain re-reads next turn
       const b = this.bat.state();
       const wild = b.inBattle !== 2;
       const st = this.reader.read();
@@ -387,9 +396,8 @@ export class Agent {
           ? `flee transit -> fled; resuming goto(${goal.x},${goal.y})`
           : `flee transit -> ${r} (fail ${goal.fleeFails}/2, then fight)` };
       }
-      // fight: strongest move with PP - identical selection to wq#472 plannedAuto
-      const w = await this.bat.waitForMenu();
-      if (w !== "menu") return null;
+      // fight: strongest move with PP - identical selection to wq#472
+      // plannedAuto. The menu is already confirmed up (gate at the top).
       let best = usable[0], bestPow = -1;
       for (const i of usable) {
         const pow = MOVES[b.moves[i]]?.power ?? 30;

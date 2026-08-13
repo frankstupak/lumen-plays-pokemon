@@ -51,6 +51,9 @@ export const TRANSIT_RESUME_CAP = 5;          // ticket: cap resumes per target
 
 export interface BattleCtx {
   wild: boolean;          // inBattle === 1 (trainer battles are never ours)
+  // CALLER CONTRACT: read HP only AFTER the battle main menu is up. During the
+  // intro frames wBattleMonHP is still 0, and feeding that here makes every
+  // fresh encounter look HP-critical and hand back to the brain (live 02:49Z).
   hpFrac: number;         // lead HP fraction; 1 when maxHp is unknown
   hasUsableMove: boolean; // at least one move with PP > 0
   wanted: boolean;        // catch policy wants this foe AND a catch is possible
