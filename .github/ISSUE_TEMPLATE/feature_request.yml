@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a capability or a change to how the agent plays
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project holds to the originality rules in `docs/DOCTRINE.md`:
+        no borrowed harness code, deterministic tools carry the mechanics, and
+        game state is read from RAM rather than pixels. Proposals are weighed
+        against those constraints.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What the agent currently cannot do, or does badly, and where that shows up.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: |
+        The mechanism, roughly. Which layer it belongs in — perception, a
+        deterministic tool, navigation, memory, or the brain loop.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How it would be proven
+      description: |
+        What an acceptance probe for this would assert. A capability without a
+        probe is hard to land here.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
