@@ -4,7 +4,7 @@
 import { Rom } from "./rom";
 import { SymbolTable } from "./symbols";
 import { GameNames, decodeGen1, prettifyLabel, statusLabel, BADGE_NAMES } from "./names";
-import { MilestoneLog, StuckWatch, prettifyFlag, objectiveFrom, sentinelAlerts, LOOP_WINDOW } from "./trainer_panel";
+import { MilestoneLog, StuckWatch, prettifyFlag, objectiveFrom, sentinelAlerts, paceFrom, LOOP_WINDOW } from "./trainer_panel";
 
 const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
 const rom = new Rom("/home/lumen/pokemon/roms/pokeblue.gb");
@@ -101,6 +101,15 @@ eq("latest milestone wins", log.last()!.flag, "EVENT_BEAT_MISTY");
 
 // ── sentinel read is fail-soft ────────────────────────────────────────────
 eq("missing sentinel state -> no alerts", sentinelAlerts("/nonexistent/sentinel.json"), []);
+
+// ── pace: a run with no turns has no pace, and must not read as "stalled" ──
+eq("zero-turn run yields no pace",
+  paceFrom({ current: { turns: 0, turnsPerH: 0, brainPerH: 0 }, generatedAt: "T" }), null);
+eq("a real run yields its pace",
+  paceFrom({ current: { turns: 88, turnsPerH: 40.8, brainPerH: 21.8 }, generatedAt: "T" }),
+  { turnsPerH: 40.8, brainPerH: 21.8, at: "T" });
+eq("no run summaries at all -> no pace", paceFrom({ current: null }), null);
+eq("malformed summary -> no pace", paceFrom({ current: { turns: 5 } }), null);
 
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

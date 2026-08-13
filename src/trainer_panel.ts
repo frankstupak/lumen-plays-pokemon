@@ -160,6 +160,22 @@ export function objectiveFrom(guidance: string): string | null {
   return null;
 }
 
+/** Pull a displayable pace out of `lpp-stats --json`, or null when there is
+ *  not one yet.
+ *
+ *  A run that has recorded no turns reports 0 turns/h, because the arithmetic
+ *  is 0 divided by the wall clock. That is the ABSENCE of a measurement, not a
+ *  measurement of zero, and "0 t/h" on a screen across the room reads as
+ *  "stalled" when the truth is "restarted forty seconds ago". Returning null
+ *  keeps the panel on "--" until the first metrics flush lands. */
+export function paceFrom(raw: unknown): { turnsPerH: number | null; brainPerH: number | null; at: string | null } | null {
+  const j = raw as { current?: { turnsPerH?: number; brainPerH?: number; turns?: number }; generatedAt?: string } | null;
+  const c = j?.current;
+  if (!c || typeof c.turnsPerH !== "number" || typeof c.brainPerH !== "number") return null;
+  if (!c.turns) return null;
+  return { turnsPerH: c.turnsPerH, brainPerH: c.brainPerH, at: typeof j?.generatedAt === "string" ? j.generatedAt : null };
+}
+
 /** turns/h and brain-calls/h come from tools/lpp-stats --json. The ticket is
  *  explicit: reuse it, do not reimplement it. Two implementations of the same
  *  rate is how the tablet ends up contradicting the board.
@@ -184,10 +200,8 @@ export class RatesCache {
         this.inflight = false;
         if (err) return;                       // keep the last good value
         try {
-          const j = JSON.parse(stdout) as { current?: { turnsPerH?: number; brainPerH?: number }; generatedAt?: string };
-          const c = j.current;
-          if (!c || typeof c.turnsPerH !== "number" || typeof c.brainPerH !== "number") return;
-          this.value = { turnsPerH: c.turnsPerH, brainPerH: c.brainPerH, at: j.generatedAt ?? null };
+          const v = paceFrom(JSON.parse(stdout));
+          if (v) this.value = v;
         } catch { /* malformed output: keep the last good value */ }
       });
   }
