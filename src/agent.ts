@@ -21,9 +21,10 @@ import { moveLabel, MOVES } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
-import { catchAdvice } from "./catch_policy";
+import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
+import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { CFG } from "./config";
 
 const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on disk
@@ -40,6 +41,10 @@ export class Agent {
   // after construction (survives in-process agent reboots there); undefined
   // in probes/run_agent = feature simply absent, zero behavior change.
   recovery?: RecoveryTracker;
+  // wq#487: movement-goal ownership. A goto interrupted by a wild battle stays
+  // OURS: we flee the encounter and re-walk the same target deterministically
+  // instead of paying a brain turn per encounter. Per-agent, not persisted.
+  transit = new TransitTracker();
   private mapHistory: number[] = [];   // recent map ids for oscillation detection
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
@@ -110,10 +115,22 @@ export class Agent {
       if (stock.includes(ITEM.POKE_BALL) && balls < 3) wants.push(`poke_ball (have ${balls}, want 3+)`);
       for (const h of heals) if (this.items.count(h) < 2) wants.push(`${ITEM_NAME[h]} (have ${this.items.count(h)})`);
       if (stock.includes(ITEM.ANTIDOTE) && this.items.count(ITEM.ANTIDOTE) < 1) wants.push(`antidote (have 0)`);
+      // wq#487: repels are the cheapest turn-saver we can buy for cave transits
+      // (Cerulean map67 and Vermilion map91 stock them, $350 each — GameFAQs RB
+      // mart list, cross-checked vs the MART_ORDER tables in items.ts).
+      if (stock.includes(ITEM.REPEL) && this.items.count(ITEM.REPEL) < 2 && st.money >= 350)
+        wants.push(`repel (have ${this.items.count(ITEM.REPEL)}, want 2 - $350, blocks cave encounters for 100 steps)`);
       if (wants.length)
         block += `\nTIP: in a Mart with $${st.money} - stock up via buy_item: ${wants.join(", ")}`;
     }
     block += `\nBAG ${this.items.bagLine()}`;
+    // wq#487: transit handback (a goto target that has burned its resume cap)
+    // and the repel advisory for cave transits.
+    const tAdv = this.transit.advice();
+    if (tAdv) block += `\n${tAdv}`;
+    const rAdv = repelAdvice(st.map, this.items.count(ITEM.REPEL), this.repelSteps(),
+                             Object.keys(CFG.mapStepBudgets).map(Number));
+    if (rAdv) block += `\n${rAdv}`;
 
     this.map.build();
     const p = this.nav.pos();
@@ -145,8 +162,12 @@ export class Agent {
     try {
       switch (tool) {
         case "goto": {
-          const r = await this.nav.goto(Number(args[0]), Number(args[1]));
-          if (r === "battle") return "goto interrupted by a wild battle - fight it with battle_move";
+          const tx = Number(args[0]), ty = Number(args[1]);
+          const r = await this.nav.goto(tx, ty);
+          // wq#487: a goto cut short by a battle becomes a harness-owned goal;
+          // any other outcome retires it. Must run before the returns below.
+          this.transit.onGoto(tx, ty, r, this.nav.pos().map);
+          if (r === "battle") return "goto interrupted by a wild battle - the harness will flee it and resume this goto automatically";
           if (r === "dialog") return "goto blocked: a dialog or sign text is open - use talk() to clear it first";
           if (r === "stuck") {
             const p = this.nav.pos();
@@ -159,7 +180,10 @@ export class Agent {
           const w = this.map.warps[Number(args[0])];
           if (!w) return "enter_warp: bad index";
           const r = await this.nav.enterWarp(w);
-          if (r === "battle") return "enter_warp interrupted by a wild battle - fight it with battle_move";
+          // wq#487: enterWarp walks to the tile first, so a wild encounter
+          // interrupts it exactly like a goto - same ownership rules.
+          this.transit.onWarp(w, r, this.nav.pos().map);
+          if (r === "battle") return "enter_warp interrupted by a wild battle - the harness will flee it and resume this warp automatically";
           if (r === "dialog") return "enter_warp blocked: a dialog or sign text is open - use talk() to clear it first";
           const landed = this.reader.read().map;
           const osc = this.notePotentialOscillation(landed);
@@ -318,6 +342,93 @@ export class Agent {
     return null;
   }
 
+  /** wq#487: live repel timer (wRepelRemainingSteps, 0xd0db). 0 when the symbol
+   *  is missing so the advisory degrades to "no repel active", never throws. */
+  private repelSteps(): number {
+    try { return this.emu.mem()[this.sym.addr("wRepelRemainingSteps")] ?? 0; } catch { return 0; }
+  }
+
+  /**
+   * wq#487: TRANSIT deterministic turn — fires ONLY while a goto goal the
+   * harness owns is in flight (set in dispatch when a goto is interrupted by a
+   * wild battle). Two jobs, both zero brain calls:
+   *   - in a WILD battle: flee (fight only after two failed flees); trainer
+   *     battles, HP <= 25%, catch targets and XP-grind mode all hand back.
+   *   - in the overworld: re-walk the SAME target, capped at
+   *     CFG.transitResumeCap attempts, after which the brain gets the goal back
+   *     with an explicit "pick a different target" line (see observe()).
+   * Independent of autoBudget by design: this removes brain calls that were
+   * pure waste, so it must work at LPP_AUTO_TURN_RATIO=0.
+   * Returns null whenever the brain should own the turn.
+   */
+  private async transitAuto(): Promise<{ kind: string; result: string } | null> {
+    if (!CFG.transitPolicy || !this.transit.active()) return null;
+    const goal = this.transit.goal!;
+
+    if (this.bat.active()) {
+      const b = this.bat.state();
+      const wild = b.inBattle !== 2;
+      const st = this.reader.read();
+      const balls = this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL) + this.items.count(ITEM.ULTRA_BALL);
+      const usable = b.moves.map((m, i) => (m && (b.pp[i] & 0x3f) > 0) ? i : -1).filter(i => i >= 0);
+      const d = this.transit.battleStep({
+        wild,
+        hpFrac: b.myMaxHp > 0 ? b.myHp / b.myMaxHp : 1,
+        hasUsableMove: usable.length > 0,
+        wanted: wild && balls > 0 && st.party.length < 6 && !!WANTED[b.foeSpecies],
+        grind: CFG.xpGrind,
+      });
+      if (d.action === "brain") return null;
+      if (d.action === "flee") {
+        this.bus.emit("tool_call", { tool: "flee", args: [], src: "transit" });
+        const r = await this.bat.flee();
+        this.transit.noteFlee(r);
+        return { kind: "flee", result: r === "fled"
+          ? `flee transit -> fled; resuming goto(${goal.x},${goal.y})`
+          : `flee transit -> ${r} (fail ${goal.fleeFails}/2, then fight)` };
+      }
+      // fight: strongest move with PP - identical selection to wq#472 plannedAuto
+      const w = await this.bat.waitForMenu();
+      if (w !== "menu") return null;
+      let best = usable[0], bestPow = -1;
+      for (const i of usable) {
+        const pow = MOVES[b.moves[i]]?.power ?? 30;
+        if (pow > bestPow) { bestPow = pow; best = i; }
+      }
+      this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)], src: "transit" });
+      await this.bat.useMove(best);
+      this.transit.noteFight();
+      const b2 = this.bat.state();
+      return { kind: "fight", result: `battle_move(${best}) transit [${moveLabel(b.moves[best])}] my ${b2.myHp}/${b2.myMaxHp} foe ${b2.foeHp}/${b2.foeMaxHp}` };
+    }
+
+    // Overworld. Dialogs and open choices are never ours: wq#472/the brain
+    // clear them, and only then does walking make sense again.
+    if (this.sync.textUp() || this.dlg.open() || this.scr.cursor()) return null;
+    this.transit.battleEnded();
+    const p = this.nav.pos();
+    const d = this.transit.overworldStep({ map: p.map, x: p.x, y: p.y }, CFG.transitResumeCap);
+    if (d.action !== "resume") return null;
+
+    if (goal.kind === "warp") {
+      // Warp tables are rebuilt per map.build(); re-find OUR warp by tile (and
+      // destination when known) rather than trusting a stale index.
+      this.map.build();
+      const w = this.map.warps.find(v => v.x === goal.x && v.y === goal.y &&
+        (goal.destMap === undefined || v.destMap === goal.destMap));
+      if (!w) { this.transit.clear(); return null; }   // warp gone: brain re-reads WARPS
+      this.bus.emit("tool_call", { tool: "enter_warp", args: [`${goal.x},${goal.y}`], src: "transit" });
+      const rw = await this.nav.enterWarp(w);
+      this.transit.onWarp(w, rw, this.nav.pos().map);
+      return { kind: "resume_warp", result: `enter_warp(${goal.x},${goal.y}->map${goal.destMap}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${rw} now ${JSON.stringify(this.nav.pos())}` };
+    }
+
+    this.bus.emit("tool_call", { tool: "goto", args: [String(goal.x), String(goal.y)], src: "transit" });
+    const r = await this.nav.goto(goal.x, goal.y);
+    this.transit.onGoto(goal.x, goal.y, r, this.nav.pos().map);
+    return { kind: "resume", result: `goto(${goal.x},${goal.y}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${r} now ${JSON.stringify(this.nav.pos())}` };
+  }
+
   /** wq#423: per-battle counters. HP-only signature: PP is deliberately
    *  excluded so a move that fires but never lands (Normal vs Ghost) still
    *  reads as a stall. Reset the moment the battle is over. */
@@ -379,13 +490,22 @@ export class Agent {
     let think = "", act = "", result = "";
     let plannedTurn = false;
     const forced = await this.battleLockForce();
+    // wq#487: transit turns (flee an interrupting encounter / resume the
+    // interrupted goto). Checked BEFORE plannedAuto and independent of the
+    // wq#472 budget: soft-lock escalation still outranks it.
+    const transited = forced === null ? await this.transitAuto() : null;
     // wq#472: planned deterministic turn between brain calls (null = feature
     // off, budget spent, or state needs judgment -> brain path).
-    const planned = (forced === null && this.autoBudget > 0) ? await this.plannedAuto() : null;
+    const planned = (forced === null && transited === null && this.autoBudget > 0) ? await this.plannedAuto() : null;
     if (forced !== null) {
       result = forced;
       act = "AUTO:battle_lock";
       think = "[soft-lock escalation - harness action, no brain call]";
+    } else if (transited !== null) {
+      plannedTurn = true;
+      result = transited.result;
+      act = `DET:transit_${transited.kind}`;
+      think = "[transit policy - harness action, no brain call (wq#487)]";
     } else if (planned !== null) {
       this.autoBudget--;
       plannedTurn = true;

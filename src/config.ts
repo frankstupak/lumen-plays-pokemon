@@ -63,6 +63,16 @@ export const CFG = {
   // 0 = OFF = brain every turn (current behavior; policy default is Frank's
   // call — see wq decision ticket). N>0 = up to N harness turns per brain turn.
   autoTurnRatio: envN0("LPP_AUTO_TURN_RATIO", 0),
+  // wq#487 TRANSIT policy: while a goto goal is in flight, wild encounters are
+  // fled deterministically and the interrupted goto is resumed without a brain
+  // call (see src/transit.ts). Deliberately INDEPENDENT of autoTurnRatio: this
+  // is a targeted loop-breaker, not a rate lever, so it works at ratio=0.
+  // ON by default; LPP_TRANSIT=0 is a full revert with no redeploy.
+  transitPolicy: envN0("LPP_TRANSIT", 1) > 0,
+  transitResumeCap: envN("LPP_TRANSIT_RESUME_CAP", 5),
+  // wq#487: when an XP grind is the point (pre-gym levelling), transit must NOT
+  // flee. Off by default; LPP_XP_GRIND=1 turns encounters back into content.
+  xpGrind: envN0("LPP_XP_GRIND", 0) > 0,
   // wq#476: per-map good-run STEP estimates (manhattan-delta proxy summed over
   // state_reads; see watchdog in live_agent.ts). Soft alarm at 2x = notepad
   // warning + turn_summary; hard at 3x = designed continue (exit(3) -> resume

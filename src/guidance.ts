@@ -61,6 +61,13 @@ export function ceruleanBuyPlan(money: number, potions: number): string {
   if (nPot > 0) { buys.push(`buy(potion, ${nPot})`); budget -= nPot * 300; }
   if (budget >= 100) { buys.push("buy(antidote, 1)"); budget -= 100; }
   if (budget >= 200) { buys.push("buy(parlyz_heal, 1)"); budget -= 200; }
+  // wq#487: repels are the cheapest turn-saver in the game for cave transits
+  // (ROM-verified 100 steps of no weak wild encounters — pokeblue bank 03
+  // ItemUseRepel `ld b,$64`). $350 each; Cerulean is the FIRST mart that
+  // stocks them, and Rock Tunnel is the next cave after Mt Moon. Lowest
+  // priority: healing and the Misty gate come first.
+  const nRep = Math.min(2, Math.floor(budget / 350));
+  if (nRep > 0) { buys.push(`buy(repel, ${nRep})`); budget -= nRep * 350; }
   if (!buys.length)
     return potions >= MISTY_MIN_POTIONS
       ? "stock is fine - no purchases needed"
