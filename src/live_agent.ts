@@ -27,6 +27,8 @@ import { CFG } from "./config";   // wq#476: mapStepBudgets
 import { GameNames, BADGE_NAMES, STATUS_BITS } from "./names";   // wq#503
 import { MilestoneLog, StuckWatch, RatesCache, sentinelAlerts, objectiveFrom, LOOP_SPAN, LOOP_WINDOW } from "./trainer_panel";
 import { STORY_FLAGS } from "./state";
+import { corridorPhase, phaseReason, phaseWarnings, F_SUPER_NERD, F_DOME, F_HELIX,
+         type CorridorPhase } from "./phase";
 
 // wq#476/486: reference to the currently-running Agent so the step-budget
 // watchdog can push warnings into the GUIDANCE channel (harness->brain), never
@@ -169,7 +171,8 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // guidance never pollutes other corridors. Content rules: map IDs verified
 // (pokered constants); NO invented tile coordinates — the state block's WARPS
 // list is authoritative, guidance stays at route-intent level.
-function corridorNotepad(badgeCount: number): string {
+function corridorNotepad(badgeCount: number, phase: CorridorPhase,
+                         superNerdBeaten = false, haveFossil = false): string {
   if (badgeCount === 0) return [
     "GOAL: beat BROCK in Pewter Gym (map54) for the Boulder Badge.",
     "PROGRESS: parcel done, forest crossed, Pewter reached. CHARMANDER ~L15",
@@ -214,45 +217,14 @@ function corridorNotepad(badgeCount: number): string {
     "RULE: if a tool returns stuck twice at the same tile, try a different",
     "  tool or warp index - never repeat the exact failing action.",
   ].join("\n");
-  if (badgeCount === 1) return [
-    "GOAL: cross MT MOON, reach CERULEAN CITY (map3), beat MISTY for badge 2.",
-    "CORRIDOR: Route3(map14) -> Route4 west(map15) -> MT MOON 1F(map59)",
-    "  -> B1F(map60) -> B2F(map61) -> back up to exit -> Route4 EAST(map15)",
-    "  -> CERULEAN(map3). Mt Moon floors connect by LADDER warps - use the",
-    "  WARPS list in your state block; coordinates there are exact, trust them.",
-    "MT MOON ROUTE INTENT (floor by floor):",
-    "  * 1F (map59): a maze with trainers. Objective = find the ladder DOWN",
-    "    (a warp in the WARPS list). Fight trainers you cannot walk around.",
-    "  * B1F (map60): small connector floor. Take the next ladder onward.",
-    "  * B2F (map61): Rocket grunts + a SUPER NERD guarding TWO FOSSILS.",
-    "    Beat the Super Nerd, then take a fossil (policy below), then head",
-    "    for the ladder that leads UP toward the EAST exit.",
-    "FOSSIL POLICY (deterministic - do NOT deliberate):",
-    "  Take the DOME FOSSIL. Always the Dome. If the game asks you to choose,",
-    "  choose the DOME FOSSIL and move on immediately. One fossil only - the",
-    "  other disappears; that is normal, never go back for it.",
-    "RAM-VERIFIED CLAIMS ONLY (hard rule for this corridor):",
-    "  NEVER write or assume 'I got the fossil / found an item' from dialog",
-    "  alone. Acquisition is TRUE only if a check_inventory/state read shows",
-    "  it. Past runs hallucinated 'found fossil' and looped. Verify, then act.",
-    "  Item balls on the floor are OPPORTUNISTIC pickups - grab them when",
-    "  adjacent on your path, never detour more than a few tiles for one.",
-    "EXIT INTENT: the goal of Mt Moon is the EAST EXIT, not exploration.",
-    "  After the fossil, every ladder choice should move you toward the exit.",
-    "  Once your map becomes 15 (Route 4, east side) or 3 (Cerulean):",
-    "  DO NOT re-enter Mt Moon. There is nothing left inside. Go EAST.",
-    "  Route 4 east is one-way downhill ledges toward Cerulean - keep going.",
-    "HEAL PROTOCOL: the Route 4 west side by the Mt Moon entrance has a",
-    "  POKEMON CENTER. Heal BEFORE entering Mt Moon and any time you exit",
-    "  at low HP. Inside the mountain there is no healing - manage PP.",
-    "STEP DISCIPLINE: Mt Moon is ~1000 steps for a good run. If a floor's",
-    "  step-budget warning appears in this notepad, stop exploring, pick the",
-    "  nearest unvisited ladder warp, and commit to it.",
-    "RULE: warps INSIDE a floor are ladders/exits - enter_warp is how you",
-    "  change floors here (unlike buildings). Use WARPS indices from state.",
-    "RULE: if a tool returns stuck twice at the same tile, try a different",
-    "  tool or warp index - never repeat the exact failing action.",
-  ].join("\n");
+  if (badgeCount === 1) {
+    // wq#514: the badges===1 pack used to be ONE block containing both
+    // "Route4 west(map15) -> MT MOON 1F" and "DO NOT re-enter Mt Moon". The
+    // brain could not tell which map15 it was on, so both applied at once.
+    // The two halves are now mutually exclusive and chosen from position.
+    if (phase === "CERULEAN_APPROACH") return ceruleanApproachPack();
+    return mtMoonTransitPack(superNerdBeaten, haveFossil);
+  }
   return [
     `GOAL: continue the badge campaign (badges so far: ${badgeCount}).`,
     "Follow the milestone chain: Cerulean -> Nugget Bridge -> BILL (mandatory",
@@ -263,6 +235,97 @@ function corridorNotepad(badgeCount: number): string {
   ].join("\n");
 }
 
+
+// ---------------------------------------------------------------- wq#514
+// MT_MOON_TRANSIT: badges 1, agent at or before the cave (Route 3, Route 4
+// WEST, the Mt Moon Pokecentre, or any Mt Moon floor). This pack owns the
+// crossing. It never mentions Cerulean-side navigation, and the east pack
+// never mentions this one.
+function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): string {
+  const objective = superNerdBeaten
+    ? [
+        "MT MOON IS ALREADY CLEARED (RAM-verified: the exit Super Nerd is beaten).",
+        "  Do NOT hunt for him again and do NOT explore for items. Your ONLY",
+        "  remaining job inside the mountain is to reach the EAST EXIT.",
+      ]
+    : [
+        "MT MOON B2F holds Rocket grunts and a SUPER NERD guarding TWO FOSSILS.",
+        "  Beat the Super Nerd, take ONE fossil, then head for the EAST EXIT.",
+        "FOSSIL POLICY (deterministic - do NOT deliberate): take the DOME FOSSIL.",
+        "  If asked to choose, choose DOME and move on immediately. One fossil",
+        "  only - the other disappears; that is normal, never go back for it.",
+      ];
+  return [
+    "GOAL: cross MT MOON and come out its EAST side.",
+    "WHERE YOU ARE: at or before the mountain. The Route 4 you are standing on",
+    "  (if map 15) is the WEST pocket - a dead-end bowl whose only ways on are",
+    "  the Mt Moon entrance and the Pokemon Center. You cannot walk east from",
+    "  here; columns 20-23 are solid wall. Going through the cave is the ONLY",
+    "  forward path. Entering Mt Moon from here is CORRECT.",
+    "CORRIDOR: Route3(map14) -> Route4 west(map15) -> MT MOON 1F(map59)",
+    "  -> B1F(map60) -> B2F(map61) -> ladder back up to the EAST exit.",
+    "  Floors connect by LADDER warps - use the WARPS list in your state block;",
+    "  those coordinates are exact, trust them over any memory.",
+    "FLOOR INTENT:",
+    "  * 1F (map59): a maze with trainers. Objective = the ladder DOWN.",
+    "    Fight trainers you cannot walk around - they are also your only income.",
+    "  * B1F (map60): small connector floor. Take the next ladder onward.",
+    ...objective,
+    haveFossil
+      ? "  A fossil is already in hand (RAM-verified) - do not seek another."
+      : "  No fossil is in hand yet (RAM-verified) - dialog claiming otherwise is wrong.",
+    "RAM-VERIFIED CLAIMS ONLY (hard rule for this corridor):",
+    "  NEVER write or assume 'I got the fossil / found an item' from dialog",
+    "  alone. Acquisition is TRUE only if a check_inventory/state read shows it.",
+    "  Past runs hallucinated 'found fossil' and looped. Verify, then act.",
+    "  Item balls on the floor are OPPORTUNISTIC - grab them when adjacent on",
+    "  your path, never detour more than a few tiles for one.",
+    "HEAL PROTOCOL: the Route 4 WEST pocket has a POKEMON CENTER at the (11,5)",
+    "  warp. Heal BEFORE going underground and any time you surface at low HP.",
+    "  Inside the mountain there is no healing - manage PP.",
+    "STEP DISCIPLINE: the crossing is ~1000 steps for a good run. If a floor's",
+    "  step-budget warning appears, stop exploring, pick the nearest unvisited",
+    "  ladder warp, and commit to it.",
+    "RULE: warps INSIDE a floor are ladders/exits - enter_warp is how you change",
+    "  floors here (unlike buildings). Use WARPS indices from your state block.",
+    "RULE: if a tool returns stuck twice at the same tile, try a different tool",
+    "  or warp index - never repeat the exact failing action.",
+  ].join("\n");
+}
+
+// CERULEAN_APPROACH: badges 1, agent PAST the cave (Route 4 east or beyond).
+// wq#514 deliverable 4: this pack contains no instruction about entering the
+// mountain in ANY form, not even as a negation -- per wq#488, a negated
+// instruction still puts the action in context, and "do not re-enter Mt Moon"
+// sitting next to a ladder is how the agent spent five days re-entering it.
+function ceruleanApproachPack(): string {
+  return [
+    "GOAL: reach CERULEAN CITY (map3) and beat MISTY for badge 2.",
+    "WHERE YOU ARE: on the EAST side of the mountain, past the crossing. This",
+    "  is the far half of Route 4 and it is a DIFFERENT PLACE from the pocket",
+    "  you started in, even though both report map 15. You are through. The",
+    "  crossing is behind you and is finished business.",
+    "DIRECTION: east and downhill. Route 4 east is one-way ledges - hopping a",
+    "  ledge is progress and cannot be undone, which is exactly what you want.",
+    "  Keep heading EAST until the map id becomes 3 (CERULEAN CITY).",
+    "IF A WARP LEADS BACK WEST UNDERGROUND, IT IS NOT YOUR ROUTE. Your route is",
+    "  the open air to the EAST. Prefer walking east over any warp.",
+    "IN CERULEAN (map3):",
+    "  * POKEMON CENTER first if anyone is hurt - free full heal, sets respawn.",
+    "  * MART: buy POKE BALLs (200 each) before anything else if you can afford",
+    "    them; a party of one loses the whole run to a single whiteout.",
+    "  * GYM is MISTY: STARMIE L21 / STARYU L18, both WATER. A Fire starter is",
+    "    at a type DISADVANTAGE here - do not lead with Ember and expect wins.",
+    "    Level up on Route 4 east and Route 24 trainers first if under L25.",
+    "MONEY: trainer battles are the ONLY income in this game. Fight the trainers",
+    "  you meet on the way east rather than routing around them - a full purse",
+    "  is what makes balls and potions possible.",
+    "RAM-VERIFIED CLAIMS ONLY: never assert an acquisition or a beaten trainer",
+    "  from dialog alone; confirm with a state or inventory read.",
+    "RULE: if a tool returns stuck twice at the same tile, try a different tool",
+    "  or warp index - never repeat the exact failing action.",
+  ].join("\n");
+}
 
 (async () => {
   // wq#477: one tracker for the whole process (survives in-process agent
@@ -289,7 +352,30 @@ function corridorNotepad(badgeCount: number): string {
     const brain = new Brain(bus);
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
     agent.pad = pad;                                              // wq#486: shared, persisted
-    pad.setGuidance("CORRIDOR", corridorNotepad(reader.read().badgeCount));  // wq#476 -> guidance channel
+    // wq#514: corridor guidance is REFRESHED EVERY TURN and selected by a
+    // RAM-verified phase, replacing the wq#476 boot pin. Pinning once at boot
+    // is what let a pack describing the pre-cave approach stay in context
+    // after the agent had crossed -- the guidance outlived the situation it
+    // described, and no amount of correct text fixes that.
+    let phaseNow: CorridorPhase | undefined;
+    const refreshCorridorGuidance = () => {
+      const st = reader.read();
+      const next = corridorPhase(st, phaseNow);
+      // Fossil possession is an EVENT FLAG, not a bag item: wq#519 correctly
+      // proved no fossil is in the BAG and that src/items.ts has no fossil
+      // ids, but pokered records fossils in wEventFlags, so this is the
+      // RAM-verified read that claim actually needed.
+      const nerd = F_SUPER_NERD !== null && reader.eventFlag(F_SUPER_NERD);
+      const fossil = (F_DOME !== null && reader.eventFlag(F_DOME)) ||
+                     (F_HELIX !== null && reader.eventFlag(F_HELIX));
+      if (next !== phaseNow) {
+        bus.emit("turn_summary", { line: `corridor ${phaseReason(st, next)}` });
+        phaseNow = next;
+      }
+      pad.setGuidance("CORRIDOR", corridorNotepad(st.badgeCount, next, nerd, fossil));
+    };
+    if (phaseWarnings.length) bus.emit("turn_summary", { line: `PHASE WARN: ${phaseWarnings.join("; ")}` });
+    refreshCorridorGuidance();
     agent.recovery = recovery;   // wq#477: regression detector + goal injection
     liveAgent = agent;   // wq#476: expose to step-budget watchdog
     // wq#478/486: dynamic Cerulean/Misty stage guidance — now its OWN guidance
@@ -301,6 +387,7 @@ function corridorNotepad(badgeCount: number): string {
     for (;;) {
       try {
         refreshStageGuidance();   // wq#478
+        refreshCorridorGuidance();   // wq#514: phase can change mid-run
         await agent.runTurn();
         failStreak = 0;
         await sleep(1500);   // stream readability: let viewers read the THINK line
