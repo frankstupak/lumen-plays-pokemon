@@ -17,6 +17,17 @@
 #                 alarm was seen for the current map
 #   violations    rule_violation events from the wq#488 borrow guard
 #   turnrate      turns/h below 30% of the 24h mean
+#   restart_loop  (wq#515) the harness keeps booting the SAME save, or boots
+#                 shallower than the previous run reached. Visible on the NEXT
+#                 boot, hours before any stall window can close.
+#   deploy_drift  (wq#515) running sha != tree sha != origin/main. "Landed on
+#                 origin" is not "live", and the running sha is resolved from
+#                 the reflog at process start, never from git rev-parse HEAD.
+#   frontier      (wq#515) CROSS-RUN forward progress: badges + critical-path
+#                 depth have not advanced inside the window. Every check above
+#                 is scoped WITHIN one run and keyed on a DECREASE, which is
+#                 why all of them reported healthy through a 120-hour freeze.
+#                 This one is wall-clock, spans runs, and fires on FLATNESS.
 #
 # Outputs: one-line NOTE appended to the agent board ($LPP_BOARD) + ntfy via the fleet
 # choke point (/home/lumen/bin/ntfy-send). Dedupe: the same alert key fires at
@@ -25,8 +36,29 @@
 # Usage: lpp-sentinel [--dry-run] [--window N] [--events FILE] [--quiet]
 #   --dry-run     print alerts, do not append to the board or send ntfy
 #   --events      analyse a specific log (used by the synthetic-loop test)
+#   --frontier-hours N  stall window for the wq#515 frontier check
 import argparse, glob, gzip, json, os, subprocess, sys, time
 from datetime import datetime, timezone
+
+# wq#515: the frontier engine is a sibling module, imported rather than
+# reimplemented. Two implementations of one progress number is how the kiosk
+# ends up contradicting the board (rabbit6's wq#503 warning) — lpp-stats and
+# this sentinel both call into lpp_frontier so they cannot disagree.
+# Resolved defensively: verify_489.py loads this file with exec(compile(...)),
+# a context where __file__ does not exist. rabbit8's original line raised
+# NameError there and silently broke the wq#489 regression suite while the
+# sentinel itself kept working as a script -- a test-only failure is exactly
+# the kind that goes unnoticed.
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
+sys.path.insert(0, _HERE)
+try:
+    import lpp_frontier
+except Exception as _e:            # never let a monitor crash the monitor
+    lpp_frontier = None
+    _frontier_import_err = _e
 
 BASE = "/home/lumen/pokemon"
 # The agent coordination board lives OUTSIDE this repo: it is an operations
@@ -188,9 +220,70 @@ def check_turnrate():
                              f"{mean:.1f} ({latest[1]/mean:.0%} of normal)")]
     return []
 
+def check_frontier(window_hours):
+    """wq#515: has the game actually moved forward, across runs, in wall time?
+
+    The gap every other check shares: they are scoped within a single run and
+    fire on a DECREASE. This one persists a frontier (max badges + furthest
+    critical-path map) outside any run and fires on FLATNESS. Read-only like
+    the rest of the sentinel — it alerts, it never touches the game.
+
+    Failure to compute is reported, not swallowed: a monitor that silently
+    stops monitoring is the exact failure mode wq#515 exists to end.
+    """
+    if lpp_frontier is None:
+        return [("frontier_unavailable",
+                 f"FRONTIER CHECK DEAD: cannot import lpp_frontier "
+                 f"({type(_frontier_import_err).__name__}: {_frontier_import_err}) "
+                 f"— cross-run stall detection is OFF")]
+    try:
+        st = lpp_frontier.compute(window_h=window_hours)
+    except Exception as e:
+        return [("frontier_unavailable",
+                 f"FRONTIER CHECK DEAD: {type(e).__name__}: {e} "
+                 f"— cross-run stall detection is OFF")]
+    if not st.get("ok"):
+        return [("frontier_unavailable", f"FRONTIER CHECK DEAD: {st.get('reason')}")]
+    lpp_frontier.persist(st)
+    if st.get("pathExhausted") or st.get("stalled"):
+        return [lpp_frontier.format_alert(st)]
+    return []
+
+
+def check_restart_loop(min_streak):
+    """wq#515 absorbed scope: is the harness advancing its own starting point?
+
+    Separate alert key from frontier_stall on purpose. A stall says "nothing is
+    moving"; this says WHY, and it can say it on the second boot rather than
+    after a 12h window. Both firing together is the whole story in two lines.
+    """
+    if lpp_frontier is None:
+        return []                      # frontier_unavailable already reported it
+    try:
+        rl = lpp_frontier.restart_loop(min_streak=min_streak)
+    except Exception as e:
+        return [("restart_loop_unavailable",
+                 f"RESTART-LOOP CHECK DEAD: {type(e).__name__}: {e}")]
+    if not rl.get("ok"):
+        return [("restart_loop_unavailable", f"RESTART-LOOP CHECK DEAD: {rl.get('reason')}")]
+    return [lpp_frontier.format_restart_alert(rl)] if rl.get("looping") else []
+
+
+def check_deploy_drift():
+    """wq#515: is the code we believe we shipped the code that is running?"""
+    if lpp_frontier is None:
+        return []
+    try:
+        d = lpp_frontier.deploy_drift()
+    except Exception as e:
+        return [("deploy_drift_unavailable",
+                 f"DRIFT CHECK DEAD: {type(e).__name__}: {e}")]
+    if not d.get("ok"):
+        return [("deploy_drift_unavailable", f"DRIFT CHECK DEAD: {d.get('reason')}")]
+    return [lpp_frontier.format_drift_alert(d)] if d.get("drifted") else []
+
 
 # ---------------------------------------------------------------- output
-
 def emit(alerts, args, state):
     """Board NOTE + ntfy, deduped per key for DEDUPE_SEC. Returns fired list."""
     now = time.time()
@@ -227,6 +320,17 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print only; no board write, no ntfy")
     ap.add_argument("--window", type=int, default=20, help="turns in the analysis window")
     ap.add_argument("--events", help="analyse this event log instead of the newest")
+    ap.add_argument("--frontier-hours", type=float,
+                    default=(lpp_frontier.DEFAULT_WINDOW_H if lpp_frontier else 12.0),
+                    help="wq#515 cross-run frontier stall window, in hours")
+    ap.add_argument("--no-frontier", action="store_true",
+                    help="skip the wq#515 cross-run frontier check")
+    ap.add_argument("--no-restart-loop", action="store_true",
+                    help="skip the wq#515 restart-loop check")
+    ap.add_argument("--no-drift", action="store_true",
+                    help="skip the wq#515 deployed-vs-origin drift check")
+    ap.add_argument("--min-streak", type=int, default=2,
+                    help="consecutive boots on one save before restart_loop alarms")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -241,6 +345,12 @@ def main():
     alerts += check_stall(evs, args.window)
     alerts += check_violations(evs, args.window)
     alerts += check_turnrate()
+    if not args.no_frontier:
+        alerts += check_frontier(args.frontier_hours)
+    if not args.no_restart_loop:
+        alerts += check_restart_loop(args.min_streak)
+    if not args.no_drift:
+        alerts += check_deploy_drift()
 
     state = load_state()
     fired = emit(alerts, args, state)
