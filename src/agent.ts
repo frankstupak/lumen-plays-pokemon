@@ -6,7 +6,7 @@ import { Emulator, KEYS, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel } from "./map";
-import { Navigator } from "./nav";
+import { Navigator, astar } from "./nav";
 import { EventBus } from "./events";
 import { Screen } from "./screen";
 import { Sync } from "./sync";
@@ -21,7 +21,8 @@ import { moveLabel, MOVES } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
-import { economyAdvice } from "./economy";           // wq#516
+import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
+import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
 import { MISTY_MIN_LEVEL } from "./guidance";        // wq#516: next-gym level target
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
@@ -181,6 +182,36 @@ export class Agent {
     const p = this.nav.pos();
     block += `\n${renderWarps(this.currentWarpViews())}`;
     block += `\nMAPGRID (P=you W=warp N=npc #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+
+    // wq#528: the ONE income/XP goal the harness can actually complete, or
+    // nothing. Every gate lives in trainers.ts and the module is fail-closed on
+    // any map whose trainer header table we have not verified, so this is
+    // silent everywhere except Mt Moon 1F/B2F today. The step budget is the
+    // load-bearing gate: rabbit15 measured 2-4 steps per encounter against a
+    // resume cap of 5, so a target further than ~cap*3 cannot be walked to and
+    // offering one would reproduce wq#521 wearing this ticket's clothes.
+    {
+      const lead = st.party[0];
+      const leadLevel = lead?.level ?? 0;
+      const trs = decodeTrainers(this.emu.mem(), this.rom, this.sym, st.map);
+      const steps = new Map<number, number | null>();
+      // Beaten trainers are never pathed to: astar over a dozen sprites every
+      // brain turn is affordable, but farming a corpse is not.
+      for (const t of trs)
+        steps.set(t.sprite, t.beaten ? null
+          : (astar(this.map, p.x, p.y, t.x, t.y, new Set<string>())?.length ?? null));
+      const ch = pickEngageTarget(trs, {
+        leadLevel,
+        hpFrac: lead && lead.maxHp > 0 ? lead.hp / lead.maxHp : 1,
+        money: st.money,
+        ballPrice: BALL_PRICE,
+        gymMinLevel: MISTY_MIN_LEVEL,
+        resumeCap: CFG.transitResumeCap,
+        steps,
+      });
+      const eng = engageAdvice(ch, leadLevel, leadLevel > 0 && leadLevel < MISTY_MIN_LEVEL);
+      if (eng) block += `\n${eng}`;
+    }
 
     const text = this.scr.text();
     if (text.trim()) block += `\nSCREEN TEXT:\n${text}`;
