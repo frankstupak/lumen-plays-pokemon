@@ -24,6 +24,9 @@ import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
 import { CFG } from "./config";   // wq#476: mapStepBudgets
+import { GameNames, BADGE_NAMES, STATUS_BITS } from "./names";   // wq#503
+import { MilestoneLog, StuckWatch, RatesCache, sentinelAlerts, objectiveFrom, LOOP_SPAN, LOOP_WINDOW } from "./trainer_panel";
+import { STORY_FLAGS } from "./state";
 
 // wq#476/486: reference to the currently-running Agent so the step-budget
 // watchdog can push warnings into the GUIDANCE channel (harness->brain), never
@@ -107,6 +110,58 @@ const dlg = new Dialog(emu, scr, sync, bus, sym);
 const act = new Actions(emu, nav, dlg, sync, scr, bus, sym);
 const bat = new Battle(emu, sym, scr, sync, dlg, bus);
 const reader = new StateReader(emu, sym);
+
+// ── wq#503: kiosk trainer-stats panel ────────────────────────────────────
+// The tablet had ~314px of unused width and showed no trainer stats. Jay's
+// ask: progress at a glance, and "he is stuck" visible to an observer who can
+// then relay it. Everything below is RAM- or ROM-derived or absent; nothing
+// here may fabricate a value.
+const gameNames = new GameNames(rom, sym);
+const milestones = new MilestoneLog();
+milestones.bind(`${RUNTIME}/milestones.json`);
+const stuckWatch = new StuckWatch();
+const rates = new RatesCache("/home/lumen/pokemon/tools/lpp-stats", "/home/lumen/pokemon");
+rates.start(60000);
+const SENTINEL_STATE = `${RUNTIME}/sentinel_state.json`;
+
+stream.names = () => ({
+  maps: gameNames.maps, mons: gameNames.mons,
+  badges: BADGE_NAMES, statusBits: STATUS_BITS,
+  mapCount: gameNames.mapCount, monCount: gameNames.monCount,
+});
+
+// Milestone + loop tracking ride the same state_read the panel already gets,
+// so the panel can never disagree with the game about where the player is.
+let lastStory: number | null = null;
+bus.on(e => {
+  const ev = e as any;
+  if (ev.kind !== "state_read" || typeof ev.map !== "number") return;
+  stuckWatch.observe(ev.map, ev.x, ev.y);
+  if (typeof ev.storyScore === "number" && ev.storyScore !== lastStory) {
+    lastStory = ev.storyScore;
+    milestones.observe(reader.storyFlagsSet());   // only on a change: 25 bit reads
+  }
+});
+
+stream.progress = () => {
+  const loop = stuckWatch.state();
+  const alerts = sentinelAlerts(SENTINEL_STATE);
+  const reasons: string[] = [];
+  if (loop?.looping)
+    reasons.push(`no movement: ${loop.turns} turns inside a ${loop.spanX + 1}x${loop.spanY + 1} box on map ${loop.map}`);
+  for (const a of alerts) reasons.push(`sentinel ${a.key} (${Math.round(a.agoSec / 60)}m ago)`);
+  return {
+    storyScore: lastStory, storyMax: STORY_FLAGS.length,
+    objective: liveAgent ? objectiveFrom(liveAgent.pad.renderGuidance()) : null,
+    milestone: milestones.last(),
+    rates: rates.get(),
+    stuck: { active: reasons.length > 0, reasons },
+    loop: loop ? { turns: loop.turns, spanX: loop.spanX, spanY: loop.spanY, map: loop.map } : null,
+    loopRule: { window: LOOP_WINDOW, span: LOOP_SPAN },
+    sentinel: alerts,
+    at: new Date().toISOString(),
+  };
+};
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -227,6 +282,10 @@ function corridorNotepad(badgeCount: number): string {
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
+    // wq#503: flags that arrive WITH a resumed save were earned earlier, so
+    // record them as observations, not as milestones reached just now.
+    milestones.observe(reader.storyFlagsSet(), new Date(), true);
+    lastStory = reader.storyScore();
     const brain = new Brain(bus);
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
     agent.pad = pad;                                              // wq#486: shared, persisted
