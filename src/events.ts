@@ -7,8 +7,13 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
   | "turn_summary" | "checkpoint" | "boot" | "verify" | "battle_softlock"
   | "regression"   // wq#477: whiteout/story-regression detected or cleared
   | "rule_violation"   // wq#488: brain tried to write borrowed content to notes
-  | "oscillation";   // wq#517: warp-loop notice tripped (structured, so wq#515
+  | "oscillation"   // wq#517: warp-loop notice tripped (structured, so wq#515
                      // detectors and lpp-stats count trips without parsing prose)
+  | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
+                   // nav.goto. The turn-level log records position ONCE PER TURN,
+                   // POST-ACTION, which makes every decision inside a journey
+                   // invisible and has now defeated three separate attempts to
+                   // measure why the agent does not cross Mt Moon B2F.
 
 const ROTATE_BYTES = Number(process.env.LPP_EVENTS_ROTATE_BYTES ?? 25 * 1024 * 1024);
 const KEEP_FILES = Number(process.env.LPP_EVENTS_KEEP_FILES ?? 30);
