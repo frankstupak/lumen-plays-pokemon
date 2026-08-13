@@ -27,6 +27,8 @@ import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
+import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
+import { GameNames } from "./names";
 import { CFG } from "./config";
 
 const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on disk
@@ -53,6 +55,12 @@ export class Agent {
   private btTurns = 0;
   private btStall = 0;                 // consecutive turns with no HP change either side
   private btLastSig = "";
+  // wq#538: map id -> display name for the WARPS line. Built lazily and exactly
+  // once: the GameNames constructor walks the whole ROM map-header table and
+  // throws if the ROM and .sym disagree. A cosmetic label must never be able to
+  // take the agent down, so a failure degrades to "mapN" and is never retried.
+  private names: GameNames | null = null;
+  private namesTried = false;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -62,6 +70,23 @@ export class Agent {
     public bus: EventBus, public checkpointDir: string,
     public items: Items = new Items(emu, sym, scr, sync, dlg, nav, map, bat),
     public heal: Heal = new Heal(emu, sym, scr, sync, dlg, nav, reader, bat, bus)) {}
+
+  private mapLabel(id: number): string | null {
+    if (!this.namesTried) {
+      this.namesTried = true;
+      try { this.names = new GameNames(this.rom, this.sym); } catch { this.names = null; }
+    }
+    return this.names ? this.names.mapName(id) : null;
+  }
+
+  /** wq#538: the warp list annotated with reachability from where the player is
+   *  standing right now, resolved through the same astar that goto() uses. */
+  private currentWarpViews(): WarpView[] {
+    const p = this.nav.pos();
+    let lastMap = 0;
+    try { lastMap = this.emu.mem()[this.sym.addr("wLastMap")]; } catch { lastMap = 0; }
+    return warpViews(this.map, p.x, p.y, lastMap, id => this.mapLabel(id));
+  }
 
   /** Everything the brain needs to see this turn, rendered deterministically. */
   observe(): string {
@@ -154,7 +179,7 @@ export class Agent {
 
     this.map.build();
     const p = this.nav.pos();
-    block += `\nWARPS ${this.map.warps.map((w, i) => `${i}:(${w.x},${w.y})->map${w.destMap}`).join(" ")}`;
+    block += `\n${renderWarps(this.currentWarpViews())}`;
     block += `\nMAPGRID (P=you W=warp N=npc #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
 
     const text = this.scr.text();
@@ -193,6 +218,12 @@ export class Agent {
             const p = this.nav.pos();
             this.bus.emit("tool_call", { tool: "stuck_dump", pos: p,
               sprites: this.map.sprites, grid: this.map.ascii(p.x, p.y) });
+            // wq#538: a bare "stuck now {map,x,y}" carries no information the
+            // brain can act on, so it re-picks from the same list and burns the
+            // turn again. Say WHY it failed and name what would work instead.
+            this.map.build();
+            return `goto -> stuck now ${JSON.stringify(p)}` +
+              stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews());
           }
           return `goto -> ${r} now ${JSON.stringify(this.nav.pos())}`;
         }
