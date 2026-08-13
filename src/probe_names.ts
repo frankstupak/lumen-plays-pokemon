@@ -44,6 +44,10 @@ eq("internal 0x54 = Pikachu", names.monName(0x54), "PIKACHU");
 eq("internal 0x01 = Rhydon", names.monName(0x01), "RHYDON");
 eq("internal 0x15 = Mew", names.monName(0x15), "MEW");
 eq("species 0 -> null", names.monName(0), null);
+eq("internal 0x03 = Nidoran male (charmap 0xEF)", names.monName(0x03), "NIDORAN\u2642");
+eq("internal 0x0F = Nidoran female (charmap 0xF5)", names.monName(0x0f), "NIDORAN\u2640");
+eq("internal 0x40 = Farfetch'd (charmap 0xE0)", names.monName(0x40), "FARFETCH'D");
+eq("every species id 1..190 resolves", Object.keys(names.mons).length, names.monCount);
 ok("no species name contains an undecoded byte", Object.values(names.mons).every(n => !n.includes("?")));
 
 // ── text + label helpers ──────────────────────────────────────────────────
