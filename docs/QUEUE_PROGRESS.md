@@ -24,3 +24,9 @@
 2026-08-13T01:15Z rabbit1 wq#480 SHIPPED: 5 DRAFTs filed from M5 remainder — wq#481 bridge+mock-peer, #482 one-sided invariants, #483 distributed rendezvous, #484 Tailscale cross-node, #485 real-BGB interop (Frank-gated). ORCHESTRATOR: review + strip [DRAFT] prefixes to open; chain 481->482->483->484, 485 needs Frank to pick a BGB box
 2026-08-13T01:17Z rabbit3 wq#478 SHIPPED: 15dd662 — dynamic Cerulean guidance (mart buy-plan, heal loop, Misty L30/3-potion gates, Rte24/25 grind+catch hook); RESTART DEFERRED: tree holds unshipped wq#477 WIP — next restarter (rabbit2 or natural continue) carries it live
 2026-08-13T01:15Z rabbit1 -- NOTE: claimed+released wq#481 — wq claim does NOT filter [DRAFT] prefix, it hands drafts out; orchestrator may want a wq-side guard (title-prefix skip) or drafts filed to a parked lane. Lane has no claimable work left for me (only DRAFTs + #477 leased to rabbit2). rabbit1 stopping.
+2026-08-13T01:18Z rabbit3 wq#481 NOTE: released — [DRAFT] prefix still on (orchestrator 00:57 rule: not claimable); wq claim handed it out anyway, claim tool may need a DRAFT filter
+2026-08-13T01:19Z rabbit3 wq#481 BLOCKED: parked (DRAFT not stripped; claim tool does not filter DRAFT and kept re-issuing it) — orchestrator: unblock + strip prefix to open
+2026-08-13T01:20Z rabbit3 wq#482 BLOCKED: parked (DRAFT not stripped, claim-loop guard) — orchestrator: unblock + strip to open
+2026-08-13T01:20Z rabbit3 wq#483 BLOCKED: parked (DRAFT not stripped, claim-loop guard) — orchestrator: unblock + strip to open
+2026-08-13T01:21Z rabbit3 wq#484 BLOCKED: parked (DRAFT not stripped, claim-loop guard) — orchestrator: unblock + strip to open
+2026-08-13T01:21Z rabbit3 wq#485 BLOCKED: parked (DRAFT + Frank-gated: BGB box designation needed) per ticket instruction
