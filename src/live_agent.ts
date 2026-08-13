@@ -255,6 +255,31 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): strin
         "  If asked to choose, choose DOME and move on immediately. One fossil",
         "  only - the other disappears; that is normal, never go back for it.",
       ];
+  // wq#535: the exit is a single forced route, derived from the ROM warp graph
+  // and an independent flood fill, not from exploration. Stated explicitly
+  // because "take the next ladder onward" is what kept the agent cycling
+  // between B1F pockets that have no doorway.
+  const exitRoute = [
+    "THE EXIT IS ONE FORCED ROUTE - trust this over exploring:",
+    "    B2F(map61) (5,7) -> B1F(map60) (23,3) -> walk to (27,3) -> Route 4 EAST.",
+    "  No other ladder anywhere in the mountain reaches the outside.",
+  ];
+  // wq#535: the two fossils are SOLID objects sitting in the only corridor to
+  // (5,7). This is not flavour text - while both stand there the exit is
+  // physically unreachable and goto(5,7) can only ever answer "stuck". Taking
+  // one hides that object (HideObject on its own missable index) and opens the
+  // path. Suppressed once a fossil is held, because then they are already gone.
+  const fossilDoor = haveFossil ? [] : [
+    "THE FOSSILS ARE PHYSICALLY BLOCKING THAT EXIT - THIS IS THE PUZZLE:",
+    "  DOME FOSSIL (12,6) and HELIX FOSSIL (13,6) are SOLID objects standing",
+    "  side by side in the only corridor to (5,7). While BOTH are there, (5,7)",
+    "  is UNREACHABLE and goto(5,7) can only answer 'stuck' - that is the wall,",
+    "  not a pathing bug. TAKING ONE REMOVES IT AND OPENS THE PATH:",
+    "      goto(12,7)  ->  interact(12,6)  ->  choose(yes)",
+    "  ((11,6) also works as the standing tile.) Then goto(5,7) and enter_warp it.",
+    "  You need exactly ONE fossil. Taking it is not optional content - it is",
+    "  the door.",
+  ];
   return [
     "GOAL: cross MT MOON and come out its EAST side.",
     "WHERE YOU ARE: at or before the mountain. The Route 4 you are standing on",
@@ -269,8 +294,14 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): strin
     "FLOOR INTENT:",
     "  * 1F (map59): a maze with trainers. Objective = the ladder DOWN.",
     "    Fight trainers you cannot walk around - they are also your only income.",
-    "  * B1F (map60): small connector floor. Take the next ladder onward.",
+    "  * B1F (map60): FOUR DISCONNECTED POCKETS, not one floor. Its ladders",
+    "    (17,11), (21,17) and (13,27) drop into pockets that CANNOT reach the",
+    "    outside, no matter how long you search them. Only the pocket entered",
+    "    from B2F (5,7) touches the (27,3) doorway. If you are on B1F and cannot",
+    "    path to (27,3), you are in a dead pocket: go back up and use B2F (5,7).",
     ...objective,
+    ...exitRoute,
+    ...fossilDoor,
     haveFossil
       ? "  A fossil is already in hand (RAM-verified) - do not seek another."
       : "  No fossil is in hand yet (RAM-verified) - dialog claiming otherwise is wrong.",
