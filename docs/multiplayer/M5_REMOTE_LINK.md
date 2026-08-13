@@ -79,12 +79,25 @@ stated as such.
 ## What is still missing
 
 The transport was the easy half. Three things genuinely change when the peer is
-remote; **problem 3 is now solved** (M5a, wq#481), 1 and 2 are not:
+remote; **1 and 3 are now solved** (M5b wq#482, M5a wq#481); 2 is not:
 
-1. **The peer's RAM is unreadable.** Every verification in M3/M4 reads both
-   cores in one process — the mirror check compares A's HP against B's view of
-   it. Remotely we can only verify from our own side plus what the ROM itself
-   received. The mirror has to be re-expressed as a one-sided invariant.
+1. **The peer's RAM is unreadable — SOLVED (M5b, wq#482).**
+   `src/link/invariants.ts` re-expresses the mirror checks one-sided, using
+   only our own RAM plus the bytes that physically arrived on the wire.
+   TRADE: structural validation of the received 415-byte block (exact length
+   and partitioning, the `$FE` patch-list exclusion, every field range-checked
+   against ROM-derived offsets) plus a post-swap assertion that our party
+   mutated exactly per protocol (traded slot now holds the peer's advertised
+   mon, all other slots byte-identical, count unchanged). BATTLE: a
+   turn-by-turn ledger over SETTLED samples only, whose anchor is that any
+   enemy move our RAM reports must have physically ARRIVED on the link — a
+   move byte with no wire evidence is the remote equivalent of a mirror break.
+   Everything fails closed: missing evidence is a failure, never a pass.
+
+   **Honest limit:** Gen1's trade block carries no protocol checksum, so there
+   is none to verify; a structurally valid block from a hostile peer can still
+   contain a legal-but-false party. One-sided verification cannot detect that
+   and does not claim to.
 2. **We cannot drive the peer's menus.** The trade rendezvous parks one side
    until its partner arrives, decided by reading both. Against a remote agent
    each side drives only itself and the rendezvous becomes a real distributed
@@ -115,5 +128,26 @@ remote; **problem 3 is now solved** (M5a, wq#481), 1 and 2 are not:
   `probe_bgblink` still 16/16 after the backward-compatible `DEFER_REPLY`
   addition that lets the mock inject latency.
 
-Next tranche: one-sided invariants (M5b), then the distributed rendezvous, then
-two full processes over Tailscale.
+### M5b evidence (wq#482)
+
+- `src/link/invariants.ts` — verify-only, fail-closed; never writes to a core.
+  Party-struct offsets are derived from `roms/pokeblue.sym` and asserted at
+  construction, so a wrong assumption throws loudly instead of passing.
+- `src/link/probe_invariants.ts` — **30/30** red/green both directions: valid
+  blocks and ledgers pass; corrupted ones are caught individually ($FE on the
+  wire, impossible party count, missing species terminator, species-list vs
+  struct disagreement, level 0/255, hp>maxHp, bad move ids, PP on empty slots,
+  impossible PP, post-trade slot unchanged / wrong species / untraded slot
+  mutated / count changed, enemy move never on the wire, unknown own move,
+  unaccounted HP rises, no-effect settled turn, zero settled turns, and an
+  empty `combine()`). Junk in unoccupied slots is deliberately ignored (no
+  false positive).
+- `src/link/probe_invariants_wire.ts` — **5/5** M5a integration: a real party
+  block read from a live core is shipped through the M5a transport over a real
+  localhost socket and validated from the RECEIVED bytes; corruption and an
+  injected `$FE` introduced in transit are both rejected downstream.
+- No in-process regression: `probe_bridge` 13/13, `probe_bgblink` 16/16,
+  `npm run verify` P0 ALL PASS. M3/M4 paths untouched.
+
+Next tranche: the distributed rendezvous (problem 2), then two full processes
+over Tailscale.
