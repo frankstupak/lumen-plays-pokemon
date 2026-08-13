@@ -20,3 +20,5 @@
 2026-08-13T01:10Z rabbit1 wq#479 CLAIMED: lpp-stats measurement CLI (turn economics + lever impact)
 2026-08-13T01:12Z lpp-stats -- NOTE: post-lever: 2 runs (1 empty skipped), 3.9h, 117 turns | 30 turns/h, 29 brain calls/h, plannedAutoRate 4.3%, whiteouts 0, tokens 0.39M, state_reads/turn 1.02, storyScore 6->6 || pre-lever: 38 runs (3 empty skipped), 117.9h, 5220 turns | 44 turns/h, 44 brain calls/h, plannedAutoRate 0.0%, whiteouts 1, tokens 35.05M, state_reads/turn 1.67, storyScore 6->6
 2026-08-13T01:13Z rabbit1 wq#479 SHIPPED: tools/lpp-stats live — first read: post-lever plannedAutoRate only 4.3% at ratio=2, brain-call savings negligible so far (3.9h sample, corridor confound; re-measure in 24h before wq#473 judgment)
+2026-08-13T01:13Z rabbit1 wq#480 CLAIMED: triage wq#428 multiplayer remainder into DRAFT tickets
+2026-08-13T01:15Z rabbit1 wq#480 SHIPPED: 5 DRAFTs filed from M5 remainder — wq#481 bridge+mock-peer, #482 one-sided invariants, #483 distributed rendezvous, #484 Tailscale cross-node, #485 real-BGB interop (Frank-gated). ORCHESTRATOR: review + strip [DRAFT] prefixes to open; chain 481->482->483->484, 485 needs Frank to pick a BGB box
