@@ -43,12 +43,29 @@ console.log(`=== auditing ${probes.length} probes in ${SRC} ===\n`);
 // A literal PATH, not a log message that happens to mention a filename:
 // no whitespace, and it must look like a path.
 const LITERAL_STATE = /"([^"\s]*\.state\.gz)"/g;
-const RELATIVE_CORPUS = /"(roms\/|checkpoints\/|saves\/)[^"]*"/g;
+// R2 CAUGHT NOTHING ON ITS FIRST RUN AND THAT WAS THE REGEX'S FAULT, NOT THE
+// CORPUS'S. It required a trailing slash, so `"checkpoints/foo"` matched but a
+// BARE `"checkpoints"` — the far more common form, e.g. `const dirs =
+// ["checkpoints"]` in probe_phase514 — slipped straight through and R2 reported
+// a clean sweep. An audit that cannot see the one live instance of the defect
+// it audits for is worse than no audit, because it certifies the tree.
+const RELATIVE_CORPUS = /"(roms|checkpoints|saves)(\/[^"]*)?"/g;
+
+/** Strip comments before matching. Without this the audit flags its own
+ *  documentation: the fix for probe_phase514 explains the defect by quoting
+ *  `["checkpoints"]` in a comment, and a text scan cannot tell the cure from
+ *  the disease. A rule that punishes writing down why is a rule people delete. */
+function codeOnly(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")     // block comments
+    .replace(/^[ \t]*\/\/.*$/gm, " ")      // whole-line // comments
+    .replace(/([^:"'\\])\/\/.*$/gm, "$1"); // trailing // comments, sparing URLs
+}
 
 const r1: string[] = [], r2: string[] = [], scanners: string[] = [];
 for (const p of probes) {
   if (p === SELF) continue;
-  const text = readFileSync(join(SRC, p), "utf8");
+  const text = codeOnly(readFileSync(join(SRC, p), "utf8"));
 
   for (const m of text.matchAll(LITERAL_STATE)) {
     const lit = m[1];

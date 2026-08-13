@@ -16,6 +16,9 @@ import { Battle } from "./battle";
 import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { Agent } from "./agent";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
@@ -34,7 +37,17 @@ const act = new Actions(emu, nav, dlg, sync, scr, bus, sym);
 const bat = new Battle(emu, sym, scr, sync, dlg, bus);
 const reader = new StateReader(emu, sym);
 const brain = new Brain(bus);   // never called by this probe
-const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, "checkpoints");
+// wq#540: THIS PROBE COULD DELETE THE LIVE CHECKPOINT CORPUS, and that is not a
+// theoretical reading of the code. The last constructor argument is the Agent's
+// checkpointDir, and it was the CWD-relative string "checkpoints". Agent's
+// checkpoint pruning calls unlinkSync() inside that directory. Run from a
+// worktree it quietly littered a stray checkpoints/ folder; run from
+// /home/lumen/pokemon — which is where anyone spot-checking a probe runs it —
+// "checkpoints" IS the live corpus, and a probe that writes and prunes was one
+// invocation away from deleting real saves. A private temp directory removes
+// both the CWD dependence and the blast radius.
+const CKPT_TMP = mkdtempSync(join(tmpdir(), "probe-s4-ckpt-"));
+const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPT_TMP);
 
 const m = () => emu.mem();
 
