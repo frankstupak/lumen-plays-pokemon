@@ -383,9 +383,49 @@ function ceruleanApproachPack(): string {
   // the LIVE guidance text so a >=15-word parrot of the current corridor/stage
   // pack is caught. Rejections feed back to the brain + emit rule_violation.
   pad.sanitizer = makeBorrowGuard({ guidanceText: () => pad.renderGuidance(), bus });
+  // wq#531: WIRE the wq#519 verifier. Until this line existed, `claimChecker`
+  // was assigned in exactly one file -- src/probe_claims.ts -- so verifyClaims()
+  // returned at its first guard and NO false pin was ever eligible to be
+  // dropped in production. runtime/notepad.txt had no `lastVerification` key at
+  // all, which is the fingerprint of a verifier that has never run, while the
+  // pinned region carried EIGHT "Dome Fossil ... in inventory" claims.
+  //
+  // Fossil possession is an EVENT FLAG, not a bag read. StateReader exposes no
+  // bag, and the flag is the better evidence anyway: it cannot be tossed, and
+  // it cannot be crowded out by a full bag.
+  //
+  // The subject must be RECOGNISED to be judged. Anything this checker does not
+  // understand returns null = CANNOT CHECK, and verifyClaims() then keeps the
+  // pin untouched. Inventing a negative is the same sin as inventing a
+  // positive, and a checker that guessed "false" on every unknown subject would
+  // silently delete the brain's legitimate notes.
+  pad.claimChecker = (c) => {
+    const s = c.subject.toLowerCase();
+    if (!s.includes("fossil")) return null;             // not ours to judge
+    const wantsDome = s.includes("dome"), wantsHelix = s.includes("helix");
+    const read = (idx: number | null) => (idx === null ? null : reader.eventFlag(idx));
+    const dome = read(F_DOME), helix = read(F_HELIX);
+    let holds: boolean | null;
+    if (wantsDome) holds = dome;
+    else if (wantsHelix) holds = helix;
+    else holds = dome === null && helix === null ? null : Boolean(dome) || Boolean(helix);
+    if (holds === null) return null;                    // flag unresolvable -> cannot check
+    const fmt = (v: boolean | null) => (v === null ? "unresolvable" : v ? "1" : "0");
+    return {
+      holds,
+      evidence: `RAM read of wEventFlags: EVENT_GOT_DOME_FOSSIL=${fmt(dome)}, ` +
+                `EVENT_GOT_HELIX_FOSSIL=${fmt(helix)}.`,
+    };
+  };
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
+    // wq#531: the save may have just rolled BACKWARD, and this loop runs on
+    // every gameplay continue, not only at process boot. The Notepad is one
+    // instance for the whole process, so without this its pins stay "verified"
+    // against a state the game has abandoned. Re-arm AFTER the snapshot is
+    // loaded so the next render reads the state the agent is actually in.
+    pad.rearmClaimVerification();
     // wq#503: flags that arrive WITH a resumed save were earned earlier, so
     // record them as observations, not as milestones reached just now.
     milestones.observe(reader.storyFlagsSet(), new Date(), true);
