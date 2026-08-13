@@ -20,3 +20,9 @@ jobs:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
           release-type: node
+          # A Release PR opened with the default GITHUB_TOKEN does NOT trigger other
+          # workflows (GitHub's recursion guard), so `ci.yml` never runs on it, the
+          # required `typecheck` check never appears, and the PR is permanently
+          # unmergeable. A PAT raises real events, so CI runs and the PR can land.
+          # Secret holds the RealLumenHere bot PAT (repo, workflow). See wq#539.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

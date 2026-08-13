@@ -105,6 +105,13 @@ publishes a GitHub Release. No manual version bumps or tags — cutting a
 release is a maintainer decision made by merging that PR, not something a
 contributor PR should do.
 
+A Release PR is opened by the release-please workflow using a bot PAT
+(`secrets.RELEASE_PLEASE_TOKEN`), not the default `GITHUB_TOKEN`. This is deliberate:
+GitHub does not raise workflow-triggering events for actions taken with `GITHUB_TOKEN`,
+so a Release PR opened that way never runs CI, never gets the required `typecheck`
+check, and can never be merged. If a Release PR ever shows zero checks, that token is
+the first thing to look at.
+
 ## History note
 
 Commits before
