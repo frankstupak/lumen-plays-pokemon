@@ -13,6 +13,9 @@ import json, glob, gzip, argparse, os
 from datetime import datetime, timezone
 
 BASE = "/home/lumen/pokemon"
+# Agent coordination board — an operations artifact, kept outside this repo.
+BOARD = os.environ.get(
+    "LPP_BOARD", "/home/lumen/agents/work-queue/boards/LPP_QUEUE_PROGRESS.md")
 LEVER_TS_DEFAULT = "2026-08-12T21:16:00Z"
 
 def parse_ts(s):
@@ -123,7 +126,7 @@ def main():
     ap.add_argument("--runs", action="store_true", help="print per-run rows")
     ap.add_argument("--no-enrich", action="store_true", help="skip jsonl scan (faster)")
     ap.add_argument("--board", action="store_true",
-                    help="append one-line summary to docs/QUEUE_PROGRESS.md (append-only)")
+                    help="append one-line summary to the agent board ($LPP_BOARD, append-only)")
     args = ap.parse_args()
 
     runs = load_runs()
@@ -153,7 +156,7 @@ def main():
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
         line = (f"{now} lpp-stats -- NOTE: {fmt(a_after, 'post-lever')} || "
                 f"{fmt(a_before, 'pre-lever')}\n")
-        with open(f"{BASE}/docs/QUEUE_PROGRESS.md", "a") as f:
+        with open(BOARD, "a") as f:
             f.write(line)
         print(f"[board] appended: {line.strip()}")
 

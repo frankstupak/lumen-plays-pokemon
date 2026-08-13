@@ -18,7 +18,7 @@
 #   violations    rule_violation events from the wq#488 borrow guard
 #   turnrate      turns/h below 30% of the 24h mean
 #
-# Outputs: one-line NOTE appended to docs/QUEUE_PROGRESS.md + ntfy via the fleet
+# Outputs: one-line NOTE appended to the agent board ($LPP_BOARD) + ntfy via the fleet
 # choke point (/home/lumen/bin/ntfy-send). Dedupe: the same alert key fires at
 # most once per hour, state in runtime/sentinel_state.json.
 #
@@ -29,7 +29,10 @@ import argparse, glob, gzip, json, os, subprocess, sys, time
 from datetime import datetime, timezone
 
 BASE = "/home/lumen/pokemon"
-BOARD = f"{BASE}/docs/QUEUE_PROGRESS.md"
+# The agent coordination board lives OUTSIDE this repo: it is an operations
+# artifact, not part of the software. Override with $LPP_BOARD.
+BOARD = os.environ.get(
+    "LPP_BOARD", "/home/lumen/agents/work-queue/boards/LPP_QUEUE_PROGRESS.md")
 NOTEPAD = f"{BASE}/runtime/notepad.txt"
 STATE = f"{BASE}/runtime/sentinel_state.json"
 NTFY = "/home/lumen/bin/ntfy-send"

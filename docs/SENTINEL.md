@@ -27,8 +27,8 @@ restarts don't read as a collapse.
 
 ## Alerting
 
-Each alert appends one line to `docs/QUEUE_PROGRESS.md` (append-only — the
-board is how parallel agents and the orchestrator see it) and sends ntfy
+Each alert appends one line to the operator coordination board (append-only —
+the board is how parallel agents and the orchestrator see it) and sends ntfy
 through the fleet choke point `/home/lumen/bin/ntfy-send` on topic
 `lumen-fleet`. **Dedupe: one hour per alert key**, state in
 `runtime/sentinel_state.json`. `--dry-run` prints only.

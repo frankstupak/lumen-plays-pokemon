@@ -1,11 +1,14 @@
-# ── Node ────────────────────────────────────────────────
+# ── Node / Python ───────────────────────────────────────
 node_modules/
+__pycache__/
 
-# ── ROMs — Nintendo copyright ───────────────────────────
+# ── ROMs / save data — Nintendo copyright ───────────────
 # Supply your own legally-obtained copy. Verify.ts gates on the
 # pret/pokered build hash (see README). Symbol tables (roms/*.sym)
 # are committed — they come from the open pret/pokered disassembly.
-roms/*.gb
+*.gb
+*.gbc
+*.sav
 
 # ── Runtime state (regenerates every run) ───────────────
 checkpoints/
@@ -21,6 +24,11 @@ runtime/
 *.tmp
 
 # ── Local operational files (fleet coordination, not project) ──
+# The agent progress board is an operations artifact and lives outside this
+# repo; docs/QUEUE_PROGRESS.md remains as a local symlink to it so existing
+# append paths keep working. Canonical location: $LPP_BOARD.
+docs/QUEUE_PROGRESS.md
+docs/board-archive/
 FLEET_STATUS_NOTICE_READ_ME.txt
 MAINTENANCE_NOTICE_READ_ME.txt
 docs/NOTICE-POWERBAR-20260807.md

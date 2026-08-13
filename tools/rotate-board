@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """wq#490 — rotate the LPP progress board when it grows past a threshold.
 
-The board (docs/QUEUE_PROGRESS.md) is append-only and is how parallel agents
+The board ($LPP_BOARD, outside the repo) is append-only and is how parallel agents
 learn what each other is doing. It must stay SHORT enough that every agent
 actually reads it at claim time — but nothing may be lost, so old lines are
 moved to a dated archive, never deleted.
@@ -10,7 +10,7 @@ Policy:
   - header  = the leading comment block (lines starting with '#') is ALWAYS kept
   - if total lines > THRESHOLD (default 300): keep header + last KEEP (default
     50) entry lines; move everything between into
-    docs/board-archive/QUEUE_PROGRESS-<YYYYMMDD-HHMMZ>.md
+    $LPP_BOARD_ARCHIVE/QUEUE_PROGRESS-<YYYYMMDD-HHMMZ>.md
   - the archive file gets its own header pointing back at the live board, and
     the live board gets a one-line pointer to the archive appended at the top
     of the retained region so the trail is never broken.
@@ -24,9 +24,11 @@ Usage:
 import argparse, os, sys
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOARD = os.path.join(ROOT, "docs", "QUEUE_PROGRESS.md")
-ARCHIVE_DIR = os.path.join(ROOT, "docs", "board-archive")
+# Board + archive live OUTSIDE the product repo (operations artifacts).
+BOARD = os.environ.get(
+    "LPP_BOARD", "/home/lumen/agents/work-queue/boards/LPP_QUEUE_PROGRESS.md")
+ARCHIVE_DIR = os.environ.get(
+    "LPP_BOARD_ARCHIVE", os.path.join(os.path.dirname(BOARD), "lpp-archive"))
 
 
 def main() -> int:
@@ -69,18 +71,18 @@ def main() -> int:
     dest = os.path.join(ARCHIVE_DIR, f"QUEUE_PROGRESS-{stamp}.md")
     with open(dest, "w", encoding="utf-8") as f:
         f.write(f"# LPP BOARD ARCHIVE — rotated {stamp}\n")
-        f.write("# Older entries moved out of docs/QUEUE_PROGRESS.md to keep the live\n")
-        f.write("# board readable. Nothing is ever deleted. Live board: ../QUEUE_PROGRESS.md\n")
+        f.write(f"# Older entries moved out of the live board to keep it readable.\n")
+        f.write(f"# Nothing is ever deleted. Live board: {BOARD}\n")
         f.write("\n".join(move) + "\n")
 
     # atomic replace of the live board
     tmp = BOARD + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(header) + "\n")
-        f.write(f"# (older entries archived -> docs/board-archive/QUEUE_PROGRESS-{stamp}.md)\n")
+        f.write(f"# (older entries archived -> {dest})\n")
         f.write("\n".join(keep) + "\n")
     os.replace(tmp, BOARD)
-    print(f"moved {len(move)} entries -> {os.path.relpath(dest, ROOT)}; board now {len(keep)} entries")
+    print(f"moved {len(move)} entries -> {dest}; board now {len(keep)} entries")
     return 0
 
 
