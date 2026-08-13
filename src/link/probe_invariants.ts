@@ -7,6 +7,7 @@ import { Emulator, loadSnapshotFile } from "../emulator";
 import { SymbolTable } from "../symbols";
 import { offsetsFromSymbols, verifyTradeBlock, verifyPostTrade, verifyBattleLedger,
          viewBlock, combine, BLOCK, MonOffsets } from "./invariants";
+import { ckptPath, romPath } from "../fixtures";
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, note = "") => {
@@ -19,15 +20,15 @@ const redFails = (name: string, v: { ok: boolean; failures: { check: string }[] 
   ok(name, hit, hit ? `caught '${expect}'` : `expected '${expect}', got ${v.ok ? "PASS(!!)" : v.failures.map(f => f.check).join(",")}`);
 };
 
-const sym = new SymbolTable("roms/pokeblue.sym");
+const sym = new SymbolTable(romPath("pokeblue.sym"));
 const O: MonOffsets = offsetsFromSymbols(sym);
 ok("offsets derived from pokeblue.sym", O.stride === 44 && O.moves === 8 && O.pp === 29 && O.level === 33,
    `species=${O.species} moves=${O.moves} pp=${O.pp} level=${O.level} stride=${O.stride}`);
 
 /** Build a real 415-byte block out of a live checkpoint's party RAM. */
 function realBlock(): number[] {
-  const emu = new Emulator("roms/pokeblue.gb");
-  loadSnapshotFile(emu, "checkpoints/center-m2b.state.gz");
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  loadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));
   emu.frames(4);
   const m = emu.mem();
   const rd = (a: number, n: number) => Array.from({ length: n }, (_, i) => m[a + i] & 0xFF);

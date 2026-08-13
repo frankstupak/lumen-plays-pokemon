@@ -25,11 +25,12 @@ import { Dialog } from "../dialog";
 import { readLinkState, LINK_ADDR } from "../link/linkstate";
 import { SerialBus } from "../link/serialbus";
 import { installSerialHook } from "../link/hook";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function stack(tag: string) {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym"); const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `m2b5-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym")); const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `m2b5-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom); const scr = new Screen(emu, sym); const sync = new Sync(emu, sym);
   const nav = new Navigator(emu, sym, map, ebus, sync); const dlg = new Dialog(emu, scr, sync, ebus, sym);
   return { emu, nav, dlg, scr, tag };
@@ -69,8 +70,8 @@ function lockstep(n: number, key?: number) {
 }
 
 (async () => {
-  loadSnapshotFile(A.emu, "checkpoints/center-m2b.state.gz");
-  loadSnapshotFile(B.emu, "checkpoints/center-m2b.state.gz");
+  loadSnapshotFile(A.emu, ckptPath("center-m2b.state.gz"));
+  loadSnapshotFile(B.emu, ckptPath("center-m2b.state.gz"));
   A.emu.frames(6); B.emu.frames(6);
 
   // 1. Walk both to the tile below the attendant, facing UP — NO dialog yet.

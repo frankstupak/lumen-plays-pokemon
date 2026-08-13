@@ -18,15 +18,16 @@ import { Emulator, loadSnapshotFile } from "../emulator";
 import { readLinkState } from "./linkstate";
 import { SerialBus } from "./serialbus";
 import { installSerialHook } from "./hook";
+import { ckptPath, romPath } from "../fixtures";
 
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
 
-const SEED = "checkpoints/seed-m2b.state.gz";
+const SEED = ckptPath("seed-m2b.state.gz");
 const SB = 0xFF01, SC = 0xFF02;
 
-const a = new Emulator("roms/pokeblue.gb");
-const b = new Emulator("roms/pokeblue.gb");
+const a = new Emulator(romPath("pokeblue.gb"));
+const b = new Emulator(romPath("pokeblue.gb"));
 loadSnapshotFile(a, SEED);
 loadSnapshotFile(b, SEED);
 a.frames(2); b.frames(2);

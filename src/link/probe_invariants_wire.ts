@@ -6,17 +6,18 @@ import { BgbLink } from "./bgblink";
 import { SymbolTable } from "../symbols";
 import { Emulator, loadSnapshotFile } from "../emulator";
 import { offsetsFromSymbols, verifyTradeBlock, BLOCK } from "./invariants";
+import { ckptPath, romPath } from "../fixtures";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const ok = (n: string, c: boolean, note = "") => { c ? (pass++, console.log(`PASS ${n} :: ${note}`)) : (fail++, console.log(`FAIL ${n} :: ${note}`)); };
 
-const sym = new SymbolTable("roms/pokeblue.sym");
+const sym = new SymbolTable(romPath("pokeblue.sym"));
 const O = offsetsFromSymbols(sym);
 
 function realBlock(): number[] {
-  const emu = new Emulator("roms/pokeblue.gb");
-  loadSnapshotFile(emu, "checkpoints/center-m2b.state.gz");
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  loadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));
   emu.frames(4);
   const m = emu.mem();
   const rd = (a: number, n: number) => Array.from({ length: n }, (_, i) => m[a + i] & 0xFF);

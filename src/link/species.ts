@@ -17,6 +17,7 @@
 // including a Red/Blue swap, and there is no list to drift out of date.
 
 import { readFileSync } from "fs";
+import { romPath } from "../fixtures";
 
 const MONSTER_NAMES_BANK = 0x07;
 const MONSTER_NAMES_ADDR = 0x421e;
@@ -42,8 +43,10 @@ function decode(bytes: Buffer): string {
 export class SpeciesNames {
   private names = new Map<number, string>();
 
-  constructor(romPath = "roms/pokeblue.gb") {
-    const rom = readFileSync(romPath);
+  // wq#543: param renamed romPath -> romFile because the repo-root helper is
+  // itself called romPath(). Positional, so no caller changes.
+  constructor(romFile = romPath("pokeblue.gb")) {
+    const rom = readFileSync(romFile);
     const base = bankOffset(MONSTER_NAMES_BANK, MONSTER_NAMES_ADDR);
     for (let idx = 1; idx <= MAX_INTERNAL_INDEX; idx++) {
       const start = base + NAME_BYTES * (idx - 1);

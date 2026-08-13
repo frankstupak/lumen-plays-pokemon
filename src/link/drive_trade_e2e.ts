@@ -19,12 +19,13 @@ import { Screen } from "../screen";
 import { Sync } from "../sync";
 import { writeIdentity, describeMon } from "./identity";
 import { TradeSession, TradeSide } from "./trade";
+import { ckptPath, eventsDir, romPath } from "../fixtures";
 
 function side(tag: string): TradeSide {
-  const emu = new Emulator("roms/pokeblue.gb");
-  const sym = new SymbolTable("roms/pokeblue.sym");
-  const rom = new Rom("roms/pokeblue.gb");
-  const ebus = new EventBus("events", `m3-${tag}-${Date.now()}`);
+  const emu = new Emulator(romPath("pokeblue.gb"));
+  const sym = new SymbolTable(romPath("pokeblue.sym"));
+  const rom = new Rom(romPath("pokeblue.gb"));
+  const ebus = new EventBus(eventsDir(), `m3-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);
@@ -33,7 +34,7 @@ function side(tag: string): TradeSide {
 }
 
 (async () => {
-  const snap = process.env.SNAP ?? "checkpoints/center-m2b.state.gz";
+  const snap = process.env.SNAP ?? ckptPath("center-m2b.state.gz");
   const A = side("A"), B = side("B");
   loadSnapshotFile(A.emu, snap);
   loadSnapshotFile(B.emu, snap);
@@ -61,8 +62,8 @@ function side(tag: string): TradeSide {
   console.log(`exchanges=${r.exchanges} rendezvousAttempts=${r.rendezvousAttempts} wallSeconds=${secs} CUSTEPS=${process.env.CUSTEPS ?? 256}`);
   console.log(r.swapped ? `*** TRADE VERIFIED — ${r.note} ***` : `--- ${r.note} ---`);
   if (r.swapped && process.env.SAVE === "1") {
-    saveSnapshotFile(A.emu, "checkpoints/m3-traded-A.state.gz");
-    saveSnapshotFile(B.emu, "checkpoints/m3-traded-B.state.gz");
+    saveSnapshotFile(A.emu, ckptPath("m3-traded-A.state.gz"));
+    saveSnapshotFile(B.emu, ckptPath("m3-traded-B.state.gz"));
     console.log("saved checkpoints/m3-traded-A|B.state.gz");
   }
   process.exit(r.swapped ? 0 : 1);
