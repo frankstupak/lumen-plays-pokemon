@@ -17,19 +17,22 @@ import { Brain } from "./brain";
 import { Agent } from "./agent";
 import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
+import { Notepad } from "./notepad";   // wq#486
 import { ceruleanGuidance } from "./guidance";   // wq#478
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
 import { CFG } from "./config";   // wq#476: mapStepBudgets
 
-// wq#476: reference to the currently-running Agent so the step-budget
-// watchdog can inject notepad warnings (agent is recreated per continue).
-let liveAgent: { notepad: string } | null = null;
+// wq#476/486: reference to the currently-running Agent so the step-budget
+// watchdog can push warnings into the GUIDANCE channel (harness->brain), never
+// the brain's own notepad. Agent is recreated per continue.
+let liveAgent: Agent | null = null;
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SAVES = "/home/lumen/pokemon/saves";
 const CKPTS = "/home/lumen/pokemon/checkpoints";
+const RUNTIME = "/home/lumen/pokemon/runtime";   // wq#486: persisted notepad lives here
 
 // S2: resume selection lives in resume.ts (viability-gated, sidecar-first).
 
@@ -90,10 +93,9 @@ bus.on(e => {
   } else if (n >= budget * 2 && !wdAlarmed.has(ev.map)) {
     wdAlarmed.add(ev.map);
     bus.emit("turn_summary", { line: `step budget SOFT alarm on map${ev.map} (${n} steps, budget ${budget}) - stop exploring, commit to a ladder/exit` });
-    if (liveAgent) liveAgent.notepad +=
-      `\nSTEP-BUDGET WARNING (map${ev.map}): you have walked ${n} steps here` +
-      `\n  (good run: ~${budget}). STOP exploring. Pick the nearest ladder/exit` +
-      `\n  warp from the WARPS list and commit to it NOW.`;
+    if (liveAgent) liveAgent.pad.setGuidance("STEP-BUDGET",
+      `map${ev.map}: you have walked ${n} steps here (good run: ~${budget}). ` +
+      `STOP exploring. Pick the nearest ladder/exit warp from the WARPS list and commit to it NOW.`);
   }
 });
 const map = new MapModel(emu, sym, rom);
@@ -211,27 +213,24 @@ function corridorNotepad(badgeCount: number): string {
   // reboots), seeded from sidecars so restarts onto older checkpoints are
   // still detected as regressions.
   const recovery = new RecoveryTracker(seedMaxFromSidecars([SAVES, CKPTS]));
+  // wq#486: ONE notepad for the whole process — persists across in-process
+  // continues AND service restarts (bind restores runtime/notepad.txt). The
+  // brain's notes survive; the guidance channel is re-derived each boot.
+  const pad = new Notepad();
+  pad.bind(`${RUNTIME}/notepad.txt`);
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
     const brain = new Brain(bus);
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
-    agent.notepad = corridorNotepad(reader.read().badgeCount);   // wq#476
+    agent.pad = pad;                                              // wq#486: shared, persisted
+    pad.setGuidance("CORRIDOR", corridorNotepad(reader.read().badgeCount));  // wq#476 -> guidance channel
     agent.recovery = recovery;   // wq#477: regression detector + goal injection
     liveAgent = agent;   // wq#476: expose to step-budget watchdog
-    // wq#478: dynamic Cerulean/Misty stage guidance in a tagged notepad
-    // section, refreshed every turn (money/potions/level move constantly);
-    // tag-replace keeps brain note() appends intact. If note()'s 1500-char
-    // slice ate the open tag, we just re-append a fresh section.
-    const G_OPEN = "[[CERULEAN]]", G_CLOSE = "[[/CERULEAN]]";
-    const refreshStageGuidance = () => {
-      const g = ceruleanGuidance(emu, sym, reader);
-      const i = agent.notepad.indexOf(G_OPEN), j = agent.notepad.indexOf(G_CLOSE);
-      const sec = g ? `${G_OPEN}\n${g}\n${G_CLOSE}` : "";
-      if (i >= 0 && j > i)
-        agent.notepad = (agent.notepad.slice(0, i) + sec + agent.notepad.slice(j + G_CLOSE.length)).trim();
-      else if (g) agent.notepad = `${agent.notepad}\n${sec}`;
-    };
+    // wq#478/486: dynamic Cerulean/Misty stage guidance — now its OWN guidance
+    // section, refreshed every turn (money/potions/level move constantly). No
+    // more marker-splice inside the notepad; the brain's notes are untouchable.
+    const refreshStageGuidance = () => pad.setGuidance("CERULEAN", ceruleanGuidance(emu, sym, reader));
     bus.emit("boot", { mode: "live-agent", resumedFrom: snap.split("/").pop() });
     let failStreak = 0;
     for (;;) {

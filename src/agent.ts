@@ -16,6 +16,7 @@ import { Battle } from "./battle";
 import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
+import { Notepad } from "./notepad";
 import { moveLabel, MOVES } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
@@ -29,7 +30,7 @@ const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on dis
 
 export class Agent {
   hist = new History();
-  notepad = "";
+  pad = new Notepad();               // wq#486: structured notes + guidance channel
   turn = 0;
   noActStreak = 0;
   // wq#472: planned deterministic turns remaining before the next brain call.
@@ -231,8 +232,7 @@ export class Agent {
           return await this.heal.atCenter();
         }
         case "note": {
-          this.notepad = (this.notepad + "\n" + args.join(",")).slice(-1500);
-          return "note saved";
+          return this.pad.note(args.join(","));
         }
         default: return `unknown tool: ${tool}`;
       }
@@ -393,7 +393,7 @@ export class Agent {
       act = `DET:${planned.kind}`;
       think = "[planned deterministic turn - no brain call (wq#472)]";
     } else {
-      const r0 = await this.brain.complete(buildMessages(this.hist, this.notepad, stateBlock));
+      const r0 = await this.brain.complete(buildMessages(this.hist, this.pad.renderNotes(), stateBlock, this.pad.renderGuidance()));
       let text = r0.text;
       think = (text.match(/THINK:\s*(.+)/i)?.[1] ?? "").slice(0, 200);
       act = text.match(/ACT:\s*(.+)/i)?.[1] ?? "";
@@ -405,7 +405,7 @@ export class Agent {
       // doing nothing.
       if (!act) {
         const nudge = stateBlock + "\n\nYou did not give an ACT line last time. Reply with ONLY:\nACT: <tool>(<args>)";
-        const retry = await this.brain.complete(buildMessages(this.hist, this.notepad, nudge), CFG.profiles.actRetry);
+        const retry = await this.brain.complete(buildMessages(this.hist, this.pad.renderNotes(), nudge, this.pad.renderGuidance()), CFG.profiles.actRetry);
         act = retry.text.match(/ACT:\s*(.+)/i)?.[1] ?? "";
         if (act) think = (think || "retry") + " [ACT recovered via actRetry model]";
       }
@@ -502,6 +502,10 @@ export class Agent {
       hpPct: lead && lead.maxHp > 0 ? +(lead.hp / lead.maxHp).toFixed(3) : 1,
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),
+      // wq#486: notepad snapshot (redundant recovery path if runtime/notepad.txt
+      // is lost; primary restore is bind() from that file). Notes only, not the
+      // derived guidance channel.
+      notepad: this.pad.toJSON(),
     };
     try { writeFileSync(path.replace(/\.state\.gz$/, ".json"), JSON.stringify(sidecar)); } catch {}
     this.bus.emit("checkpoint", { file: stem, ...sidecar });

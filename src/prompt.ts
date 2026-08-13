@@ -19,7 +19,7 @@ Tools:
 - use_item(name[,party_slot]): use a bag item. Overworld: heals/status cures. In battle: potions heal, poke_ball THROWS TO CATCH the wild Pokemon (never in trainer battles).
 - buy_item(name,qty): buy at a Poke Mart counter (must be standing inside a mart). Checks stock and money.
 - heal_at_center(): full free heal (HP/PP/status) - must be standing inside a Pokemon Center. Handles the nurse dialog end-to-end.
-- note(text): append to persistent notepad (goals, discoveries, plans).
+- note(text): append to your persistent notepad (goals, discoveries, plans). It survives restarts. Prefix a fact with "PIN:" (e.g. note(PIN: Brock beaten, badge 1)) to keep it permanently - pinned facts are never evicted; ordinary notes fold into a summary as the pad fills.
 Rules: if SCREEN TEXT shows dialog, use talk() or choose(); in BATTLE use battle_move(). In a TRAINER battle there is no escape: movement tools are disabled, battle_move only. Lines starting with ! are urgent harness directives - obey them first. One tool per turn.
 Party building: when a CATCH TARGET line appears in a wild battle, follow it - weaken the foe without KOing it (unless told to throw immediately), then use_item(poke_ball). A bigger party prevents whiteouts; keep 3+ poke_balls stocked when a mart TIP offers them.
 Never count grid characters to locate yourself: POS and WARPS coordinates are exact, trust them. Keep thinking brief.
@@ -61,10 +61,13 @@ export class History {
   }
 }
 
-export function buildMessages(hist: History, notepad: string, stateBlock: string) {
-  // prefix (system) is byte-stable; user block is append-only shaped: history, notepad, then fresh state last
+export function buildMessages(hist: History, notepad: string, stateBlock: string, guidance = "") {
+  // prefix (system) is byte-stable; user block is append-only shaped: history,
+  // then the volatile tail in fixed order: guidance (harness channel, wq#486),
+  // notepad (the brain's own notes), fresh state last
+  const g = guidance ? `\nGUIDANCE (harness directives - follow these):\n${guidance}` : "";
   return [
     { role: "system", content: SYSTEM_PREFIX },
-    { role: "user", content: `${hist.render()}\nNOTEPAD:\n${notepad || "(empty)"}\nNOW:\n${stateBlock}\nReply with the ACT line first, then THINK. Nothing else.` },
+    { role: "user", content: `${hist.render()}${g}\nNOTEPAD:\n${notepad || "(empty)"}\nNOW:\n${stateBlock}\nReply with the ACT line first, then THINK. Nothing else.` },
   ];
 }
