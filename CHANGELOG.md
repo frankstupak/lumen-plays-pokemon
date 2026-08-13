@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/frankstupak/lumen-plays-pokemon/compare/v0.1.0...v0.2.0) (2026-08-13)
+
+
+### Features
+
+* **agent:** select corridor guidance by verified phase, refresh per turn ([74c016c](https://github.com/frankstupak/lumen-plays-pokemon/commit/74c016c534777a34688bc92e4e44a3f45b2df999))
+* **agent:** tell the brain when the campaign is broke ([0f5e87c](https://github.com/frankstupak/lumen-plays-pokemon/commit/0f5e87c1ccb2f3f81038b81abbe6098a2f92c770))
+* **tools:** detect cross-run stalls, restart loops and deploy drift ([027a228](https://github.com/frankstupak/lumen-plays-pokemon/commit/027a228aa23e957b3e4da6e2d1a7c85a4c2a37ef))
+* **tools:** detect zero-displacement and wall-clock stalls ([1fb5b9e](https://github.com/frankstupak/lumen-plays-pokemon/commit/1fb5b9e1bd309841fa654385c891ec98d6759721))
+
+
+### Bug Fixes
+
+* **agent:** make Mt Moon dead-pocket recovery actionable ([74e4e6c](https://github.com/frankstupak/lumen-plays-pokemon/commit/74e4e6cbb460bf0c7178630ce891c35a3c9b8f3f))
+* **agent:** name the forced Mt Moon exit and the fossil blocking it ([2baacb2](https://github.com/frankstupak/lumen-plays-pokemon/commit/2baacb2987dc7f197baf58fedc109091963d8609))
+* **notepad:** verify pinned claims and reject duplicate pins ([0e5cec2](https://github.com/frankstupak/lumen-plays-pokemon/commit/0e5cec25ad37df1427a47b2940bc22b2c806408d))
+* **resume:** rank route 4 by position so restarts keep mt moon progress ([8a98568](https://github.com/frankstupak/lumen-plays-pokemon/commit/8a98568e4dbfaaa1364dff44334863f0859579a1))
+* **tools:** resolve resumed map from checkpoint sidecar, not filename ([449b17e](https://github.com/frankstupak/lumen-plays-pokemon/commit/449b17e63d15aedc164e9a17f13835590dae58ed))
+
 ## [0.1.0] - 2026-08-13
 
 First tagged release. The agent reads Game Boy memory directly (no pixel
