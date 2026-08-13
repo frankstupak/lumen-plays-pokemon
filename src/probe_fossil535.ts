@@ -144,6 +144,36 @@ console.log("\n=== C. the corridor pack still describes the route the ROM has ==
       /haveFossil \? \[\] :/.test(pack));
   // wq#488: guidance must never carry the notepad's own markers.
   chk("pack contains no [[ ]] guidance markers", !pack.includes("[[") && !pack.includes("]]"));
+  // wq#535 second pass: "go back up" was advice, not an action. The agent sat
+  // on (17,11) -- the ladder out -- issuing goto(27,3) at a tile four pockets
+  // away, eight turns running. The pack must name enter_warp explicitly.
+  chk("pack has an actionable dead-pocket recovery (enter_warp, not 'go back up')",
+      /DEAD-POCKET RECOVERY/.test(pack) && pack.includes("enter_warp the warp at your OWN coordinates"));
+  chk("pack states goto cannot cross a warp",
+      /goto can never cross a warp/.test(pack));
+  chk("pack orders the fossil BEFORE any ladder down",
+      /BEFORE TAKING ANY LADDER DOWN/.test(pack));
+}
+
+console.log("\n=== D. the dead-pocket claim is TRUE, not just asserted (RAM) ===");
+if (!b1) {
+  chk("map60 checkpoint available for pocket analysis", false, "none found");
+} else {
+  const mm = new MapModel(b1.emu, sym, rom); mm.build();
+  const outside = mm.warps.find(w => w.destMap === 255);
+  chk("map60 has exactly one OUTSIDE warp", !!outside && `${outside.x},${outside.y}` === "27,3");
+  // Each B2F ladder lands somewhere on B1F. The pack claims (25,9)/(21,17)/
+  // (15,27) all land in pockets with no route to (27,3). Verify per landing
+  // tile: map60's warps back UP to map61 are the landing points.
+  for (const land of [[17, 11], [21, 17], [13, 27]] as const) {
+    const reach = bfs(mm, land[0], land[1]);
+    chk(`B1F pocket at (${land[0]},${land[1]}) CANNOT reach the exit (27,3)`,
+        !reach.has("27,3"), `${reach.size} tiles`);
+    // ...and the ladder back up is standing right there, which is the recovery.
+    const here = mm.warps.find(w => w.x === land[0] && w.y === land[1]);
+    chk(`  and (${land[0]},${land[1]}) is itself a warp back up (the recovery)`,
+        !!here && here.destMap === 61, JSON.stringify(here));
+  }
 }
 
 console.log(`\n${pass} PASS / ${fail} FAIL`);
