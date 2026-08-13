@@ -11,8 +11,16 @@
 // observation of OUR side, so a third party implementing the other end only has
 // to speak the wire protocol (M5_REMOTE_LINK.md) and run the same phases.
 //
-//   IDLE -> WALK_TO_ATTENDANT -> AWAIT_PARTNER -> HANDSHAKE -> ROOM_SELECT
+//   IDLE -> AWAIT_PARTNER -> HANDSHAKE -> ROOM_SELECT
 //        -> IN_ROOM (done) | ABORTED
+//
+// wq#522: this list, the Phase union and commit 6360dce's message used to
+// disagree — the first two carried a WALK_TO_ATTENDANT phase that this.to()
+// never entered. The commit message was the one that had it right. Deleted
+// from the type and from here rather than implemented, because the walk to the
+// attendant is not a phase: AWAIT_PARTNER deliberately does not advance the ROM
+// past the attendant until the socket is up (see "late join" below), so there
+// is no state to be in between the two.
 //
 // Failure handling (the ticket's three scenarios):
 //   late join     AWAIT_PARTNER polls link readiness on a timer; it does NOT
@@ -32,7 +40,7 @@ export const ROOM = { TRADE_CENTER: 0xD0, COLOSSEUM: 0xD1, CANCEL: 0xD2 } as con
 export type RoomName = "TRADE_CENTER" | "COLOSSEUM";
 
 export type Phase =
-  | "IDLE" | "WALK_TO_ATTENDANT" | "AWAIT_PARTNER" | "HANDSHAKE"
+  | "IDLE" | "AWAIT_PARTNER" | "HANDSHAKE"
   | "ROOM_SELECT" | "IN_ROOM" | "ABORTED";
 
 /**

@@ -3,6 +3,7 @@
 // gain or shutdown. Zero gameplay-logic coupling - pure listener.
 import { writeFileSync } from "fs";
 import { EventBus } from "./events";
+import { BlackoutDetector } from "./blackout";
 
 // Canonical brain-facing tool names (the SYSTEM_PREFIX tool list, exactly).
 const BRAIN_TOOLS = new Set([
@@ -33,7 +34,7 @@ export class Metrics {
   private t0 = Date.now();
   private lastInBattle = 0;
   private lastBadges = 0;
-  private wasAllFainted = false;
+  private blackout = new BlackoutDetector();
   private maps = new Set<number>();
   private dir: string;
 
@@ -65,12 +66,11 @@ export class Metrics {
           if (ib === 1) this.m.battlesWild++; else if (ib === 2) this.m.battlesTrainer++;
         }
         this.lastInBattle = ib;
-        // white-out: count the transition into an all-fainted party (edge, not level)
-        if (Array.isArray(e.party) && e.party.length > 0) {
-          const allFainted = e.party.every((p: any) => p.hp === 0);
-          if (allFainted && !this.wasAllFainted) this.m.whiteouts++;
-          this.wasAllFainted = allFainted;
-        }
+        // wq#547: blackouts are counted from their DURABLE CONSEQUENCES, not
+        // from the all-fainted edge. That edge required a state_read inside a
+        // window Red closes in well under one poll interval, and it caught
+        // NOTHING in 1285 sampled reads. See blackout.ts.
+        if (this.blackout.observe(e)) this.m.whiteouts++;
         if (typeof e.badgeCount === "number") {
           const gained = e.badgeCount > this.lastBadges;
           this.lastBadges = e.badgeCount;

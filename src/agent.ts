@@ -744,7 +744,13 @@ export class Agent {
       notepad: this.pad.toJSON(),
     };
     try { writeFileSync(path.replace(/\.state\.gz$/, ".json"), JSON.stringify(sidecar)); } catch {}
-    this.bus.emit("checkpoint", { file: stem, ...sidecar });
+    // wq#522: the sidecar's own `kind` ("periodic" | "map" | "milestone") is a
+    // real distinction and is kept, but it must not travel under the name
+    // `kind` or it collides with the event envelope. The on-disk sidecar file
+    // written just above is UNCHANGED — lpp_frontier.py and resume selection
+    // read `kind` out of that file and must keep seeing it.
+    const { kind: ckptKind, ...sidecarRest } = sidecar;
+    this.bus.emit("checkpoint", { file: stem, ckptKind, ...sidecarRest });
   }
 
   /** Keep the newest CKPT_KEEP_AUTO auto-* checkpoints; milestones and named
