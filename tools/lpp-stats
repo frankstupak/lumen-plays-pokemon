@@ -127,6 +127,11 @@ def main():
     ap.add_argument("--no-enrich", action="store_true", help="skip jsonl scan (faster)")
     ap.add_argument("--board", action="store_true",
                     help="append one-line summary to the agent board ($LPP_BOARD, append-only)")
+    # wq#503: machine-readable output so the kiosk trainer panel can SHOW the
+    # same turns/h and brain-calls/h this CLI computes, instead of a second
+    # implementation drifting away from it.
+    ap.add_argument("--json", action="store_true",
+                    help="emit JSON (aggregates + newest run) instead of the text report")
     args = ap.parse_args()
 
     runs = load_runs()
@@ -136,6 +141,19 @@ def main():
     lever = parse_ts(args.lever_ts)
     before = [r for r in rows if r["startedAt"] != "?" and parse_ts(r["startedAt"]) < lever]
     after = [r for r in rows if r["startedAt"] != "?" and parse_ts(r["startedAt"]) >= lever]
+
+    if args.json:
+        # "current" = the newest run summary on disk. metrics.flush("periodic")
+        # rewrites it every 60s, so this tracks the live run within a minute.
+        cur = rows[-1] if rows else None
+        print(json.dumps({
+            "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "leverTs": args.lever_ts,
+            "current": cur,
+            "before": aggregate(before),
+            "after": aggregate(after),
+        }))
+        return
 
     if args.runs:
         for r in rows:

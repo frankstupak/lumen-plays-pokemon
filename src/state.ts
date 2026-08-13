@@ -11,10 +11,23 @@ export interface GameState {
   partyCount: number; party: PartyMon[];
   badges: number; badgeCount: number;
   money: number; inBattle: number;
+  // wq#503 (kiosk trainer panel). All symbol-derived, all read every turn:
+  // mem() is a live zero-copy reference, so these cost a few array indexes.
+  pokedexOwned: number; pokedexSeen: number;
+  playH: number; playM: number; playS: number;
+  storyScore: number;
 }
 
 const bcd = (bytes: number[]) =>
   bytes.reduce((acc, b) => acc * 100 + ((b >> 4) * 10 + (b & 0xf)), 0);
+
+/** Set bits over [from, to) — used for the Pokedex owned/seen bitfields,
+ *  whose lengths come from their own *End symbols rather than a literal. */
+const popcountRange = (m: number[], from: number, to: number) => {
+  let n = 0;
+  for (let a = from; a < to; a++) { let b = m[a]; while (b) { n += b & 1; b >>= 1; } }
+  return n;
+};
 
 /** wq#471: STORY-CRITICAL Gen 1 event flags, in campaign order.
  *  idx = bit index into wEventFlags (base 0xd747 per roms/pokeblue.sym);
@@ -98,7 +111,26 @@ export class StateReader {
       badgeCount: badges.toString(2).split("1").length - 1,
       money: bcd([m[moneyA], m[moneyA + 1], m[moneyA + 2]]),
       inBattle: m[s.addr("wIsInBattle")],
+      // wq#503: the Pokedex bitfields are bounded by their own End symbols
+      // (owned d2f7..d30a, seen d30a..d31d = 19 bytes = 152 bits each), so the
+      // loop can never run off the end even on a differently-built ROM.
+      pokedexOwned: popcountRange(m, s.addr("wPokedexOwned"), s.addr("wPokedexOwnedEnd")),
+      pokedexSeen: popcountRange(m, s.addr("wPokedexSeen"), s.addr("wPokedexSeenEnd")),
+      // Play time is three separate single-byte counters; wPlayTimeMaxed sits
+      // between hours and minutes, which is how the sym file proves hours is
+      // one byte and not a word.
+      playH: m[s.addr("wPlayTimeHours")],
+      playM: m[s.addr("wPlayTimeMinutes")],
+      playS: m[s.addr("wPlayTimeSeconds")],
+      storyScore: this.storyScore(),
     };
+  }
+
+  /** wq#503: names of the STORY_FLAGS currently set, in campaign order. The
+   *  kiosk milestone line is the LAST of these to appear — a milestone is a
+   *  RAM flag transition, never a dialog line or a brain claim. */
+  storyFlagsSet(): string[] {
+    return STORY_FLAGS.filter(f => this.eventFlag(f.idx)).map(f => f.name);
   }
 
   /** Read one event flag bit from wEventFlags (LSB-first within each byte,
