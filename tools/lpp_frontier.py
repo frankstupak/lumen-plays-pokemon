@@ -451,6 +451,53 @@ def backtest(base=BASE, thresholds=(4, 6, 8, 10, 12, 16, 24)):
 RESUME_MAP_RE = re.compile(r"-map(\d+)\.")
 
 
+_SIDECAR_MAPS = {}
+
+
+def _sidecar_map_index(base=BASE):
+    """stem -> RAM-read map id, for resolving a resumed checkpoint's map.
+
+    WHY THIS EXISTS (found live 2026-08-13T06:58Z, the moment wq#518 landed):
+    the filename parse alone is not enough. Only 46 of 192 checkpoints are
+    `-map<N>` named; 139 are `-t<N>` named and carry NO map id in the filename.
+    The freeze happened on map15-named saves, so the parse looked sufficient --
+    and then the resume fix started selecting t-named saves and the rewind half
+    of this check went blind on 72% of the checkpoint set, exactly when it was
+    needed to confirm the fix holds.
+
+    The sidecar's `map` is a RAM read, so this is also the stronger source:
+    in this project a filename is a hypothesis and RAM is evidence.
+    """
+    if base in _SIDECAR_MAPS:
+        return _SIDECAR_MAPS[base]
+    idx = {}
+    for p in glob.glob(f"{base}/checkpoints/**/*.json", recursive=True):
+        try:
+            j = json.load(open(p))
+        except Exception:
+            continue
+        if isinstance(j.get("map"), int):
+            idx[os.path.basename(p)[:-5]] = j["map"]
+    _SIDECAR_MAPS[base] = idx
+    return idx
+
+
+def resume_map(resumed_from, base=BASE):
+    """Map id a boot resumed onto: sidecar RAM read first, filename as fallback."""
+    if not resumed_from:
+        return None
+    stem = os.path.basename(resumed_from)
+    for suffix in (".state.gz", ".gz", ".state"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    m = _sidecar_map_index(base).get(stem)
+    if isinstance(m, int):
+        return m
+    mm = RESUME_MAP_RE.search(resumed_from)
+    return int(mm.group(1)) if mm else None
+
+
 def load_boots(base=BASE, now_ms=None):
     """One record per boot, oldest first: when, from which save, how deep it got."""
     out = []
@@ -465,8 +512,7 @@ def load_boots(base=BASE, now_ms=None):
         if now_ms is not None and t > now_ms:
             continue
         src = j.get("resumedFrom")
-        mm = RESUME_MAP_RE.search(src or "")
-        rmap = int(mm.group(1)) if mm else None
+        rmap = resume_map(src, base)
         ranks = [RANK[x] for x in (j.get("mapsSeen") or []) if x in RANK]
         out.append({
             "startedAt": st, "ts": t, "resumedFrom": src,

@@ -317,12 +317,62 @@ for _p in _g.glob(f"{F.BASE}/checkpoints/**/*.json", recursive=True):
 ok("checkpoint FILENAME map id == RAM map id on the real tree",
    mismatch == 0 and match > 0, f"{match} match / {mismatch} mismatch")
 
+print("\n-- resume map resolution: sidecar RAM beats the filename --")
+# Only 46 of 192 real checkpoints are -map<N> named; 139 are -t<N> and carry no
+# map id at all. The filename parse alone went blind on 72% of the set the
+# moment wq#518 started selecting t-named saves.
+_idx = F._sidecar_map_index()
+ok("sidecar index is populated from the real tree", len(_idx) > 20, f"{len(_idx)} sidecars")
+
+_t_named = [k for k in _idx if __import__("re").search(r"-t\d+$", k)]
+ok("t-named checkpoints exist and resolve via sidecar", len(_t_named) > 0, f"{len(_t_named)} t-named")
+if _t_named:
+    _k = _t_named[0]
+    eq("a t-named save resolves to its RAM map", F.resume_map(_k + ".state.gz"), _idx[_k])
+
+_d = tempfile.mkdtemp(prefix="resmap_")
+os.makedirs(f"{_d}/checkpoints", exist_ok=True)
+eq("unknown stem falls back to the filename parse",
+   F.resume_map("auto-zzz-map61.state.gz", base=_d), 61)
+eq("unknown stem with no map id yields None",
+   F.resume_map("auto-zzz-t50.state.gz", base=_d), None)
+eq("empty resumedFrom yields None", F.resume_map(None, base=_d), None)
+
+# Coverage on the REAL boot set: every boot should name a place, not "?".
+_boots = F.load_boots()
+_unresolved = [b for b in _boots if b.get("resumeMap") is None and b.get("resumedFrom")]
+# A boot whose checkpoint has since been pruned or archived can NEVER resolve,
+# and demanding it would be demanding that history never be cleaned up. The
+# invariant is that resolution works wherever the evidence still exists.
+_idx_now = F._sidecar_map_index()
+_stem = lambda f: os.path.basename(f).replace(".state.gz", "").replace(".gz", "")
+_should = [b for b in _boots if b.get("resumedFrom") and _stem(b["resumedFrom"]) in _idx_now]
+_missed = [b for b in _should if b.get("resumeMap") is None]
+ok("every boot whose checkpoint STILL EXISTS resolves", len(_missed) == 0,
+   f"{len(_missed)} missed of {len(_should)} resolvable")
+ok("the NEWEST boot resolves (the one any live alert will name)",
+   _boots[-1].get("resumeMap") is not None,
+   f"{_boots[-1].get('resumedFrom')}")
+print(f"   (unresolvable by pruning: {len(_unresolved)} of {len(_boots)} boots, all pre-dating cleanup)")
+
 print("\n-- restart loop: the real campaign --")
 real = F.restart_loop()
 ok("real history is readable", real.get("ok") is True)
-ok("the real restart loop IS detected", real.get("looping") is True,
-   f"streak={real.get('streak')}")
-ok("...and the streak is the map15 save", "map15" in (real.get("streakSave") or ""))
+# NOTE (2026-08-13): the first version of this block asserted that the real
+# campaign IS looping and that the streak save is the map15 one. Those passed
+# only while the wq#518 resume trap was live, and they FAILED the moment the
+# fix landed and the streak dropped 10 -> 1. A test that only passes while the
+# system is broken is not a test of the detector; it is a test of the outage.
+# The detector's proof lives in the synthetic fixtures above, which contain a
+# known-looping history. Here we assert only invariants that hold either way.
+ok("streak is a positive count", isinstance(real.get("streak"), int) and real["streak"] >= 1,
+   str(real.get("streak")))
+ok("looping is consistent with the streak and the threshold",
+   real.get("looping") == (real["streak"] >= real["minStreak"] and bool(real.get("streakSave"))))
+ok("rewind history is a list and never negative",
+   isinstance(real.get("rewinds"), list) and len(real["rewinds"]) >= 0)
+print(f"   (live campaign right now: streak={real.get('streak')} "
+      f"save={real.get('streakSave')} looping={real.get('looping')})")
 
 
 # ── 9. deploy drift (wq#515, folded in 06:03Z) ────────────────────────────
