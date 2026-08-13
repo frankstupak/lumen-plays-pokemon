@@ -90,6 +90,21 @@ becomes the commit on `main`.
 By contributing, you agree that your contributions are licensed under the ISC
 License that covers this project.
 
+## Releases
+
+Versioning and the changelog are automated by
+[release-please](https://github.com/googleapis/release-please), which reads
+Conventional Commit history on `main` and keeps a standing "Release PR" with
+the next version bump and changelog entry up to date as `fix`/`feat`/etc.
+commits land.
+
+To cut a release: review and merge the open Release PR (title
+`chore(main): release X.Y.Z`). Merging it updates `package.json`,
+`CHANGELOG.md`, and `.release-please-manifest.json`, then tags `vX.Y.Z` and
+publishes a GitHub Release. No manual version bumps or tags — cutting a
+release is a maintainer decision made by merging that PR, not something a
+contributor PR should do.
+
 ## History note
 
 Commits before
