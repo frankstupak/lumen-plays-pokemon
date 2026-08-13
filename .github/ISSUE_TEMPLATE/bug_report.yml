@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in the harness behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security issues here — see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the agent or harness did, and what was expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact command, probe, or run that triggers it. Deterministic repros
+        are ideal; if it only shows up in a live run, say roughly how often.
+      placeholder: |
+        1. npm run verify
+        2. npx tsx src/probe_battle.ts
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        Console output, the failing probe's assertion, or the JSONL event lines
+        around the failure. Paste as text, not a screenshot.
+      render: shell
+  - type: input
+    id: rom
+    attributes:
+      label: ROM
+      description: Which ROM, and does `npm run verify` pass on it?
+      placeholder: "pokeblue.gb, verify passes"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      placeholder: "v20.11.0"
+    validations:
+      required: true
+  - type: input
+    id: gateway
+    attributes:
+      label: Model gateway and model
+      description: Which gateway and which model were routed to, if relevant.
+      placeholder: "LiteLLM localhost:4000, deepseek-v4"
