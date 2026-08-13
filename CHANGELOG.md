@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/frankstupak/lumen-plays-pokemon/compare/v0.2.0...v0.3.0) (2026-08-13)
+
+
+### Features
+
+* **agent:** annotate warps with reachability and explain failed goto ([a19a560](https://github.com/frankstupak/lumen-plays-pokemon/commit/a19a560ddc94d71c26e43e8b6a01f45c78bd8d5e))
+* **agent:** offer one reachable trainer as an income and experience goal ([f944ab3](https://github.com/frankstupak/lumen-plays-pokemon/commit/f944ab30ef10dd14317199dd239d401b03b77000))
+
+
+### Bug Fixes
+
+* **notepad:** re-arm claim verification on every resume ([86a3fbc](https://github.com/frankstupak/lumen-plays-pokemon/commit/86a3fbc1a151ad599a1309e22b5278994b7ce89f))
+* **resume:** rank Mt Moon B1F by pocket so the exit side outranks B2F ([88e356c](https://github.com/frankstupak/lumen-plays-pokemon/commit/88e356c1e1a6f6bfd8b4f6cfab043490ef2aaace))
+
 ## [0.2.0](https://github.com/frankstupak/lumen-plays-pokemon/compare/v0.1.0...v0.2.0) (2026-08-13)
 
 
