@@ -34,6 +34,14 @@ export function decodeGen1(bytes: ArrayLike<number>): string {
     if (t >= 0x80 && t <= 0x99) s += String.fromCharCode(0x41 + t - 0x80);         // A-Z
     else if (t >= 0xa0 && t <= 0xb9) s += String.fromCharCode(0x61 + t - 0xa0);    // a-z
     else if (t === 0x7f) s += " ";
+    // Byte values confirmed by reading MonsterNames directly: NIDORAN ends
+    // 8d 88 83 8e 91 80 8d EF (id 3) and ...F5 (id 15), FARFETCH ends 87 E0 83.
+    // Without these three, those names decode with a "?" and get filtered out
+    // of the table entirely, so the kiosk would show "SPECIES 3" for a Pokemon
+    // that is catchable two routes back.
+    else if (t === 0xe0) s += "'";
+    else if (t === 0xef) s += "\u2642";   // male sign
+    else if (t === 0xf5) s += "\u2640";   // female sign
     else if (t === 0xe1) s += "PK";
     else if (t === 0xe2) s += "MN";
     else if (t === 0xe3) s += "-";
