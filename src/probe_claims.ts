@@ -181,14 +181,21 @@ console.log("\n== K. against the REAL live notepad on disk (read-only) ==");
   const LIVE = "/home/lumen/pokemon/runtime/notepad.txt";
   if (!existsSync(LIVE)) { console.log("  skip: runtime/notepad.txt absent"); }
   else {
+    // wq#584: the two asserts that used to live here required every LIVE pin
+    // to be a possession claim and the guard to collapse them to one. That
+    // was true of the pad's contents the night wq#519 shipped and of nothing
+    // afterwards — a probe asserting mutable production data fails on data
+    // drift, not code defects (it went red on main the moment the agent
+    // pinned route guidance). The live section is now INFORMATIONAL; the
+    // guard-collapse contract is asserted on the recorded PINS_LIVE fixture,
+    // which is exactly the data the old asserts were written against.
     const j = JSON.parse(readFileSync(LIVE, "utf8")) as { pinned: string[] };
-    console.log(`  live pinned region: ${j.pinned.length} lines`);
     const claims = j.pinned.filter(p => parsePossessionClaim(p) !== null);
-    chk("every live pin is recognised as a possession claim", claims.length === j.pinned.length, `${claims.length}/${j.pinned.length}`);
+    console.log(`  live pinned region: ${j.pinned.length} lines, ${claims.length} parse as possession claims (informational)`);
     const pad = new Notepad();
-    const accepted = j.pinned.filter(p => pad.note("PIN: " + p) === "PINNED (permanent)");
-    console.log(`  with the guard: ${j.pinned.length} live pins -> ${accepted.length} accepted`);
-    chk("guard collapses the live pinned region to one line", accepted.length === 1, `accepted=${accepted.length}`);
+    const accepted = PINS_LIVE.filter(p => pad.note("PIN: " + p) === "PINNED (permanent)");
+    chk("guard collapses the recorded wq#519 pin flood to one line", accepted.length === 1,
+        `accepted=${accepted.length}/${PINS_LIVE.length}`);
   }
 }
 

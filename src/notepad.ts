@@ -39,11 +39,13 @@ export interface NotepadState { v: 1; pinned: string[]; summary: string; rolling
  *  no-op passthrough (wq#486 ships this; wq#488 sets it after bind()). */
 export type NotepadSanitizer = (raw: string) => { ok: boolean; clean?: string; reason?: string };
 
-/** wq#519. A pin that asserts the agent POSSESSES something, with the subject
- *  extracted. Deliberately text-only: notepad.ts stays free of items.ts and the
- *  emulator, so the pad remains testable on its own and the domain knowledge
- *  (item ids, RAM offsets) lives in the checker where the domain already is. */
-export interface PossessionClaim { raw: string; subject: string }
+/** wq#519. A pin that asserts something about POSSESSION, with the subject
+ *  extracted and the claim DIRECTION preserved (wq#584): `negated` means the
+ *  pin asserts the agent does NOT possess the subject. Deliberately text-only:
+ *  notepad.ts stays free of items.ts and the emulator, so the pad remains
+ *  testable on its own and the domain knowledge (item ids, RAM offsets) lives
+ *  in the checker where the domain already is. */
+export interface PossessionClaim { raw: string; subject: string; negated: boolean }
 
 /** Verdict on a possession claim. `null` means CANNOT CHECK -- the pin is then
  *  kept untouched, because the failure mode this ticket exists to stop is
@@ -59,6 +61,13 @@ const POSSESSION_PATTERNS: RegExp[] = [
   /^(.+?)\s+(?:is\s+|was\s+)?(?:acquired|obtained|secured|collected)\b\s*$/i,
 ];
 
+/** wq#584: negation vocabulary. Tested against the RAW line — the possession
+ *  patterns above happily match "Dome Fossil is NOT in inventory" (the lazy
+ *  subject group swallows the NOT), which is exactly how the live corrector
+ *  deleted the one TRUE bag note the brain had. Direction is a property of
+ *  the claim, not noise inside the subject. */
+const NEGATION_RE = /\b(?:not|no|isn'?t|aren'?t|wasn'?t|don'?t|doesn'?t|didn'?t|never|without|missing|lacks?|lacking)\b/i;
+
 /** Extract a possession claim, or null if the line does not assert possession.
  *  Exported so the probe can pin the exact strings the live agent wrote. */
 export function parsePossessionClaim(text: string): PossessionClaim | null {
@@ -68,7 +77,7 @@ export function parsePossessionClaim(text: string): PossessionClaim | null {
     const m = t.match(re);
     if (m && m[1]) {
       const subject = normaliseSubject(m[1]);
-      if (subject) return { raw: t, subject };
+      if (subject) return { raw: t, subject, negated: NEGATION_RE.test(t) };
     }
   }
   return null;
@@ -82,7 +91,7 @@ export function parsePossessionClaim(text: string): PossessionClaim | null {
 function normaliseSubject(s: string): string {
   return String(s)
     .toLowerCase()
-    .replace(/\b(?:acquired|acquire|acquires|acquiring|obtained|obtain|obtains|obtaining|confirmed|confirm|confirms|confirming|verified|verify|verifies|verifying|checked|check|checks|checking|secured|secure|secures|collected|collect|collects|picked\s*up|pickup|now|already|still|the|a|an|my|is|are|was|and|to|be)\b/g, " ")
+    .replace(/\b(?:acquired|acquire|acquires|acquiring|obtained|obtain|obtains|obtaining|confirmed|confirm|confirms|confirming|verified|verify|verifies|verifying|checked|check|checks|checking|secured|secure|secures|collected|collect|collects|picked\s*up|pickup|now|already|still|the|a|an|my|is|are|was|and|to|be|not|no|never|without|missing|lack|lacks|lacking|isn|aren|wasn|don|doesn|didn|t)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
@@ -179,7 +188,7 @@ export class Notepad {
     if (claim) {
       const same = this.pinned.find(p => {
         const c = parsePossessionClaim(p);
-        return c !== null && c.subject === claim.subject;
+        return c !== null && c.subject === claim.subject && c.negated === claim.negated;
       });
       if (same)
         return `pin REDUNDANT: "${same}" already pins possession of "${claim.subject}" - pins are permanent, so this fact is already recorded and re-pinning cannot make it more true; if you are trying to CORRECT or clear it, a pin cannot be edited, write a normal note instead`;
@@ -241,8 +250,59 @@ export class Notepad {
     return removed;
   }
 
+  /** wq#584: pins that ban movement ("stuck loop detected - stop trying to
+   *  move on map 60") predate the wq#564 route system and contradict its live
+   *  leg guidance every turn they survive. Retire them with a note. */
+  private static STALE_PIN_PATTERNS: RegExp[] = [
+    /stuck\s+loop\s+detected/i,
+    /(?:stop|do\s*not|don'?t|avoid)\s+(?:trying\s+to\s+)?mov(?:e|ing)\s+(?:on|around|in)\s+map\s*\d+/i,
+  ];
+
+  /** wq#584: rolling-entry key for correction dedup. The quoted claim varies
+   *  across a flood ("acquired" / "confirmed in" / "verified in" ...) while
+   *  everything else repeats, so the quote is masked before normalising. */
+  private static correctionKey(line: string): string {
+    return normaliseLine(String(line).replace(/"[^"]*"/g, '"·"').replace(/\s*\(x\d+ similar\)$/, ""));
+  }
+
+  /** Push a correction, collapsing onto an existing same-key line as (xN similar). */
+  private pushCorrection(line: string): void {
+    const key = Notepad.correctionKey(line);
+    const i = this.rolling.findIndex(r => Notepad.correctionKey(r) === key);
+    if (i < 0) { this.rolling.push(line); return; }
+    const m = this.rolling[i].match(/\(x(\d+) similar\)$/);
+    const n = m ? Number(m[1]) + 1 : 2;
+    this.rolling[i] = `${this.rolling[i].replace(/\s*\(x\d+ similar\)$/, "")} (x${n} similar)`;
+  }
+
+  /** Collapse an already-flooded rolling section (nine near-identical fossil
+   *  corrections on disk tonight) into one line per key. Order-preserving. */
+  private dedupeCorrections(): number {
+    const seen = new Map<string, number>();
+    const out: string[] = [];
+    for (const r of this.rolling) {
+      if (!/^CORRECTION\b/.test(r)) { out.push(r); continue; }
+      const key = Notepad.correctionKey(r);
+      const i = seen.get(key);
+      if (i === undefined) { seen.set(key, out.length); out.push(r); continue; }
+      const m = out[i].match(/\(x(\d+) similar\)$/);
+      const n = m ? Number(m[1]) + 1 : 2;
+      out[i] = `${out[i].replace(/\s*\(x\d+ similar\)$/, "")} (x${n} similar)`;
+    }
+    const collapsed = this.rolling.length - out.length;
+    if (collapsed) this.rolling = out;
+    return collapsed;
+  }
+
   /** wq#519: check every pinned POSSESSION claim against reality and drop the
    *  ones reality contradicts, leaving a correction the brain can read.
+   *
+   *  wq#584: DIRECTION-AWARE. A pin asserting NON-possession ("X is NOT in
+   *  inventory") is true precisely when the checker says holds=false, so it is
+   *  removed only when reality says you DO have the thing. The old code
+   *  removed any fossil-flavoured pin whenever the flags read 0 — which
+   *  deleted the single accurate bag note the brain had, nine turns in.
+   *  Also retires stale movement-ban pins and dedups the correction flood.
    *
    *  Only positive disagreement removes a pin. A checker returning null (cannot
    *  read RAM, unknown subject) leaves the pin exactly as it was: this ticket
@@ -250,7 +310,20 @@ export class Notepad {
    *  error pointed the other way. Idempotent per session. */
   verifyClaims(): { checked: number; dropped: string[]; kept: number } {
     const result = { checked: 0, dropped: [] as string[], kept: 0 };
-    if (!this.claimChecker) { this.lastVerification = result; return result; }
+    // Stale movement bans go first — no checker needed, the pattern IS the verdict.
+    const fresh: string[] = [];
+    for (const p of this.pinned) {
+      if (Notepad.STALE_PIN_PATTERNS.some(re => re.test(p))) {
+        result.dropped.push(p);
+        this.pushCorrection(`RETIRED stale pin "${p}": movement bans predate the route system (wq#564) and contradict its live leg guidance. Navigate by the ROUTE section, not old self-bans.`);
+      } else fresh.push(p);
+    }
+    this.pinned = fresh;
+    if (!this.claimChecker) {
+      const collapsed = this.dedupeCorrections();
+      if (result.dropped.length || collapsed) { this.compact(); this.save(); }
+      this.lastVerification = result; return result;
+    }
     const survivors: string[] = [];
     for (const p of this.pinned) {
       const claim = parsePossessionClaim(p);
@@ -259,16 +332,20 @@ export class Notepad {
       let verdict: { holds: boolean; evidence: string } | null = null;
       try { verdict = this.claimChecker(claim); }
       catch { verdict = null; }               // a broken checker must not drop pins
-      if (verdict && !verdict.holds) {
+      const asserted = !claim.negated;        // what the pin says about possession
+      if (verdict && verdict.holds !== asserted) {
         result.dropped.push(p);
-        this.rolling.push(`CORRECTION (state check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
+        this.pushCorrection(claim.negated
+          ? `CORRECTION (state check): the pinned claim "${p}" is FALSE — you DO possess it. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`
+          : `CORRECTION (state check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
       } else {
         survivors.push(p);
         result.kept++;
       }
     }
-    if (result.dropped.length) {
-      this.pinned = survivors;
+    this.pinned = survivors;
+    const collapsed = this.dedupeCorrections();
+    if (result.dropped.length || collapsed) {
       this.compact();
       this.save();
     }
