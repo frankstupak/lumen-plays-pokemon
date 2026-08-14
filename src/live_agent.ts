@@ -6,7 +6,7 @@ import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel } from "./map";
 import { Navigator } from "./nav";
-import { EventBus } from "./events";
+import { EventBus, retainEventLogs } from "./events";
 import { Screen } from "./screen";
 import { Sync } from "./sync";
 import { Dialog } from "./dialog";
@@ -51,7 +51,18 @@ emu.paceMs = 0;  // run at harness speed; the brain sets the tempo
 const rom = new Rom(ROM);
 const EVENTS_DIR = "/home/lumen/pokemon/events";
 const RUN_TAG = "live-agent-" + Date.now();
+// wq#551: THE ONE AND ONLY RETENTION CALL IN THE PROJECT. The live service at
+// boot is the single owner of event-log deletion; every other EventBus in this
+// repo (probes, tools, link drivers) now constructs without touching a byte of
+// existing history. Runs BEFORE the bus is constructed so the sweep and its
+// `retention` event describe the state this run inherited.
+const retention = retainEventLogs(EVENTS_DIR);
 const bus = new EventBus(EVENTS_DIR, RUN_TAG);
+bus.emit("retention", {
+  keep: retention.keep, scanned: retention.scanned, kept: retention.kept,
+  deletedCount: retention.deleted.length, deleted: retention.deleted,
+  failedCount: retention.failed.length, failed: retention.failed,
+});
 const metrics = new Metrics(bus, RUN_TAG, EVENTS_DIR);
 const retry = new RetryCounter(RUN_TAG, EVENTS_DIR);
 bus.on(e => retry.observe(e));
