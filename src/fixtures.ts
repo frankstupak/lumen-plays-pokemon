@@ -25,7 +25,9 @@
 // THE RULE: resolve a fixture BY PROPERTY, NEVER BY NAME. Checkpoint rotation
 // is normal and expected; a probe that names one file is a probe with an expiry
 // date nobody wrote down.
-import { readdirSync, existsSync, readFileSync } from "fs";
+import { readdirSync, existsSync, readFileSync, copyFileSync, mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 export const REPO = "/home/lumen/pokemon";
 export const CKPTS = `${REPO}/checkpoints`;
@@ -76,14 +78,43 @@ export function findFixture(pred: (sc: FixtureSidecar) => boolean,
  *  ENOENT stack trace out of readFileSync. A reader of CI output can tell
  *  "the corpus no longer contains what this test needs" apart from
  *  "the code under test is broken", which was impossible before. */
-export function requireFixture(what: string, path: string | null): string {
-  if (path) return path;
+export function requireFixture(what: string, path: string | null,
+                               opts: { copy?: boolean } = {}): string {
+  if (path) return opts.copy === false ? path : copyFixture(path);
   console.log(`FAIL FIXTURE MISSING: no checkpoint or save satisfies "${what}"`);
   console.log(`     This is CORPUS ROT, not a defect in the code under test.`);
   console.log(`     Checkpoint rotation removed whatever this probe used to load.`);
   console.log(`     Re-run once the campaign produces a matching state, or widen the predicate.`);
   console.log(`\n0 passed, 1 failed (fixture unavailable)`);
   process.exit(1);
+}
+
+/** wq#551 / R4 FIXTURE DELETED MID-RUN: take a private copy of a fixture before
+ *  reading it, and return the copy's path.
+ *
+ *  R1 was "the fixture rotated off disk BEFORE the probe started", and
+ *  requireFixture() already turns that into a legible failure. R4 is the other
+ *  half and it is nastier: the fixture rotates off disk WHILE the probe is
+ *  running. agent.ts pruneAuto() keeps the newest CKPT_KEEP_AUTO auto-*
+ *  checkpoints and unlinks the rest, and the LIVE SERVICE calls it on every
+ *  checkpoint write — concurrently, against the same checkpoints/ directory
+ *  every probe resolves fixtures from. A probe that resolves a path once and
+ *  reloads it per iteration can therefore die partway through a loop, and its
+ *  earlier iterations have already printed PASS. wq#552 hit exactly this.
+ *
+ *  Copying is the whole fix: a fixture under mkdtemp is not in a directory
+ *  pruneAuto walks, so nothing can take it away mid-loop. The sidecar travels
+ *  with the state file because callers read both. Deliberately NOT cleaned up —
+ *  these are small, /tmp is swept by the OS, and an unlink here would be one
+ *  more deletion path in a ticket about deletion paths. */
+export function copyFixture(statePath: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "lpp-fixture-"));
+  const base = statePath.split("/").pop()!;
+  const dest = join(dir, base);
+  copyFileSync(statePath, dest);
+  const srcSc = statePath.replace(/\.state\.gz$/, ".json");
+  if (existsSync(srcSc)) copyFileSync(srcSc, dest.replace(/\.state\.gz$/, ".json"));
+  return dest;
 }
 
 /** Guard an assertion that quantifies over a scanned corpus.
@@ -126,12 +157,18 @@ export function haveSamples(label: string, n: number, min = 1): boolean {
 //   an arbitrary CWD. Same class, narrower blast radius; anchored here anyway
 //   rather than left as the one exception a future reader has to re-derive.
 //
-// SAFETY NOTE FOR ANYONE POINTING A BUS AT THE REAL events/: EventBus's
-// constructor calls retain(), which UNLINKS every .jsonl beyond the newest
-// LPP_EVENTS_KEEP_FILES (default 30). events/ held 31 logs when this was
-// written, so merely CONSTRUCTING a bus there deletes the oldest one. That is
-// why the guard for this ticket resolves and asserts paths, and only ever
-// constructs a bus under a temporary LPP_REPO.
+// SAFETY NOTE FOR ANYONE POINTING A BUS AT THE REAL events/ — CORRECTED BY
+// wq#551, AND THE ORIGINAL WARNING WAS RIGHT WHEN IT WAS WRITTEN. It said:
+// EventBus's constructor calls retain(), which UNLINKS every .jsonl beyond the
+// newest LPP_EVENTS_KEEP_FILES (default 30), so merely CONSTRUCTING a bus there
+// deletes the oldest log. It did, and it cost 51 of 61 runs their per-turn
+// evidence before anyone ticketed it.
+// AS OF wq#551 THAT IS NO LONGER TRUE: the constructor performs no deletion at
+// all, and retention lives in the explicitly-called retainEventLogs(), whose
+// only caller is live_agent.ts at boot. Constructing a bus against the real
+// events/ is now safe. This guard still uses a temporary LPP_REPO anyway,
+// because verifying a path resolver by writing into the directory it resolves
+// is a bad idea for reasons that have nothing to do with deletion.
 
 /** The repository root that campaign data hangs off. LPP_REPO overrides it for
  *  tests; production never sets it. */
