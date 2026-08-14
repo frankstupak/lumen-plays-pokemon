@@ -25,3 +25,19 @@ jobs:
 
       - name: Type-check
         run: npx tsc --noEmit
+
+  probes-pure:
+    name: probes (pure subset)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # wq#588: the ROM-free, checkpoint-free probes. The full on-main set
+      # (emulator + live-corpus fixtures) runs on the Lumen host via
+      # ops/lpp-probes.timer, because roms/pokeblue.gb cannot live in this
+      # repository and the checkpoint corpus is runtime data.
+      - run: npm run test:pure

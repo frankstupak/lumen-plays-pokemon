@@ -49,3 +49,6 @@ lumen-pokemon-live.service.bak
 
 # ── M3 run logs (evidence is kept under docs/multiplayer/evidence/) ──
 logs-m3-*.txt
+
+# wq#588: local event/source preserves, never repo content
+backups/
