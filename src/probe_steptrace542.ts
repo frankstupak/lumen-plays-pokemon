@@ -59,7 +59,7 @@ interface Journey {
   recs: StepRec[]; planEscapesAt: number; leftStrip: boolean;
 }
 
-async function runJourney(path: string, sc: any): Promise<Journey | null> {
+async function runJourney(path: string, sc: any, tx = TX, ty = TY): Promise<Journey | null> {
   const emu = new Emulator(ROM);
   try { loadSnapshotFile(emu, path); } catch { return null; }
   const st = new StateReader(emu, sym).read();
@@ -75,13 +75,32 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
   const nav = new Navigator(emu, sym, map, bus, sync);
 
   // What A* says BEFORE we move: at which step does the plan leave y=10..11?
-  const p0 = astar(map, st.x, st.y, TX, TY, new Set());
+  const p0 = astar(map, st.x, st.y, tx, ty, new Set());
   const planEscapesAt = p0 ? p0.findIndex(c => !STRIP_Y.has(c.y)) + 1 : -1;
 
-  const result = await nav.goto(TX, TY);
+  const result = await nav.goto(tx, ty);
   const leftStrip = recs.some(r => r.ev === "step" && r.to && !STRIP_Y.has(r.to[1]));
   return { file: path.split("/").pop()!, start: { x: st.x, y: st.y },
            result, recs, planEscapesAt, leftStrip };
+}
+
+/** A target the agent CAN legally reach, inside the strip, for exercising the
+ *  nav_trace plumbing. Chosen by asking A* rather than by assuming geometry. */
+function reachableTarget(path: string): { x: number; y: number } | null {
+  const emu = new Emulator(ROM);
+  try { loadSnapshotFile(emu, path); } catch { return null; }
+  const st = new StateReader(emu, sym).read();
+  if (st.map !== MAP || !STRIP_Y.has(st.y)) return null;
+  const map = new MapModel(emu, sym, rom); map.build();
+  for (const dx of [-3, 3, -2, 2, -4, 4, -1, 1]) {
+    for (const y of [st.y, st.y === 10 ? 11 : 10]) {
+      const x = st.x + dx;
+      if (x < 0 || x >= map.gw) continue;
+      const p = astar(map, st.x, st.y, x, y, new Set());
+      if (p && p.length >= 2) return { x, y };
+    }
+  }
+  return null;
 }
 
 (async () => {
@@ -100,12 +119,25 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
       `${journeys.length} journeys`);
   if (!journeys.length) { console.log(`\n${pass} passed / ${fail} failed`); process.exit(fail ? 1 : 0); }
 
-  // ---- A. THE TICKET'S QUESTION -------------------------------------------
+  // ---- A. THE TICKET'S QUESTION, RE-BASED BY wq#553 -----------------------
+  // wq#542 asked "does the plan escape while execution does not?" and the answer
+  // was yes: 12/12 planned, 0/12 executed. wq#552 found why — A* was routing
+  // through a phantom opening, because MapModel had no representation of Gen 1
+  // TILE-PAIR collisions and the y=12 boundary (tile 0x05) is refused from the
+  // strip floor (tile 0x20) despite 0x05 being in the tileset's passable list.
+  //
+  // So this assertion is re-pointed, NOT inverted. The old A1 asserted the
+  // phantom opening still exists and would now fail by design. The corrected
+  // expectation is that A* NO LONGER PLANS A ROUTE THE EMULATOR REFUSES. It is
+  // not "the agent escapes": there is no legal southward exit to find, every
+  // non-terrain column of y=12 is 0x05, and probe_collision552 measures that
+  // against raw emulator presses on all 11 decided columns.
   const planned = journeys.filter(j => j.planEscapesAt > 0);
-  const worst = Math.max(...planned.map(j => j.planEscapesAt));
-  chk("A1 the PLANNED path leaves the strip from every start tile",
-      planned.length === journeys.length,
-      `${planned.length}/${journeys.length}, latest escape at planned step ${worst}`);
+  const worst = planned.length ? Math.max(...planned.map(j => j.planEscapesAt)) : 0;
+  chk("A1 A* no longer plans a southward escape the emulator refuses",
+      planned.length === 0,
+      `${planned.length}/${journeys.length} still plan an escape` +
+      (planned.length ? `, latest at planned step ${worst}` : ""));
 
   // ---- B. DID EXECUTION FOLLOW IT? ----------------------------------------
   const left = journeys.filter(j => j.leftStrip).length;
@@ -128,6 +160,15 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
   console.log(`# C. step results: ${[...results].map(([k, v]) => `${k}=${v}`).join(" ")}`);
   console.log(`# C. southward escape attempts (want y=12): ${southAttempts} ` +
               `blocked=${southBlocked} moved=${southMoved}`);
+  // The churn itself, asserted. wq#542 measured 90 attempts of which 83 were
+  // blocked and 0 moved — the agent spending its turns on a step the game was
+  // never going to allow. Zero attempts is the point of wq#552; a non-zero
+  // count here means the tile-pair rule has stopped reaching A*.
+  chk("C1 the agent no longer ATTEMPTS the refused southward step",
+      southAttempts === 0, `${southAttempts} attempts (${southBlocked} blocked, ${southMoved} moved)`);
+  chk("C2 and if it ever does attempt one, it must not be silently blocked",
+      southMoved === 0 && southBlocked === 0,
+      `blocked=${southBlocked} moved=${southMoved}`);
 
   // ---- D. DID A JOURNEY TALK ITSELF INTO A BOX? ---------------------------
   // wq#542 / rabbit17b: this used to derive maxBlocked from `exhausted` records
@@ -148,6 +189,12 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
   const growing = planBlocked.filter(n => n >= 2).length;
   console.log(`# D. journeys whose learnedBlocked grew to >=2 cells WITHIN one goto: ` +
               `${growing}/${journeys.length}`);
+  // wq#542 measured 11/12. Every one of those cells was a phantom: A* planned
+  // through the y=12 barrier, step() honestly reported blocked, and the model
+  // learned a wall that its own map should have known about. With the tile-pair
+  // rule in the model there is nothing left to learn the hard way.
+  chk("D1 learnedBlocked no longer accumulates phantom walls within a single goto",
+      growing === 0, `${growing}/${journeys.length} journeys grew to >=2 cells`);
   for (const r of exh.slice(0, 3))
     console.log(`#    exhausted at (${r.at}) blocked=[${(r.blocked ?? []).join(" ")}]`);
 
@@ -169,8 +216,25 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
   }
 
   // ---- F. THE INSTRUMENTATION ITSELF MUST BE LOAD-BEARING -----------------
-  const anyPlan = journeys.some(j => j.recs.some(r => r.ev === "plan"));
-  const anyStep = journeys.some(j => j.recs.some(r => r.ev === "step"));
+  // wq#553: these used to run against the journeys above, which is only sound
+  // while those journeys DO something. Once wq#552 taught A* the tile-pair rule
+  // the goto to the exit correctly returns no path, so there is no plan and no
+  // step to trace and F3/F4/F5 went red — reporting broken instrumentation when
+  // the instrumentation was fine. The plumbing was being exercised *by the bug*.
+  // It is now exercised against a target A* says is genuinely reachable, so it
+  // tests nav_trace and nothing else.
+  const reachJourneys: Journey[] = [];
+  for (const f of idx) {
+    if (reachJourneys.length >= 3) break;
+    const t = reachableTarget(f.path);
+    if (!t) continue;
+    const j = await runJourney(f.path, f.sc, t.x, t.y);
+    if (j) { reachJourneys.push(j); console.log(`# F. plumbing journey ${j.file} -> (${t.x},${t.y}) = ${j.result}`); }
+  }
+  chk("F2b a reachable in-strip target could be driven at all",
+      reachJourneys.length > 0, `${reachJourneys.length} journeys`);
+  const anyPlan = reachJourneys.some(j => j.recs.some(r => r.ev === "plan"));
+  const anyStep = reachJourneys.some(j => j.recs.some(r => r.ev === "step"));
   chk("F3 nav_trace emits plans", anyPlan);
   chk("F4 nav_trace emits per-step intent vs actual", anyStep);
   // NOTE THE GUARD, and it is not decoration: written without it this assertion
@@ -178,7 +242,7 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
   // That is wq#540's R3 empty-corpus shape reappearing in the probe filed to
   // measure a different bug. A green tick must never be able to mean "nothing
   // was checked", so the count is asserted before the property.
-  const stepRecs = journeys.flatMap(j => j.recs.filter(r => r.ev === "step"));
+  const stepRecs = reachJourneys.flatMap(j => j.recs.filter(r => r.ev === "step"));
   chk("F5 every step record carries want, result and resulting position",
       stepRecs.length > 0 && stepRecs.every(r => r.want && r.r && r.to),
       `${stepRecs.length} step records`);
@@ -197,8 +261,15 @@ async function runJourney(path: string, sc: any): Promise<Journey | null> {
     const mm = new MapModel(emu, sym, rom); mm.build();
     const sy2 = new Sync(emu, sym);
     const gx = g.sc.x;
-    chk("G1 MapModel claims the southward tile is walkable",
+    chk("G1 terrain passability ALONE still calls the southward tile walkable",
         mm.passable(gx, 12), `(${gx},12) passable=${mm.passable(gx, 12)}`);
+    // wq#552 deliberately left passable() terrain-only and put the pair rule in
+    // passableFrom(). G1 documents why terrain alone is not enough; G1b asserts
+    // the model now reaches the same verdict as the emulator does in G2.
+    chk("G1b but MapModel.passableFrom() now agrees with the emulator and refuses the step",
+        !mm.passableFrom(gx, 11, gx, 12),
+        `passableFrom(${gx},11 -> ${gx},12)=${mm.passableFrom(gx, 11, gx, 12)} ` +
+        `pairBlocked=${mm.pairBlocked(gx, 11, gx, 12)}`);
     const yOf = () => emu.mem()[sym.addr("wYCoord")];
     const press = async (key: number, n: number) => {
       for (let i = 0; i < n; i++) {
