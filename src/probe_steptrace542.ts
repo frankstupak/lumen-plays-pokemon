@@ -34,17 +34,27 @@ import { StateReader } from "./state";
 import { EventBus } from "./events";
 import { Sync } from "./sync";
 import { Navigator, astar } from "./nav";
-import { fixtureIndex, haveSamples } from "./fixtures";
+import { fixtureIndex, haveSamples, copyFixture } from "./fixtures";
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
 const MAP = 61, TX = 12, TY = 7;
 const STRIP_Y = new Set([10, 11]);
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const chk = (name: string, ok: boolean, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? " :: " + detail : ""}`);
   ok ? pass++ : fail++;
+};
+/** wq#554: a check a fixture could not exercise is NOT a pass.
+ *
+ *  G2/G3 used to read `dr === "battle" ? true : <real check>`, so an unlucky
+ *  wild encounter greened a check that never touched the wall. rabbit17b found
+ *  this in the INHERITED G2 during wq#542 and it survived the wq#553 re-point.
+ *  probe_wall542 and probe_collision552 both got this right — record the battle
+ *  as inconclusive and report it separately — and this is that shape. */
+const skipped = (name: string, why: string) => {
+  skip++; console.log(`SKIP ${name} :: ${why}`);
 };
 
 const sym = new SymbolTable(SYM);
@@ -257,9 +267,13 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   const g = idx.find(f => f.sc.map === MAP && f.sc.y === 11 && f.sc.x >= 33);
   if (!g) { chk("G0 a y=11 x>=33 fixture exists", false, "no sample"); }
   else {
-    const emu = new Emulator(ROM); loadSnapshotFile(emu, g.path);
+    // wq#551 R4: this section reloads the same checkpoint up to
+    // LPP_G23_ATTEMPTS + 1 times, and the live service's pruneAuto() unlinks
+    // auto-* checkpoints on every write. wq#552 lost a run to exactly that.
+    // Copy once, up front, and read only the copy from here down.
+    const fixture = copyFixture(g.path);
+    const emu = new Emulator(ROM); loadSnapshotFile(emu, fixture);
     const mm = new MapModel(emu, sym, rom); mm.build();
-    const sy2 = new Sync(emu, sym);
     const gx = g.sc.x;
     chk("G1 terrain passability ALONE still calls the southward tile walkable",
         mm.passable(gx, 12), `(${gx},12) passable=${mm.passable(gx, 12)}`);
@@ -270,25 +284,57 @@ function reachableTarget(path: string): { x: number; y: number } | null {
         !mm.passableFrom(gx, 11, gx, 12),
         `passableFrom(${gx},11 -> ${gx},12)=${mm.passableFrom(gx, 11, gx, 12)} ` +
         `pairBlocked=${mm.pairBlocked(gx, 11, gx, 12)}`);
-    const yOf = () => emu.mem()[sym.addr("wYCoord")];
-    const press = async (key: number, n: number) => {
-      for (let i = 0; i < n; i++) {
-        await emu.tapAsync(key, 8, 2); await emu.framesAsync(22); await sy2.settle(300);
-        if (emu.mem()[sym.addr("wIsInBattle")] !== 0) return "battle";
-      }
-      return "ok";
-    };
-    const y0 = yOf();
-    const dr = await press(KEYS.DOWN, 6);
-    const yDown = yOf();
-    chk("G2 the EMULATOR refuses that step — the barrier is real, step() is honest",
-        dr === "battle" ? true : yDown === y0,
-        `6 raw DOWN presses: y ${y0} -> ${yDown} (${dr})`);
-    const ur = await press(KEYS.UP, 3);
-    chk("G3 the same tile column moves freely NORTH, so this is not a stuck emulator",
-        ur === "battle" ? true : yOf() < y0, `y ${y0} -> ${yOf()} (${ur})`);
+    // wq#554: G2/G3 are the only assertions here that ask the EMULATOR rather
+    // than the model, which makes them the load-bearing pair — and they were the
+    // ones a wild encounter could green without touching the wall. Retry from a
+    // FRESH LOAD a bounded number of times; if a battle keeps interrupting,
+    // report SKIP and let the reader see that nothing was measured.
+    //
+    // The fixture is copied once (wq#551 R4): this loop reloads the same
+    // checkpoint up to LPP_G23_ATTEMPTS times, and the live service's
+    // pruneAuto() unlinks auto-* checkpoints on every write. wq#552 lost a run
+    // to exactly that.
+    const ATTEMPTS = Number(process.env.LPP_G23_ATTEMPTS ?? 4);
+    let battles = 0, used = 0;
+    let out: { y0: number; yDown: number; dr: string; yUp: number; ur: string } | null = null;
+
+    for (let a = 1; a <= ATTEMPTS && !out; a++) {
+      used = a;
+      const e2 = new Emulator(ROM);
+      try { loadSnapshotFile(e2, fixture); } catch { break; }
+      const s3 = new Sync(e2, sym);
+      const yOf2 = () => e2.mem()[sym.addr("wYCoord")];
+      const press2 = async (key: number, n: number) => {
+        for (let i = 0; i < n; i++) {
+          await e2.tapAsync(key, 8, 2); await e2.framesAsync(22); await s3.settle(300);
+          if (e2.mem()[sym.addr("wIsInBattle")] !== 0) return "battle";
+        }
+        return "ok";
+      };
+      const y0 = yOf2();
+      const dr = await press2(KEYS.DOWN, 6);
+      if (dr === "battle") { battles++; continue; }
+      const yDown = yOf2();
+      const ur = await press2(KEYS.UP, 3);
+      if (ur === "battle") { battles++; continue; }
+      out = { y0, yDown, dr, yUp: yOf2(), ur };
+    }
+
+    if (!out) {
+      const why = `a wild battle interrupted all ${used} attempt(s) (${battles} battles). ` +
+                  `INCONCLUSIVE, not passing — nothing here touched the wall.`;
+      skipped("G2 the EMULATOR refuses that step", why);
+      skipped("G3 the same tile column moves freely NORTH", why);
+    } else {
+      chk("G2 the EMULATOR refuses that step — the barrier is real, step() is honest",
+          out.yDown === out.y0,
+          `6 raw DOWN presses: y ${out.y0} -> ${out.yDown} (attempt ${used}/${ATTEMPTS}, ${battles} battle retries)`);
+      chk("G3 the same tile column moves freely NORTH, so this is not a stuck emulator",
+          out.yUp < out.y0, `y ${out.y0} -> ${out.yUp} (${out.ur})`);
+    }
   }
 
-  console.log(`\n${pass} passed / ${fail} failed`);
+  const skipNote = skip ? ` / ${skip} skipped` : "";
+  console.log(`\n${pass} passed / ${fail} failed${skipNote}`);
   process.exit(fail ? 1 : 0);
 })();
