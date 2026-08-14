@@ -1,0 +1,16 @@
+# wq#588 — nightly on-main probe run for lumen-plays-pokemon.
+# Install (as user lumen on the Lumen host):
+#   cp ops/lpp-probes.service ops/lpp-probes.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now lpp-probes.timer
+# Red runs push to ntfy via /home/lumen/bin/ntfy-send.
+[Unit]
+Description=lumen-plays-pokemon on-main probe set (wq#588)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/lumen/pokemon
+# Never run against a dirty or non-main tree: the contract is ON MAIN.
+ExecCondition=/usr/bin/git -C /home/lumen/pokemon diff --quiet
+ExecStart=/bin/bash -lc 'bash scripts/probes-main.sh || { /home/lumen/bin/ntfy-send lpp "PROBES RED on main ($(git -C /home/lumen/pokemon rev-parse --short HEAD)) - see /tmp/lpp-probe-*.log" high; exit 1; }'
+Nice=10

@@ -16,6 +16,7 @@ import { StateReader } from "./state";
 import { GameNames } from "./names";
 import { astar } from "./nav";
 import { warpViews, renderWarps, stuckHint, resolveDest, WarpView } from "./reach";
+import { reachableWarps } from "./mtmoon_route";
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
@@ -90,20 +91,34 @@ for (const s of b1f) {
     w6.x === 23 && w6.y === 3 && w6.destMap === 61, `warp6=(${w6.x},${w6.y})->map${w6.destMap}`);
 }
 
-// ---------------------------------------------------------------- B: reachability from the landing tile
-console.log("\n=== B. from the B1F landing tile, the exit is NOT reachable and the ladder underfoot IS ===");
+// ---------------------------------------------------------------- B: reachability, consistent with the pair-aware ground truth
+// wq#588 rebase: the original section asserted POSITIONS ("every map60
+// checkpoint stands ON a warp", "(27,3) is unreachable from here"). Both were
+// live-corpus facts of the night wq#538 shipped: wedge-displaced and
+// error-recovery saves stand OFF warps, and at 05:30Z the campaign itself put
+// a save IN the exit pocket, where (27,3) is reachable. The durable property
+// is CONSISTENCY: warpViews and astar must agree with reachableWarps' pair-
+// aware component flood, whatever the position.
+console.log("\n=== B. warpViews/astar agree with the pair-aware component, per fixture ===");
 for (const s of b1f) {
   const views = warpViews(s.mm, s.x, s.y, s.lastMap, label);
   const here = views.filter(v => v.state === "here").map(v => v.i);
   const reach = views.filter(v => v.state === "reachable").map(v => v.i);
   const un = views.filter(v => v.state === "unreachable").map(v => v.i);
-  chk(`B1 ${s.file} (${s.x},${s.y}) stands ON exactly one warp`, here.length === 1, `here=[${here}]`);
-  chk(`B2 ${s.file} warp7 (27,3), the Route 4 exit, is UNREACHABLE from here`,
-    un.includes(7), `unreachable=[${un}]`);
+  const onWarp = s.mm.warps.some(w => w.x === s.x && w.y === s.y);
+  chk(`B1 ${s.file} (${s.x},${s.y}) "here" matches the tile underfoot`,
+    here.length === (onWarp ? 1 : 0), `here=[${here}] onWarp=${onWarp}`);
+  const rw = reachableWarps(s.mm, s.x, s.y);
+  const exitByComponent = onWarp && s.x === 27 && s.y === 3
+    ? true : rw.some(w => w.x === 27 && w.y === 3);
+  chk(`B2 ${s.file} warpViews on the Route 4 exit agrees with the component (${exitByComponent ? "reachable" : "sealed"})`,
+    exitByComponent ? !un.includes(7) : un.includes(7),
+    `unreachable=[${un}]`);
   chk(`B3 ${s.file} at least one warp is usable (never a total dead end)`,
     here.length + reach.length > 0, `here=[${here}] reachable=[${reach}]`);
-  chk(`B4 ${s.file} astar agrees: no path to (27,3)`,
-    astar(s.mm, s.x, s.y, 27, 3, new Set()) === null);
+  const p27 = astar(s.mm, s.x, s.y, 27, 3, new Set());
+  chk(`B4 ${s.file} astar agrees with the component on (27,3)`,
+    exitByComponent ? (p27 !== null || (s.x === 27 && s.y === 3)) : p27 === null);
 }
 
 // ---------------------------------------------------------------- C: destMap 255
@@ -118,25 +133,51 @@ for (const s of b1f) {
   chk(`C3 ${s.file} and that place is Route 4`, d.toLowerCase().includes("route 4"), d);
 }
 
-// ---------------------------------------------------------------- D: map61 fossil approach
-console.log("\n=== D. Mt Moon B2F (map61): the fossils are far, and (5,7) is shut ===");
+// ---------------------------------------------------------------- D: map61, consistent with the pair-aware ground truth
+// wq#588 rebase: the original asserted "(12,7) IS reachable and >=60 steps"
+// and "(5,7) is shut" for EVERY map61 fixture. The corpus now holds east-
+// pocket saves (which never could reach the fossil), mid-leg saves a few
+// steps from it, and post-fossil saves where the pockets have MERGED and
+// (5,7) is open. Durable form: astar agrees with the component per fixture,
+// plus ONE synthetic anchor for the five-day illusion (the L5 landing is
+// ~91 steps from the fossil despite being 12 tiles away in a line).
+console.log("\n=== D. Mt Moon B2F (map61): astar agrees with the component; the long walk is real ===");
 const b2f = loadAllOn(61);
 chk("D0 at least one map61 checkpoint on disk", b2f.length > 0, `${b2f.length} found`);
 for (const s of b2f) {
+  const rw = reachableWarps(s.mm, s.x, s.y);
+  const westById = rw.some(w => w.x === 21 && w.y === 17) || (s.x === 21 && s.y === 17);
   const toFossil = astar(s.mm, s.x, s.y, 12, 7, new Set());
-  chk(`D1 ${s.file} the Dome approach tile (12,7) IS reachable`, toFossil !== null);
-  // The five-day illusion: 12 tiles away in a straight line, ~85 by the only
-  // legal route. Any change that makes this SHORT means the model broke.
-  chk(`D2 ${s.file} and it is a long walk (>=60 steps), not the 12-tile straight line`,
-    !!toFossil && toFossil.length >= 60, toFossil ? `${toFossil.length} steps` : "no path");
-  chk(`D3 ${s.file} (5,7), the warp into the exit pocket, is NOT reachable while the fossils stand`,
-    astar(s.mm, s.x, s.y, 5, 7, new Set()) === null);
+  chk(`D1 ${s.file} astar to the Dome approach (12,7) agrees with the component (${westById ? "same pocket" : "other pocket"})`,
+    westById ? toFossil !== null || (s.x === 12 && s.y === 7) : toFossil === null,
+    toFossil ? `${toFossil.length} steps` : "no path");
+  const to57 = astar(s.mm, s.x, s.y, 5, 7, new Set());
+  const exitCorridor = rw.some(w => w.x === 5 && w.y === 7) || (s.x === 5 && s.y === 7);
+  chk(`D2 ${s.file} astar to (5,7) agrees with the component (${exitCorridor ? "open - fossil taken" : "shut"})`,
+    exitCorridor ? to57 !== null || (s.x === 5 && s.y === 7) : to57 === null);
+}
+// The synthetic anchor: from the L5 landing tile, on any map61 model that can
+// reach the fossil at all, the walk is LONG. This is the five-day illusion
+// wq#564 measured, and any change that makes it short means the model broke.
+{
+  const anchor = b2f.find(s => astar(s.mm, 21, 17, 12, 7, new Set()) !== null);
+  if (!anchor) chk("D3 [anchor] some map61 model routes (21,17)->(12,7)", false, "none can");
+  else {
+    const p = astar(anchor.mm, 21, 17, 12, 7, new Set())!;
+    chk("D3 [anchor] the L5 landing is a LONG walk from the fossil (>=60 steps)",
+      p.length >= 60, `${p.length} steps on ${anchor.file}`);
+  }
 }
 
 // ---------------------------------------------------------------- E: what the brain is TOLD
 console.log("\n=== E. the rendered strings (this section is what the diff changes) ===");
 {
-  const s = b1f[0];
+  // wq#588 rebase: b1f[0]/b2f[0] made this section depend on directory sort
+  // order over a moving corpus. Position is just a PARAMETER to warpViews and
+  // stuckHint, so pin it: (17,11) is the C-pocket landing (on-warp, exit
+  // sealed) on any map60 model; (21,17) is the L5 landing on a map61 model
+  // that still routes to the fossil.
+  const s = { ...b1f[0], x: 17, y: 11 };
   const views = warpViews(s.mm, s.x, s.y, s.lastMap, label);
   const line = renderWarps(views);
   console.log(`  WARPS line:\n    ${line.replace(/\n/g, "\n    ")}`);
@@ -155,7 +196,8 @@ console.log("\n=== E. the rendered strings (this section is what the diff change
 
   // The other half: a target that IS reachable but the walk did not finish.
   // Distinguishing these two is the whole point - the responses are opposite.
-  const s2 = b2f[0];
+  const anchor2 = b2f.find(b => astar(b.mm, 21, 17, 12, 7, new Set()) !== null) ?? b2f[0];
+  const s2 = { ...anchor2, x: 21, y: 17 };
   const v2 = warpViews(s2.mm, s2.x, s2.y, s2.lastMap, label);
   const hint2 = stuckHint(s2.mm, s2.x, s2.y, 12, 7, v2);
   console.log(`  stuck hint (reachable target):\n    ${hint2.trim()}`);

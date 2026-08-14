@@ -1,0 +1,12 @@
+# wq#588 — nightly trigger for lpp-probes.service (see the .service header
+# for install). 04:15 local: after the day's landings, before Frank's morning.
+[Unit]
+Description=Nightly lumen-plays-pokemon probe run (wq#588)
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# wq#588 — the RUNNABLE-ON-MAIN probe set.
+#
+# Contract: every probe here is deterministic, needs no live service, and is
+# GREEN on origin/main by construction (fixture-by-property, consistency
+# asserts, synthetic anchors — never position-blanket claims over the live
+# corpus; see wq#540/#584/#586/#588 for the graveyard of probes that broke
+# that rule). Emulator probes need roms/pokeblue.gb and a checkpoints/ dir,
+# so this script runs on the Lumen host (npm test / the lpp-probes timer),
+# NOT on GitHub CI — scripts/probes-pure.sh is the CI-safe subset.
+#
+# Excluded on purpose:
+#   probe_battle587, probe_catch559 — real wild-encounter RNG (skip-capable);
+#     run them manually around battle/item work.
+#   probe_diag — a diagnostic harness, not a test.
+set -u
+cd "$(dirname "$0")/.."
+
+PROBES=(
+  probe_notepad
+  probe_notepad584
+  probe_claims
+  probe_economy
+  probe_cerulean
+  probe_resume518
+  probe_pocket534
+  probe_route564
+  probe_resume586
+  probe_reach538
+  probe_transit
+  probe_steptrace542
+  probe_goto583
+  probe_warp579
+)
+
+failed=()
+for p in "${PROBES[@]}"; do
+  echo "==== $p ===="
+  if ! timeout 300 npx tsx "src/$p.ts" >"/tmp/lpp-probe-$p.log" 2>&1; then
+    failed+=("$p")
+    echo "FAIL $p — tail:"
+    tail -5 "/tmp/lpp-probe-$p.log"
+  else
+    tail -1 "/tmp/lpp-probe-$p.log"
+  fi
+done
+
+echo
+if [ "${#failed[@]}" -gt 0 ]; then
+  echo "PROBES RED: ${failed[*]}"
+  exit 1
+fi
+echo "PROBES GREEN: ${#PROBES[@]}/${#PROBES[@]}"

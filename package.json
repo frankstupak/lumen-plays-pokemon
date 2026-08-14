@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "bash scripts/probes-main.sh",
+    "test:pure": "bash scripts/probes-pure.sh",
     "verify": "tsx src/verify.ts",
     "build": "tsc",
     "p1": "tsx src/p1_verify.ts"
