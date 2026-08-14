@@ -6,6 +6,9 @@ import { dirname } from "path";
 import { Emulator, loadSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { StateReader } from "./state";
+import { Rom } from "./rom";
+import { MapModel } from "./map";
+import { mtMoonLeg } from "./mtmoon_route";
 
 // Story progress order for Kanto maps on the critical path.
 // 2026-08-12: extended past Pewter Gym — Route 3 (14), Mt Moon Pokecenter (68),
@@ -129,10 +132,21 @@ export interface Sidecar {
   badges: number; events: number; hpPct: number; ppOk: boolean;
   money: number; ts: number;
   storyScore?: number;  // v2+ (wq#471): popcount of STORY_FLAGS at write time
+  leg?: string;         // v3+ (wq#586): mtMoonLeg at write time ("L1".."L7")
+  onWarp?: boolean;     // v3+ (wq#586): checkpoint stands ON a warp tile
 }
+
+/** wq#586: leg -> comparator ordinal. 0 = unknown/legless, which sorts as
+ *  EARLIER at equal rank — the wq#518/534 principle: progress that cannot be
+ *  proved is not claimed. Exported so probes and reports share the mapping. */
+export const LEG_FINE: Record<string, number> = {
+  L1: 1, L2: 2, L3: 3, L4: 4, L5: 5, L6: 6, L7: 7,
+};
 export interface Progress {
   rank: number; badges: number; events: number;
   story: number;  // wq#471: monotonic story-flag score; -1 = unknown (v1 sidecar)
+  fine: number;   // wq#586: Mt Moon route-leg ordinal (LEG_FINE); 0 = unknown
+  onWarp: boolean; // wq#586: standing on a warp tile (selector prefers not)
   hpPct: number; ppOk: boolean; viable: boolean; mtime: number;
   map: number; x: number; y: number;   // wq#518: rank inputs, kept for diagnostics
 }
@@ -151,6 +165,7 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
       const j: Sidecar = JSON.parse(readFileSync(sc, "utf8"));
       return { rank: progressRank(j.map, j.x, j.y), badges: j.badges, events: j.events,
         story: typeof j.storyScore === "number" ? j.storyScore : -1,  // v1 -> unknown
+        fine: LEG_FINE[j.leg ?? ""] ?? 0, onWarp: !!j.onWarp,        // v2 -> unknown
         hpPct: j.hpPct, ppOk: j.ppOk,
         viable: j.hpPct >= VIABLE_HP_PCT && j.ppOk, mtime,
         map: j.map, x: j.x, y: j.y };
@@ -165,12 +180,23 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
     const lead = s.party[0];
     const hpPct = lead && lead.maxHp > 0 ? lead.hp / lead.maxHp : 1;
     const ppOk = !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0);
+    // wq#586: the emulator is already booted, so the legacy path can afford the
+    // full-fidelity read a sidecar would have carried: leg from the live map's
+    // pair-aware components, and the warp-tile mark.
+    let fine = 0, onWarp = false;
+    try {
+      const mm = new MapModel(e, sym, new Rom(romPath)); mm.build();
+      onWarp = mm.isWarp(s.x, s.y);
+      const l = mtMoonLeg(mm, s.map, s.x, s.y);
+      if (l) fine = LEG_FINE[l.leg] ?? 0;
+    } catch {}
     return { rank: progressRank(s.map, s.x, s.y), badges: s.badgeCount, events: rd.eventCount(),
-      story: rd.storyScore(),
+      story: rd.storyScore(), fine, onWarp,
       hpPct, ppOk, viable: hpPct >= VIABLE_HP_PCT && ppOk, mtime,
       map: s.map, x: s.x, y: s.y };
   } catch {
-    return { rank: -2, badges: -1, events: -1, story: -1, hpPct: 0, ppOk: false, viable: false,
+    return { rank: -2, badges: -1, events: -1, story: -1, fine: 0, onWarp: false,
+      hpPct: 0, ppOk: false, viable: false,
       mtime: 0, map: -1, x: -1, y: -1 };
   }
 }
@@ -266,11 +292,22 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
   // ABOVE Route 4 west (14) and BELOW Route 4 east (19) — the order the player
   // actually walks, and the reason a Mt Moon B2F state now beats the pre-cave
   // save it used to lose to.
+  // wq#586: `fine` slots directly under rank — within one Mt Moon rank the
+  // route leg (L1..L7, stamped by the writer, re-derived on the legacy path)
+  // is the trustworthy order, and raw events stay BELOW it because incidental
+  // events are exactly what mis-ranked the fossil pocket against the sealed
+  // east pocket (wq#581 A3.2; 18 rewind boots). Legless old sidecars carry
+  // fine=0 and sort earlier at equal rank — progress unproved is progress
+  // unclaimed (wq#518/534). `onWarp` is the last quality tiebreak before
+  // mtime: at otherwise-equal progress prefer the save NOT standing on a
+  // ladder tile (the wq#579 boot shape), without ever outvoting real
+  // progress signals.
   scored.sort((a, b) =>
     (Number(b.viable) - Number(a.viable)) || (b.badges - a.badges) ||
     ((a.story >= 0 && b.story >= 0) ? (b.story - a.story) : 0) ||
-    (b.rank - a.rank) ||
-    (b.events - a.events) || (b.mtime - a.mtime));
+    (b.rank - a.rank) || (b.fine - a.fine) ||
+    (b.events - a.events) ||
+    (Number(a.onWarp) - Number(b.onWarp)) || (b.mtime - a.mtime));
   let winner = scored[0];
   if (!winner) return cands[0];
 
@@ -293,7 +330,7 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
     }
   }
   log(`resume: ${short(winner.f)} — ${rankLabel(winner.map, winner.x, winner.y)} (map ${winner.map} @ ${winner.x},${winner.y}) ` +
-    `rank=${winner.rank} story=${winner.story} badges=${winner.badges} viable=${winner.viable}, ${scored.length} candidates`);
+    `rank=${winner.rank} fine=${winner.fine} onWarp=${winner.onWarp} story=${winner.story} badges=${winner.badges} viable=${winner.viable}, ${scored.length} candidates`);
   hist.picks.push({ file: winner.f, at: now().toISOString() });
   writeHistory(historyFile, hist);
   return winner.f;

@@ -6,6 +6,7 @@ import { Emulator, KEYS, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel } from "./map";
+import { mtMoonLeg } from "./mtmoon_route";
 import { Navigator, astar } from "./nav";
 import { EventBus } from "./events";
 import { Screen } from "./screen";
@@ -737,8 +738,18 @@ export class Agent {
     const path = `${this.checkpointDir}/${stem}.state.gz`;
     saveSnapshotFile(this.emu, path);
     const lead = st.party[0];
+    // wq#586: stamp the route leg + warp-tile mark so resume can rank Mt Moon
+    // positions by route progress with ZERO boot cost, and prefer saves not
+    // standing on a ladder. Failure to compute either simply omits it — a
+    // legless sidecar ranks as earlier, never wrong.
+    let leg: string | undefined; let onWarp = false;
+    try {
+      this.map.build();
+      onWarp = this.map.isWarp(st.x, st.y);
+      leg = mtMoonLeg(this.map, st.map, st.x, st.y)?.leg;
+    } catch {}
     const sidecar = {
-      v: 2, kind, map: st.map, x: st.x, y: st.y,
+      v: 3, kind, map: st.map, x: st.x, y: st.y,
       badges: st.badgeCount, events: this.reader.eventCount(),
       storyScore: this.reader.storyScore(),  // wq#471: monotonic story flags
       // wq#477: campaign-level frontier, seeds regression detection on restart
@@ -746,6 +757,7 @@ export class Agent {
       hpPct: lead && lead.maxHp > 0 ? +(lead.hp / lead.maxHp).toFixed(3) : 1,
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),
+      leg, onWarp,                          // wq#586 (v3)
       // wq#486: notepad snapshot (redundant recovery path if runtime/notepad.txt
       // is lost; primary restore is bind() from that file). Notes only, not the
       // derived guidance channel.

@@ -246,8 +246,16 @@ const pick = (dir: string) =>
     if (POCKET_MAPS[60].tiles.has(`${s.x},${s.y}`)) inPocket++;
     console.log(`     ${s.file} @(${s.x},${s.y}) rank=${p.rank} ${rankLabel(p.map, p.x, p.y)}`);
   }
-  chk("D3 [REAL] every map60 checkpoint on disk ranks as a dead pocket, below B2F",
-    b1.length > 0 && b1.every(s => progressRank(60, s.x, s.y) < progressRank(61)),
+  // wq#586: the old D3 asserted EVERY map60 checkpoint is a dead pocket —
+  // true the night wq#534 shipped, falsified by the campaign itself when the
+  // agent reached the exit pocket (2026-08-14 05:30Z, mssgo9l1 @(23,3)). The
+  // durable contract is that DEAD-pocket saves rank below B2F and EXIT-pocket
+  // saves rank above it; how many of each exist on disk is progress, not a
+  // pass/fail condition.
+  chk("D3 [REAL] every on-disk map60 checkpoint ranks by its own pocket",
+    b1.length > 0 && b1.every(s => POCKET_MAPS[60].tiles.has(`${s.x},${s.y}`)
+      ? progressRank(60, s.x, s.y) > progressRank(61)
+      : progressRank(60, s.x, s.y) < progressRank(61)),
     `${b1.length} checkpoints`);
   console.log(`   REALITY CHECK, reported whichever way it falls: ${inPocket} of ${b1.length} ` +
     `map60 checkpoints are in the exit pocket. Zero means D1/D2 above are the ONLY ` +
