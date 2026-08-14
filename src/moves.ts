@@ -1,6 +1,12 @@
 // Gen 1 move metadata for the early game. Indexed by internal move ID.
 // Enough coverage for Pallet -> Cerulean; extend as the run progresses.
-export const MOVES: Record<number, { name: string; type: string; power: number }> = {
+// wq#587: `lockIn` marks moves that commit one or more MENU-LESS turns —
+// the harness drives every battle through the menu, so a locked menu is a
+// wedge risk, not a damage upgrade. RAGE is the extreme case: Gen 1 locks
+// the user in until the battle ENDS. BIDE stores for 2-3 menu-less turns;
+// DIG auto-executes its second turn. The shared picker below treats them
+// as last resort.
+export const MOVES: Record<number, { name: string; type: string; power: number; lockIn?: boolean }> = {
   1:  { name: "POUND",         type: "NORMAL",  power: 40 },
   10: { name: "SCRATCH",       type: "NORMAL",  power: 40 },
   33: { name: "TACKLE",        type: "NORMAL",  power: 35 },
@@ -18,15 +24,43 @@ export const MOVES: Record<number, { name: string; type: string; power: number }
   78: { name: "STUN SPORE",    type: "GRASS",   power: 0 },
   79: { name: "SLEEP POWDER",  type: "GRASS",   power: 0 },
   81: { name: "STRING SHOT",   type: "BUG",     power: 0 },
-  91: { name: "DIG",           type: "GROUND",  power: 100 },
+  91: { name: "DIG",           type: "GROUND",  power: 100, lockIn: true },  // turn 2 auto-executes, no menu
   93: { name: "CONFUSION",     type: "PSYCHIC", power: 50 },
   98: { name: "QUICK ATTACK",  type: "NORMAL",  power: 40 },
-  99: { name: "RAGE",          type: "NORMAL",  power: 20 },
+  99: { name: "RAGE",          type: "NORMAL",  power: 20,  lockIn: true },  // locks until the battle ENDS
   106:{ name: "HARDEN",        type: "NORMAL",  power: 0 },
   111:{ name: "DEFENSE CURL",  type: "NORMAL",  power: 0 },
   116:{ name: "FOCUS ENERGY",  type: "NORMAL",  power: 0 },
-  117:{ name: "BIDE",          type: "NORMAL",  power: 0 },
+  117:{ name: "BIDE",          type: "NORMAL",  power: 0,   lockIn: true },  // 2-3 menu-less storing turns
 };
+
+/** wq#587: ONE picker for every deterministic fight path (unwedge,
+ *  plannedAuto, transit) — previously three identical inline copies, which is
+ *  how a policy bug ships thrice. Strongest damaging move with PP, except
+ *  lock-in moves lose to ANY non-lock attacker regardless of power: the
+ *  harness cannot steer a menu that never comes back. Order of preference:
+ *    1. best non-lock move with power > 0 (unknown moves count as power 30)
+ *    2. best lock-in attacker (only damage left - RAGE as the last resort
+ *       the ticket asks for; still better than a status stall)
+ *    3. first non-lock status move (never reached with today's movesets)
+ *    4. slot fallback (all-zero PP: Gen 1 auto-Struggles, selection is moot)
+ */
+export function pickBestMove(moves: number[], pp: number[]): number {
+  let atk = -1, atkPow = -1, lock = -1, lockPow = -1, status = -1;
+  moves.forEach((mid, i) => {
+    if (!mid || (pp[i] & 0x3f) <= 0) return;
+    const meta = MOVES[mid];
+    const pow = meta?.power ?? 30;       // unknown move: assume mid-power attacker
+    if (meta?.lockIn) { if (pow > lockPow) { lockPow = pow; lock = i; } }
+    else if (pow > 0) { if (pow > atkPow) { atkPow = pow; atk = i; } }
+    else if (status < 0) status = i;
+  });
+  if (atk >= 0) return atk;
+  if (lock >= 0) return lock;
+  if (status >= 0) return status;
+  const any = moves.findIndex(m => !!m);
+  return any >= 0 ? any : 0;
+}
 
 export function moveLabel(id: number): string {
   const m = MOVES[id];
