@@ -22,6 +22,18 @@
 // passed a bare "checkpoints" as a checkpointDir). Fixtures are resolved BY
 // PROPERTY, never by name (wq#540 again).
 //
+// wq#588 REBASE (2026-08-14): the breakout ERASED the confinement-strip corpus
+// — zero live or archived checkpoints at y=10..11 remain (live map61
+// y-histogram that day: 6..9,14,16..18,28). The old F2 required journeys
+// started INSIDE the strip and went red on corpus rotation: wq#540's
+// live-corpus-assert rot, the same class as probe_claims K (wq#584) and
+// probe_pocket534 D3 (wq#586). Rebased so every assertion is either a PURE
+// GEOMETRY property (A* over MapModel needs no player anywhere — A1 now sweeps
+// ALL 24 strip cells instead of sampling wherever checkpoints happened to sit)
+// or a driven journey from wherever the corpus actually is (repel-armed per
+// wq#559 so wilds cannot fake a red). G2/G3 still need a body at y=11: resolve
+// by property, else walk in via pair-aware goto, else SKIP legibly.
+//
 // Usage: npx tsx src/probe_steptrace542.ts [maxCheckpoints]
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
@@ -39,7 +51,7 @@ import { fixtureIndex, haveSamples, copyFixture } from "./fixtures";
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
 const MAP = 61, TX = 12, TY = 7;
-const STRIP_Y = new Set([10, 11]);
+// (wq#588: the y=10..11 STRIP_Y gate is gone — see the rebase note above.)
 
 let pass = 0, fail = 0, skip = 0;
 const chk = (name: string, ok: boolean, detail = "") => {
@@ -65,16 +77,23 @@ interface StepRec { ev: string; from?: number[]; want?: number[]; to?: number[];
                     blocked?: string[]; replan?: number; at?: any }
 
 interface Journey {
-  file: string; start: { x: number; y: number }; result: string;
-  recs: StepRec[]; planEscapesAt: number; leftStrip: boolean;
+  file: string; start: { x: number; y: number }; target: { x: number; y: number };
+  result: string; recs: StepRec[];
 }
 
-async function runJourney(path: string, sc: any, tx = TX, ty = TY): Promise<Journey | null> {
+/** wq#588: probes own their environment — a wild mid-journey is RNG, not the
+ *  code under test. The lead outlevels every Mt-Moon-era wild (wq#559). */
+function armRepel(emu: Emulator, steps = 200) {
+  emu.mem()[sym.addr("wRepelRemainingSteps")] = steps;
+}
+
+async function runJourney(path: string, tx: number, ty: number): Promise<Journey | null> {
   const emu = new Emulator(ROM);
   try { loadSnapshotFile(emu, path); } catch { return null; }
   const st = new StateReader(emu, sym).read();
   if (st.map !== MAP) return null;
-  if (!STRIP_Y.has(st.y)) return null;          // only the confinement strip
+  if (st.inBattle !== 0) return null;           // wq#588: any map61 start, out of battle
+  armRepel(emu);
 
   const map = new MapModel(emu, sym, rom); map.build();
   const dir = mkdtempSync(join(tmpdir(), "lpp542-"));
@@ -84,28 +103,35 @@ async function runJourney(path: string, sc: any, tx = TX, ty = TY): Promise<Jour
   const sync = new Sync(emu, sym);
   const nav = new Navigator(emu, sym, map, bus, sync);
 
-  // What A* says BEFORE we move: at which step does the plan leave y=10..11?
-  const p0 = astar(map, st.x, st.y, tx, ty, new Set());
-  const planEscapesAt = p0 ? p0.findIndex(c => !STRIP_Y.has(c.y)) + 1 : -1;
-
   const result = await nav.goto(tx, ty);
-  const leftStrip = recs.some(r => r.ev === "step" && r.to && !STRIP_Y.has(r.to[1]));
   return { file: path.split("/").pop()!, start: { x: st.x, y: st.y },
-           result, recs, planEscapesAt, leftStrip };
+           target: { x: tx, y: ty }, result, recs };
 }
 
-/** A target the agent CAN legally reach, inside the strip, for exercising the
+/** A target the agent CAN legally reach near its OWN position (wq#588: no
+ *  strip requirement — the corpus no longer has one), for exercising the
  *  nav_trace plumbing. Chosen by asking A* rather than by assuming geometry. */
 function reachableTarget(path: string): { x: number; y: number } | null {
   const emu = new Emulator(ROM);
   try { loadSnapshotFile(emu, path); } catch { return null; }
   const st = new StateReader(emu, sym).read();
-  if (st.map !== MAP || !STRIP_Y.has(st.y)) return null;
+  if (st.map !== MAP || st.inBattle !== 0) return null;
   const map = new MapModel(emu, sym, rom); map.build();
   for (const dx of [-3, 3, -2, 2, -4, 4, -1, 1]) {
-    for (const y of [st.y, st.y === 10 ? 11 : 10]) {
-      const x = st.x + dx;
-      if (x < 0 || x >= map.gw) continue;
+    for (const dy of [0, -1, 1, -2, 2]) {
+      const x = st.x + dx, y = st.y + dy;
+      if (x < 0 || x >= map.gw || y < 0) continue;
+      // The target must be a genuinely PASSABLE, non-warp, unoccupied cell:
+      // astar deliberately exempts the goal from the terrain test (doors and
+      // other warp tiles read impassable), so asking only "did astar return a
+      // path?" accepts targets the emulator will refuse forever. That is not a
+      // nav defect — goal leniency is for callers who mean it (goto a door) —
+      // but a probe that picks a rock and then calls the honest `blocked` a
+      // plan/exec divergence is testing its own fixture chooser. Found the
+      // hard way on 2026-08-14: 7/12 journeys "stuck" walking 85-step routes
+      // whose final cell was impassable terrain.
+      if (!map.passable(x, y) || map.isWarp(x, y)) continue;
+      if (map.sprites.some(s => s.x === x && s.y === y)) continue;
       const p = astar(map, st.x, st.y, x, y, new Set());
       if (p && p.length >= 2) return { x, y };
     }
@@ -119,66 +145,77 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   haveSamples("map61 checkpoints", idx.length);
   chk("F1 fixtures available", idx.length > 0, `${idx.length} map61 checkpoints`);
 
-  const journeys: Journey[] = [];
-  for (const f of idx) {
-    if (journeys.length >= limit) break;
-    const j = await runJourney(f.path, f.sc);
-    if (j) journeys.push(j);
-  }
-  chk("F2 journeys driven from inside the strip", journeys.length > 0,
-      `${journeys.length} journeys`);
-  if (!journeys.length) { console.log(`\n${pass} passed / ${fail} failed`); process.exit(fail ? 1 : 0); }
-
-  // ---- A. THE TICKET'S QUESTION, RE-BASED BY wq#553 -----------------------
+  // ---- A. THE TICKET'S QUESTION, AS PURE GEOMETRY (wq#553 via wq#588) ------
   // wq#542 asked "does the plan escape while execution does not?" and the answer
   // was yes: 12/12 planned, 0/12 executed. wq#552 found why — A* was routing
   // through a phantom opening, because MapModel had no representation of Gen 1
   // TILE-PAIR collisions and the y=12 boundary (tile 0x05) is refused from the
   // strip floor (tile 0x20) despite 0x05 being in the tileset's passable list.
   //
-  // So this assertion is re-pointed, NOT inverted. The old A1 asserted the
-  // phantom opening still exists and would now fail by design. The corrected
-  // expectation is that A* NO LONGER PLANS A ROUTE THE EMULATOR REFUSES. It is
-  // not "the agent escapes": there is no legal southward exit to find, every
-  // non-terrain column of y=12 is 0x05, and probe_collision552 measures that
-  // against raw emulator presses on all 11 decided columns.
-  const planned = journeys.filter(j => j.planEscapesAt > 0);
-  const worst = planned.length ? Math.max(...planned.map(j => j.planEscapesAt)) : 0;
-  chk("A1 A* no longer plans a southward escape the emulator refuses",
-      planned.length === 0,
-      `${planned.length}/${journeys.length} still plan an escape` +
-      (planned.length ? `, latest at planned step ${worst}` : ""));
+  // wq#588: the corrected expectation — A* NO LONGER PLANS A ROUTE THE EMULATOR
+  // REFUSES — is a property of MapModel + astar, not of where a save file left
+  // the player. So it no longer samples journeys from a corpus that has moved
+  // on; it sweeps EVERY passable strip cell. There is no legal southward exit:
+  // every non-terrain column of y=12 is 0x05, and probe_collision552 measures
+  // that against raw emulator presses on all 11 decided columns.
+  {
+    const emuA = new Emulator(ROM);
+    loadSnapshotFile(emuA, idx[0].path);
+    const mmA = new MapModel(emuA, sym, rom); mmA.build();
+    let cells = 0, escapes = 0;
+    const escaped: string[] = [];
+    for (let x = 24; x <= 35; x++) for (const y of [10, 11]) {
+      if (!mmA.passable(x, y)) continue;
+      cells++;
+      if (astar(mmA, x, y, TX, TY, new Set())) { escapes++; escaped.push(`(${x},${y})`); }
+    }
+    // Count first (wq#540 R3): a sweep over zero cells must not green.
+    chk("A0 the strip has passable cells to sweep", cells > 0, `${cells} cells`);
+    chk("A1 A* plans NO route out of the sealed strip, from ANY strip cell",
+        cells > 0 && escapes === 0,
+        `${escapes}/${cells} cells still find a route to (${TX},${TY})` +
+        (escaped.length ? ` — ${escaped.slice(0, 4).join(" ")}` : ""));
+  }
 
-  // ---- B. DID EXECUTION FOLLOW IT? ----------------------------------------
-  const left = journeys.filter(j => j.leftStrip).length;
-  console.log(`\n# B. EXECUTION: ${left}/${journeys.length} journeys actually placed the ` +
-              `agent on a tile outside y=10..11`);
+  // ---- JOURNEYS: the REAL Navigator, from where the corpus actually is -----
+  // wq#588: starts are any out-of-battle map61 checkpoint, target is a nearby
+  // cell A* itself approves, repel armed. These journeys feed C/D/E/F below.
+  const journeys: Journey[] = [];
+  for (const f of idx) {
+    if (journeys.length >= limit) break;
+    const t = reachableTarget(f.path);
+    if (!t) continue;
+    const j = await runJourney(f.path, t.x, t.y);
+    if (j) journeys.push(j);
+  }
+  chk("F2 journeys driven from live map61 checkpoints", journeys.length > 0,
+      `${journeys.length} journeys`);
+  if (!journeys.length) { console.log(`\n${pass} passed / ${fail} failed`); process.exit(fail ? 1 : 0); }
 
   // ---- C. PER-STEP LEDGER --------------------------------------------------
+  // wq#588 rebase: the strip-specific churn counters (southward attempts) are
+  // vacuous from non-strip starts, so C now asserts what any driven journey
+  // must satisfy: (C1) an A*-approved target with wilds suppressed MUST be
+  // reached — a `stuck` here is exactly the plan-vs-execution divergence this
+  // probe was filed to expose; (C2) the trace never contradicts itself — a
+  // step reported `blocked` cannot also claim the player moved.
   const results = new Map<string, number>();
-  let southAttempts = 0, southBlocked = 0, southMoved = 0;
+  let contradictions = 0;
   for (const j of journeys) for (const r of j.recs) {
     if (r.ev !== "step") continue;
     results.set(r.r!, (results.get(r.r!) ?? 0) + 1);
-    const leavingSouth = r.want && !STRIP_Y.has(r.want[1]) && r.want[1] === 12;
-    if (leavingSouth) {
-      southAttempts++;
-      if (r.r === "blocked") southBlocked++;
-      if (r.moved) southMoved++;
-    }
+    if (r.r === "blocked" && r.moved) contradictions++;
   }
-  console.log(`# C. step results: ${[...results].map(([k, v]) => `${k}=${v}`).join(" ")}`);
-  console.log(`# C. southward escape attempts (want y=12): ${southAttempts} ` +
-              `blocked=${southBlocked} moved=${southMoved}`);
-  // The churn itself, asserted. wq#542 measured 90 attempts of which 83 were
-  // blocked and 0 moved — the agent spending its turns on a step the game was
-  // never going to allow. Zero attempts is the point of wq#552; a non-zero
-  // count here means the tile-pair rule has stopped reaching A*.
-  chk("C1 the agent no longer ATTEMPTS the refused southward step",
-      southAttempts === 0, `${southAttempts} attempts (${southBlocked} blocked, ${southMoved} moved)`);
-  chk("C2 and if it ever does attempt one, it must not be silently blocked",
-      southMoved === 0 && southBlocked === 0,
-      `blocked=${southBlocked} moved=${southMoved}`);
+  console.log(`\n# C. step results: ${[...results].map(([k, v]) => `${k}=${v}`).join(" ")}`);
+  const arrived = journeys.filter(j => j.result === "arrived").length;
+  const stuck = journeys.filter(j => j.result === "stuck").length;
+  chk("C1 A*-approved targets are reached, never 'stuck' (plan/exec agreement)",
+      arrived > 0 && stuck === 0,
+      `${arrived}/${journeys.length} arrived, ${stuck} stuck ` +
+      `(others: ${journeys.filter(j => j.result !== "arrived" && j.result !== "stuck")
+                          .map(j => j.result).join(",") || "none"})`);
+  chk("C2 no step record contradicts itself (blocked AND moved)",
+      contradictions === 0, `${contradictions} contradictions`);
 
   // ---- D. DID A JOURNEY TALK ITSELF INTO A BOX? ---------------------------
   // wq#542 / rabbit17b: this used to derive maxBlocked from `exhausted` records
@@ -210,8 +247,8 @@ function reachableTarget(path: string): { x: number; y: number } | null {
 
   // ---- E. NARRATE THE FIRST FEW JOURNEYS ----------------------------------
   for (const j of journeys.slice(0, 6)) {
-    console.log(`\n# ${j.file} start=(${j.start.x},${j.start.y}) -> ${j.result} ` +
-                `planEscapesAt=${j.planEscapesAt} leftStrip=${j.leftStrip}`);
+    console.log(`\n# ${j.file} start=(${j.start.x},${j.start.y}) -> ` +
+                `(${j.target.x},${j.target.y}) = ${j.result}`);
     for (const r of j.recs.slice(0, 14)) {
       if (r.ev === "plan")
         console.log(`    plan#${r.replan} len=${r.len} head=${(r.head ?? []).map(c => `(${c})`).join("")}` +
@@ -226,25 +263,16 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   }
 
   // ---- F. THE INSTRUMENTATION ITSELF MUST BE LOAD-BEARING -----------------
-  // wq#553: these used to run against the journeys above, which is only sound
-  // while those journeys DO something. Once wq#552 taught A* the tile-pair rule
-  // the goto to the exit correctly returns no path, so there is no plan and no
+  // wq#553: these used to run against strip-exit journeys, which was only sound
+  // while those journeys DID something. Once wq#552 taught A* the tile-pair rule
+  // the goto to the exit correctly returns no path, so there was no plan and no
   // step to trace and F3/F4/F5 went red — reporting broken instrumentation when
   // the instrumentation was fine. The plumbing was being exercised *by the bug*.
-  // It is now exercised against a target A* says is genuinely reachable, so it
-  // tests nav_trace and nothing else.
-  const reachJourneys: Journey[] = [];
-  for (const f of idx) {
-    if (reachJourneys.length >= 3) break;
-    const t = reachableTarget(f.path);
-    if (!t) continue;
-    const j = await runJourney(f.path, f.sc, t.x, t.y);
-    if (j) { reachJourneys.push(j); console.log(`# F. plumbing journey ${j.file} -> (${t.x},${t.y}) = ${j.result}`); }
-  }
-  chk("F2b a reachable in-strip target could be driven at all",
-      reachJourneys.length > 0, `${reachJourneys.length} journeys`);
-  const anyPlan = reachJourneys.some(j => j.recs.some(r => r.ev === "plan"));
-  const anyStep = reachJourneys.some(j => j.recs.some(r => r.ev === "step"));
+  // wq#588: the journeys above already run against targets A* says are genuinely
+  // reachable, so they exercise nav_trace and nothing else — assert on them
+  // directly instead of driving a second, redundant set.
+  const anyPlan = journeys.some(j => j.recs.some(r => r.ev === "plan"));
+  const anyStep = journeys.some(j => j.recs.some(r => r.ev === "step"));
   chk("F3 nav_trace emits plans", anyPlan);
   chk("F4 nav_trace emits per-step intent vs actual", anyStep);
   // NOTE THE GUARD, and it is not decoration: written without it this assertion
@@ -252,7 +280,7 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   // That is wq#540's R3 empty-corpus shape reappearing in the probe filed to
   // measure a different bug. A green tick must never be able to mean "nothing
   // was checked", so the count is asserted before the property.
-  const stepRecs = reachJourneys.flatMap(j => j.recs.filter(r => r.ev === "step"));
+  const stepRecs = journeys.flatMap(j => j.recs.filter(r => r.ev === "step"));
   chk("F5 every step record carries want, result and resulting position",
       stepRecs.length > 0 && stepRecs.every(r => r.want && r.r && r.to),
       `${stepRecs.length} step records`);
@@ -264,17 +292,14 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   // (tileset 17, CAVERN) the y=11 -> y=12 boundary is the pair 0x20 -> 0x05.
   // These assertions are properties of the GAME, so a future MapModel that
   // learns the rule keeps them green and one that regresses fails them.
-  const g = idx.find(f => f.sc.map === MAP && f.sc.y === 11 && f.sc.x >= 33);
-  if (!g) { chk("G0 a y=11 x>=33 fixture exists", false, "no sample"); }
-  else {
-    // wq#551 R4: this section reloads the same checkpoint up to
-    // LPP_G23_ATTEMPTS + 1 times, and the live service's pruneAuto() unlinks
-    // auto-* checkpoints on every write. wq#552 lost a run to exactly that.
-    // Copy once, up front, and read only the copy from here down.
-    const fixture = copyFixture(g.path);
-    const emu = new Emulator(ROM); loadSnapshotFile(emu, fixture);
-    const mm = new MapModel(emu, sym, rom); mm.build();
-    const gx = g.sc.x;
+  // wq#588: G1/G1b are properties of the MODEL over fixed map geometry — the
+  // player's position in the save is irrelevant, so they no longer hide behind
+  // a y=11 fixture that rotation has retired. Any map61 save serves; the column
+  // is fixed at x=33, one of the 11 decided columns wq#552 measured.
+  {
+    const emuG = new Emulator(ROM); loadSnapshotFile(emuG, idx[0].path);
+    const mm = new MapModel(emuG, sym, rom); mm.build();
+    const gx = 33;
     chk("G1 terrain passability ALONE still calls the southward tile walkable",
         mm.passable(gx, 12), `(${gx},12) passable=${mm.passable(gx, 12)}`);
     // wq#552 deliberately left passable() terrain-only and put the pair rule in
@@ -284,6 +309,26 @@ function reachableTarget(path: string): { x: number; y: number } | null {
         !mm.passableFrom(gx, 11, gx, 12),
         `passableFrom(${gx},11 -> ${gx},12)=${mm.passableFrom(gx, 11, gx, 12)} ` +
         `pairBlocked=${mm.pairBlocked(gx, 11, gx, 12)}`);
+  }
+  // G2/G3 press real buttons, so they DO need a body standing at y=11 x>=33.
+  // Resolve by property; when the corpus has none, nothing can put one there —
+  // A1 just proved the sealed strip has no walking route, so a goto walk-in is
+  // impossible by the same geometry this file asserts. SKIP legibly (wq#554:
+  // inconclusive is not passing, and it is not failing either). Emulator-side
+  // barrier ground truth also lives in probe_collision552.
+  const g = idx.find(f => f.sc.y === 11 && f.sc.x >= 33);
+  if (!g) {
+    const why = "no y=11 x>=33 checkpoint on disk (breakout retired the strip corpus) " +
+                "and the sealed strip cannot be walked into, per A1";
+    skipped("G2 the EMULATOR refuses that step", why);
+    skipped("G3 the same tile column moves freely NORTH", why);
+  }
+  else {
+    // wq#551 R4: this section reloads the same checkpoint up to
+    // LPP_G23_ATTEMPTS + 1 times, and the live service's pruneAuto() unlinks
+    // auto-* checkpoints on every write. wq#552 lost a run to exactly that.
+    // Copy once, up front, and read only the copy from here down.
+    const fixture = copyFixture(g.path);
     // wq#554: G2/G3 are the only assertions here that ask the EMULATOR rather
     // than the model, which makes them the load-bearing pair — and they were the
     // ones a wild encounter could green without touching the wall. Retry from a

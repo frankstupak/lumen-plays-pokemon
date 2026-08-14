@@ -53,9 +53,19 @@ interface Rig {
   pos: () => { map: number; x: number; y: number };
 }
 
+/** wq#588: own the environment. The fixture walk crosses cave encounter
+ *  tiles, and a wild mid-journey turns G1/G2/G4 red on RNG, not on the code
+ *  under test (first observed on the 2026-08-14 rotated corpus: `got battle
+ *  in 776ms`). Same trick as probe_warp579/wq#559 — the lead outlevels every
+ *  Mt-Moon-era wild, so Repel suppresses all of them deterministically. */
+function armRepel(emu: Emulator, steps = 200) {
+  emu.mem()[sym.addr("wRepelRemainingSteps")] = steps;
+}
+
 function rig(statePath: string): Rig | null {
   const emu = new Emulator(ROM);
   try { loadSnapshotFile(emu, statePath); } catch { return null; }
+  armRepel(emu);
   const map = new MapModel(emu, sym, rom); map.build();
   const bus = new EventBus(mkdtempSync(join(tmpdir(), "lpp583-")), "probe583");
   const events: any[] = [];
