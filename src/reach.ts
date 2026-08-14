@@ -93,6 +93,14 @@ export function renderWarps(views: WarpView[]): string {
 export function stuckHint(map: MapModel, px: number, py: number,
                           tx: number, ty: number, views: WarpView[]): string {
   const p = pathTo(map, px, py, tx, ty);
+  // wq#583: a sprite standing ON the target makes pathTo's goal-cell
+  // exemption report "reachable" forever while the engine refuses every
+  // arrival. Say what is actually there instead of coaching a retry.
+  if (map.sprites.some(sp => sp.x === tx && sp.y === ty)) {
+    return ` — (${tx},${ty}) is OCCUPIED BY AN NPC standing on it; walking onto them is` +
+      ` impossible. goto an adjacent tile (nav now stops adjacent automatically) and` +
+      ` talk()/interact if you meant them.`;
+  }
   if (p) {
     // Reachable but the walk did not finish: encounters, a wandering NPC in a
     // one-tile gap, or the replan limit. Distinguishing this from "unreachable"

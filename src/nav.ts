@@ -102,7 +102,30 @@ export class Navigator {
     return "blocked";
   }
 
-  /** Walk to (tx,ty) on current map. Returns 'arrived' | 'warped' | 'stuck' */
+  /** wq#583: among the four neighbours of a sprite-occupied target, the best
+   *  standing spot — passable (which already excludes sprites), not a warp
+   *  (arriving would teleport us), nearest to the player first. */
+  private bestAdjacent(tx: number, ty: number): { x: number; y: number } | null {
+    const p = this.pos();
+    const c = ([[0, 1], [0, -1], [1, 0], [-1, 0]] as const)
+      .map(([dx, dy]) => ({ x: tx + dx, y: ty + dy }))
+      .filter(a => this.map.passable(a.x, a.y) && !this.map.isWarp(a.x, a.y));
+    if (!c.length) return null;
+    c.sort((a, b) => (Math.abs(a.x - p.x) + Math.abs(a.y - p.y)) -
+                     (Math.abs(b.x - p.x) + Math.abs(b.y - p.y)));
+    return c[0];
+  }
+
+  /** Walk to (tx,ty) on current map.
+   *  Returns 'arrived' | 'warped' | 'battle' | 'dialog' | 'adjacent_npc' | 'stuck'.
+   *  'adjacent_npc' (wq#583): the target tile is occupied by an NPC sprite, so
+   *  arrival is physically impossible — the walk stops on the best adjacent
+   *  tile instead. The old behaviour planned ONTO the sprite (astar exempts
+   *  the goal cell from passability for door warps), the engine refused, the
+   *  wandering-NPC grace un-learned the block every cycle for a sprite that
+   *  never moves, and 25 replans later the tool said 'stuck' while reach.ts
+   *  told the brain the tile "IS reachable" — three identical retries live
+   *  (wq#581 T12/T19/T21). */
   async goto(tx: number, ty: number): Promise<string> {
     this.bus.emit("tool_call", { tool: "goto", args: { tx, ty } });
     this.learnedBlocked.clear();   // learned walls are per-journey, never persistent
@@ -113,7 +136,24 @@ export class Navigator {
       this.map.build(); // refresh sprites/terrain
       const p = this.pos();
       if (p.x === tx && p.y === ty) return "arrived";
-      const path = astar(this.map, p.x, p.y, tx, ty, this.learnedBlocked);
+      // wq#583: sprite on the target — re-checked every replan so a wanderer
+      // that steps off lets the journey finish normally, while a stationary
+      // occupant ends it adjacent with an honest, distinct result.
+      const occupied = this.map.sprites.some(sp => sp.x === tx && sp.y === ty);
+      if (occupied && Math.abs(p.x - tx) + Math.abs(p.y - ty) === 1) {
+        this.trace({ ev: "adjacent_npc", tx, ty, at: [p.x, p.y], replan: replans });
+        return "adjacent_npc";
+      }
+      let gx = tx, gy = ty;
+      if (occupied) {
+        const adj = this.bestAdjacent(tx, ty);
+        if (!adj) {
+          this.bus.emit("tool_call", { tool: "goto", result: "npc_sealed" });
+          return "stuck";           // every neighbour is wall/warp/sprite
+        }
+        gx = adj.x; gy = adj.y;
+      }
+      const path = astar(this.map, p.x, p.y, gx, gy, this.learnedBlocked);
       if (!path) {
         // A wandering NPC standing in a one-tile gap makes the map genuinely
         // pathless for a moment. Wait for them to move before conceding.
@@ -223,6 +263,7 @@ export class Navigator {
       if (early) return early;
     }
     const r = await this.goto(w.x, w.y);
+    if (r === "adjacent_npc") return "stuck";   // wq#583: an NPC parked on the warp tile
     if (r === "warped") return "warped";
     if (r === "battle") return "battle";
     if (r === "dialog") return "dialog";

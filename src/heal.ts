@@ -45,8 +45,8 @@ export class Heal {
     if (this.full()) return "heal_at_center: party already at full health";
     // approach the counter (nurse is static; retry once for wandering-NPC drift)
     let g = await this.nav.goto(nurse.x, nurse.y + 2).catch(() => "stuck");
-    if (g === "stuck") { await this.emu.framesAsync(90); g = await this.nav.goto(nurse.x, nurse.y + 2).catch(() => "stuck"); }
-    if (g === "stuck") return "heal_at_center: could not reach the counter (blocked)";
+    if (g === "stuck" || g === "adjacent_npc") { await this.emu.framesAsync(90); g = await this.nav.goto(nurse.x, nurse.y + 2).catch(() => "stuck"); }
+    if (g === "stuck" || g === "adjacent_npc") return "heal_at_center: could not reach the counter (blocked)";
     await this.tap(KEYS.UP, 200);
     await this.tap(KEYS.A, 300);
     // drive the dialog; at the YES/NO use a verified press (first A gets eaten)
