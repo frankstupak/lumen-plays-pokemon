@@ -252,6 +252,14 @@ export class Agent {
           this.transit.onGoto(tx, ty, r, this.nav.pos().map);
           if (r === "battle") return "goto interrupted by a wild battle - the harness will flee it and resume this goto automatically";
           if (r === "dialog") return "goto blocked: a dialog or sign text is open - use talk() to clear it first";
+          if (r === "adjacent_npc") {
+            const p = this.nav.pos();
+            // wq#583: honest arrival-adjacent instead of 25 replans + a lying
+            // "reachable" hint. The brain's next verb is the point.
+            return `goto: (${tx},${ty}) is occupied by an NPC standing on it, so you cannot stand there.` +
+              ` You are now ADJACENT at ${JSON.stringify(p)} - talk() or interact if you meant that NPC,` +
+              ` or pick a different destination tile.`;
+          }
           if (r === "stuck") {
             const p = this.nav.pos();
             this.bus.emit("tool_call", { tool: "stuck_dump", pos: p,

@@ -125,7 +125,7 @@ export class TransitTracker {
       return;
     }
     if (this.goal && this.goal.x === tx && this.goal.y === ty) {
-      if (result === "arrived" || result === "warped") { this.stats.arrivals++; this.handback = null; }
+      if (result === "arrived" || result === "warped" || result === "adjacent_npc") { this.stats.arrivals++; this.handback = null; }
       this.goal = null;   // concluded one way or another: the brain owns what's next
     }
   }

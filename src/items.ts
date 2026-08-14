@@ -201,7 +201,7 @@ export class Items {
     const approaches: Array<[number, number, number]> = [[2, 5, KEYS.LEFT], [3, 6, KEYS.UP], [2, 6, KEYS.UP]];
     let opened = false;
     for (const [ax, ay, face] of approaches) {
-      if (this.nav?.goto) { const g = await this.nav.goto(ax, ay).catch(() => "stuck"); if (g === "stuck") continue; }
+      if (this.nav?.goto) { const g = await this.nav.goto(ax, ay).catch(() => "stuck"); if (g === "stuck" || g === "adjacent_npc") continue; }
       await this.tap(face, 200);
       await this.tap(KEYS.A, 250);
       if (await this.waitFor(() => this.scr.text().includes("BUY"), 500)) { opened = true; break; }

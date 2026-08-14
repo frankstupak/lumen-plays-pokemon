@@ -40,7 +40,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
       const warp = map.warps.find(w => w.destMap === next || (next === 0 && w.destMap === 0xff));
       if (!warp) { ok = false; break; }
       const r = await nav.goto(warp.x, warp.y);
-      if (r === "stuck") ok = false;
+      if (r === "stuck" || r === "adjacent_npc") ok = false;
     }
     bus.emit("state_read", reader.read() as unknown as object);
     bus.emit("turn_summary", { line: ok ? "route complete: Oak's lab reached — restarting demo" : "demo error — restarting" });
