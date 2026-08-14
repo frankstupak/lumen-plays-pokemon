@@ -18,6 +18,7 @@ import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel } from "./map";
 import { StateReader } from "./state";
+import { instructionBody } from "./fixtures";   // wq#564
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
@@ -127,11 +128,22 @@ if (!b1) {
 console.log("\n=== C. the corridor pack still describes the route the ROM has ===");
 {
   const src = readFileSync(SRC, "utf8");
-  const start = src.indexOf("function mtMoonTransitPack");
-  const pack = start >= 0 ? src.slice(start, src.indexOf("\nfunction ", start + 10)) : "";
+  // wq#564: assert against the INSTRUCTION body, not raw source. See fixtures.ts
+  // R5 — a comment quoting a retired rule kept the grep below green against a
+  // pack that no longer contained the rule at all.
+  const pack = instructionBody(src, "mtMoonTransitPack");
   chk("mtMoonTransitPack found in source", pack.length > 0);
-  chk("pack names the forced exit route B2F(5,7) -> B1F(23,3) -> (27,3)",
-      pack.includes("(5,7) -> B1F(map60) (23,3)") && pack.includes("(27,3)"));
+  // wq#564 RE-BASED. This used to require the pack to state ONE GLOBAL FORCED
+  // ROUTE beginning at B2F (5,7). That route is real but its first tile is in a
+  // pocket the agent cannot reach, and stating it globally is the 123-hour
+  // stall this ticket fixes. The exit tiles are still named — by the per-pocket
+  // leg that owns them (src/mtmoon_route.ts) — so what is asserted now is that
+  // the pack DELEGATES the route instead of hardcoding an unreachable first step.
+  chk("pack does NOT hardcode the old global forced route from (5,7)",
+      !pack.includes("(5,7) -> B1F(map60) (23,3)") &&
+      !/THE EXIT IS ONE FORCED ROUTE/.test(pack));
+  chk("pack takes its route from the live per-pocket resolver",
+      /routeLeg/.test(pack) && /CURRENT LEG/.test(pack));
   chk("pack names both fossil coordinates as blockers",
       pack.includes("(12,6)") && pack.includes("(13,6)"));
   chk("pack gives the exact clearing interaction",
@@ -147,12 +159,31 @@ console.log("\n=== C. the corridor pack still describes the route the ROM has ==
   // wq#535 second pass: "go back up" was advice, not an action. The agent sat
   // on (17,11) -- the ladder out -- issuing goto(27,3) at a tile four pockets
   // away, eight turns running. The pack must name enter_warp explicitly.
-  chk("pack has an actionable dead-pocket recovery (enter_warp, not 'go back up')",
-      /DEAD-POCKET RECOVERY/.test(pack) && pack.includes("enter_warp the warp at your OWN coordinates"));
+  //
+  // wq#564 RE-BASED. The old DEAD-POCKET RECOVERY was not merely stale, it was
+  // the loop's engine: "if you cannot path to (27,3), go back up and take B2F
+  // (5,7)" sends an agent in the B1F landing pocket back to the SEALED east
+  // pocket, where (5,7) is unreachable, so it comes straight back down. That is
+  // the measured 61(25,9)<->60(17,11) ping-pong. Recovery is now per-pocket and
+  // names a warp from the player's own component, so what is pinned is the
+  // ACTIONABLE part of the old assertion (enter_warp, never "go back up") minus
+  // the destination that caused the loop.
+  chk("pack still gives an actionable stuck recovery (enter_warp, not 'go back up')",
+      /enter_warp/.test(pack) && !/go back up and use B2F \(5,7\)/.test(pack));
+  chk("pack no longer sends a stuck B1F agent back up to the sealed pocket",
+      !/go back up/i.test(pack));
   chk("pack states goto cannot cross a warp",
       /goto can never cross a warp/.test(pack));
-  chk("pack orders the fossil BEFORE any ladder down",
-      /BEFORE TAKING ANY LADDER DOWN/.test(pack));
+  // wq#564 RE-BASED, AND THIS IS THE ONE THE TICKET WARNED WOULD BITE. It used
+  // to assert /BEFORE TAKING ANY LADDER DOWN/ -- i.e. it PINNED THE DEFECT.
+  // From the east pocket the fossils are unreachable (measured: no path) and
+  // the true first move IS a ladder down, so the old ordering was anti-guidance
+  // and the obvious "fix" when this went red would have been to restore it.
+  // Inverted deliberately: the ordering must now be POSITIONAL.
+  chk("pack does NOT order the fossil before any ladder down (wq#564 inverted)",
+      !/BEFORE TAKING ANY LADDER DOWN/.test(pack));
+  chk("pack makes the fossil leg positional, not global",
+      /WEST pocket of B2F/.test(pack) && /CURRENT LEG/.test(pack));
 }
 
 console.log("\n=== D. the dead-pocket claim is TRUE, not just asserted (RAM) ===");
@@ -162,9 +193,15 @@ if (!b1) {
   const mm = new MapModel(b1.emu, sym, rom); mm.build();
   const outside = mm.warps.find(w => w.destMap === 255);
   chk("map60 has exactly one OUTSIDE warp", !!outside && `${outside.x},${outside.y}` === "27,3");
-  // Each B2F ladder lands somewhere on B1F. The pack claims (25,9)/(21,17)/
-  // (15,27) all land in pockets with no route to (27,3). Verify per landing
-  // tile: map60's warps back UP to map61 are the landing points.
+  // Each B2F ladder lands somewhere on B1F, and none of those landing pockets
+  // touches (27,3). Verified per landing tile: map60's warps back UP to map61
+  // are the landing points.
+  //
+  // wq#564: this remains TRUE and worth pinning, but note what it does NOT
+  // license. "Cannot reach (27,3) directly" is not "dead end", which is what
+  // the old pack inferred from it: the (5,5)+(21,17) pocket is the MANDATORY
+  // route and the (25,15)+(13,27) pocket reaches 1F. probe_route564 covers the
+  // onward connectivity these assertions say nothing about.
   for (const land of [[17, 11], [21, 17], [13, 27]] as const) {
     const reach = bfs(mm, land[0], land[1]);
     chk(`B1F pocket at (${land[0]},${land[1]}) CANNOT reach the exit (27,3)`,
