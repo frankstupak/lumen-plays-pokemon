@@ -1,6 +1,6 @@
 // Live agent: the real brain playing on stream, resuming from the latest
 // checkpoint, with budget-exhaustion recovery and stuck-restart.
-import { readdirSync, statSync } from "fs";
+import { readdirSync, statSync, existsSync } from "fs";
 import { Emulator, loadSnapshotFile, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
@@ -57,11 +57,27 @@ const RUN_TAG = "live-agent-" + Date.now();
 // existing history. Runs BEFORE the bus is constructed so the sweep and its
 // `retention` event describe the state this run inherited.
 const retention = retainEventLogs(EVENTS_DIR);
+// wq#555: link drivers emit to events/link on their own budget, so that budget
+// needs sweeping too — a separate directory nobody prunes is just the unbounded
+// growth this machinery exists to prevent, moved one level down. Still ONE
+// owner: both sweeps happen here, at boot, and nowhere else.
+// existsSync-gated on purpose: wq#551 made retainEventLogs REPORT an unreadable
+// directory instead of swallowing it, which is right, but events/link legitimately
+// does not exist until the first link run. Calling it unconditionally would print
+// an ENOENT every boot and train readers to ignore retention errors.
+const linkRetention = existsSync(`${EVENTS_DIR}/link`)
+  ? retainEventLogs(`${EVENTS_DIR}/link`)
+  : { dir: `${EVENTS_DIR}/link`, keep: 0, scanned: 0, kept: 0, deleted: [] as string[], failed: [] as string[] };
 const bus = new EventBus(EVENTS_DIR, RUN_TAG);
 bus.emit("retention", {
   keep: retention.keep, scanned: retention.scanned, kept: retention.kept,
   deletedCount: retention.deleted.length, deleted: retention.deleted,
   failedCount: retention.failed.length, failed: retention.failed,
+  link: {
+    scanned: linkRetention.scanned, kept: linkRetention.kept,
+    deletedCount: linkRetention.deleted.length,
+    failedCount: linkRetention.failed.length,
+  },
 });
 const metrics = new Metrics(bus, RUN_TAG, EVENTS_DIR);
 const retry = new RetryCounter(RUN_TAG, EVENTS_DIR);

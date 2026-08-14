@@ -32,7 +32,7 @@ import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
 import { EventBus } from "../events";
-import { eventsDir, romPath, ckptPath, repoPath, repoRoot, REPO, haveSamples } from "../fixtures";
+import { eventsDir, linkEventsDir, romPath, ckptPath, repoPath, repoRoot, REPO, haveSamples } from "../fixtures";
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, note = "") => {
@@ -119,7 +119,7 @@ ok("C1 zero bare CWD-relative resource literals in src/link",
 const fakeRoot = mkdtempSync(`${tmpdir()}/wq543root-`);
 process.env.LPP_REPO = fakeRoot;
 ok("D0 LPP_REPO retargets the resolver", repoRoot() === fakeRoot, repoRoot());
-const bus = new EventBus(eventsDir(), "wq543-guard");   // exactly the driver call shape
+const bus = new EventBus(eventsDir(), "wq543-guard");   // wq555-resolver-guard: MUST use the root resolver — this line asserts D1/D3
 bus.emit("boot", { probe: "wq543" });
 ok("D1 event landed under the ROOT", existsSync(`${fakeRoot}/events/wq543-guard.jsonl`),
    `${fakeRoot}/events/wq543-guard.jsonl`);
@@ -128,13 +128,33 @@ ok("D2 nothing was written into the CWD", !existsSync(`${scratch}/events`),
 delete process.env.LPP_REPO;
 ok("D3 resolver restored to the real repo", eventsDir() === `${REPO}/events`, eventsDir());
 
+// --- D4/D5 (wq#555): link drivers emit to their OWN retention budget --------
+// The wq#543 property being guarded here is "root-anchored, never CWD-relative",
+// and linkEventsDir() must satisfy it exactly as eventsDir() does. The NEW
+// property is separation: 24 rdv-* logs were competing with live-agent run
+// history for one KEEP_FILES budget, which is how wq#551 lost 51 runs.
+ok("D4 linkEventsDir is absolute, anchored, and UNDER events/ — not a sibling nobody sweeps",
+   linkEventsDir() === `${REPO}/events/link`, linkEventsDir());
+{
+  const linkRoot = mkdtempSync(`${tmpdir()}/wq555root-`);
+  process.env.LPP_REPO = linkRoot;
+  const lbus = new EventBus(linkEventsDir(), "wq555-guard");   // exactly the link-driver call shape
+  lbus.emit("boot", { probe: "wq555" });
+  ok("D5 a link driver's events land in events/link, NOT in the run-history directory",
+     existsSync(`${linkRoot}/events/link/wq555-guard.jsonl`) &&
+     !existsSync(`${linkRoot}/events/wq555-guard.jsonl`),
+     `${linkRoot}/events/link/wq555-guard.jsonl`);
+  delete process.env.LPP_REPO;
+  rmSync(linkRoot, { recursive: true, force: true });
+}
+
 // --- E: the detector actually discriminates (negative control) --------------
 const BAD = `import { EventBus } from "../events";\nconst b = new EventBus("events", "x");`;   // wq543-fixture
 ok("E1 detector FLAGS a bare EventBus dir", bareLiterals(BAD).length === 1,
    JSON.stringify(bareLiterals(BAD)));
 const BAD2 = `loadSnapshotFile(emu, "checkpoints/center-m2b.state.gz");`;   // wq543-fixture
 ok("E2 detector FLAGS a bare checkpoint path", bareLiterals(BAD2).length === 1);
-const CURED = `const b = new EventBus(eventsDir(), "x");\nloadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));`;
+const CURED = `const b = new EventBus(eventsDir(), "x");\nloadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));`;   // wq543-fixture
 ok("E3 detector PASSES the cured form", bareLiterals(CURED).length === 0);
 const DOC = `// historically this said new EventBus("events", tag) and that was the bug`;   // wq543-fixture
 ok("E4 detector ignores its own documentation", bareLiterals(DOC).length === 0);
@@ -144,9 +164,30 @@ ok("E5 fixture tag exempts ONLY its own line, not the file",
    "second line still flagged");
 
 // --- F: representative drivers really go through the helper -----------------
+// wq#555 RE-POINTED, NOT WEAKENED. The wq#543 property is "resolves through a
+// root-anchored helper from ../fixtures, never a bare literal", and that is
+// unchanged and still asserted. Only WHICH helper moved, because link drivers
+// now emit to their own retention budget. Note `/eventsDir\(\)/` does NOT match
+// `linkEventsDir()` (capital E), so leaving this alone would have failed rather
+// than passed silently — and C1's bare-literal detector, which is the real
+// guard here, was not touched at all.
 for (const f of ["drive_trade.ts", "drive_duel.ts", "rdv_side.ts"]) {
   const src = readFileSync(`${LINK}/${f}`, "utf8");
-  ok(`F ${f} imports the root helper`, /from "\.\.\/fixtures"/.test(src) && /eventsDir\(\)/.test(src));
+  ok(`F ${f} imports the root helper`,
+     /from "\.\.\/fixtures"/.test(src) && /linkEventsDir\(\)/.test(src));
+}
+
+// F2 (wq#555): no link driver may still emit into the shared run-history dir.
+{
+  const strays: string[] = [];
+  for (const f of readdirSync(LINK).filter(n => n.endsWith(".ts"))) {
+    for (const [i, line] of readFileSync(`${LINK}/${f}`, "utf8").split("\n").entries()) {
+      if (line.includes("wq555-resolver-guard") || line.includes("wq543-fixture")) continue;   // narrow, per-line, per E5
+      if (/new EventBus\(\s*eventsDir\(\)/.test(line.replace(/\/\/.*$/, ""))) strays.push(`${f}:${i + 1}`);
+    }
+  }
+  ok("F2 zero link drivers construct a bus against the run-history events dir",
+     strays.length === 0, strays.length ? strays.join(" | ") : `${readdirSync(LINK).filter(n => n.endsWith(".ts")).length} link files clean`);
 }
 
 process.chdir(origCwd);

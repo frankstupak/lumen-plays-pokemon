@@ -16,13 +16,13 @@ import { Screen } from "../screen";
 import { Sync } from "../sync";
 import { writeIdentity } from "./identity";
 import { LinkBattleSession, BattleSide } from "./battle";
-import { ckptPath, eventsDir, romPath } from "../fixtures";
+import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
 function side(tag: string): BattleSide {
   const emu = new Emulator(romPath("pokeblue.gb"));
   const sym = new SymbolTable(romPath("pokeblue.sym"));
   const rom = new Rom(romPath("pokeblue.gb"));
-  const ebus = new EventBus(eventsDir(), `rec-${tag}-${Date.now()}`);
+  const ebus = new EventBus(linkEventsDir(), `rec-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);
