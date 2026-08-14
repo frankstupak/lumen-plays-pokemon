@@ -18,7 +18,7 @@ import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
-import { moveLabel, MOVES } from "./moves";
+import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
@@ -381,14 +381,9 @@ export class Agent {
    */
   async unwedge(): Promise<string> {
     if (this.bat.active()) {
-      // auto-fight picks the strongest damaging move with PP, not blind slot 0
+      // auto-fight: shared wq#587 picker (lock-in moves last resort)
       const b = this.bat.state();
-      let best = 0, bestPow = -1;
-      b.moves.forEach((m, i) => {
-        if (!m || b.pp[i] <= 0) return;
-        const pow = MOVES[m]?.power ?? 30;   // unknown moves assumed mid-power
-        if (pow > bestPow) { bestPow = pow; best = i; }
-      });
+      const best = pickBestMove(b.moves, b.pp);
       await this.bat.useMove(best);
       return `battle_move(${best}) auto [${moveLabel(b.moves[best])}]`;
     }
@@ -432,11 +427,7 @@ export class Agent {
       if (!usable.length) return null;                                 // Struggle-only: brain should see it
       const w = await this.bat.waitForMenu();
       if (w !== "menu") return null;                                   // battle resolving/over: brain re-reads
-      let best = usable[0], bestPow = -1;
-      for (const i of usable) {
-        const pow = MOVES[b.moves[i]]?.power ?? 30;
-        if (pow > bestPow) { bestPow = pow; best = i; }
-      }
+      const best = pickBestMove(b.moves, b.pp);   // wq#587: shared, lock-in-aware
       this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)], src: "planned_auto" });
       await this.bat.useMove(best);
       const b2 = this.bat.state();
@@ -505,13 +496,9 @@ export class Agent {
           ? `flee transit -> fled; resuming goto(${goal.x},${goal.y})`
           : `flee transit -> ${r} (fail ${goal.fleeFails}/2, then fight)` };
       }
-      // fight: strongest move with PP - identical selection to wq#472
-      // plannedAuto. The menu is already confirmed up (gate at the top).
-      let best = usable[0], bestPow = -1;
-      for (const i of usable) {
-        const pow = MOVES[b.moves[i]]?.power ?? 30;
-        if (pow > bestPow) { bestPow = pow; best = i; }
-      }
+      // fight: shared wq#587 picker - identical selection to plannedAuto,
+      // and lock-in moves (RAGE) only as the last damage standing.
+      const best = pickBestMove(b.moves, b.pp);
       this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)], src: "transit" });
       await this.bat.useMove(best);
       this.transit.noteFight();

@@ -149,38 +149,42 @@ function injectBalls(r: Rig, qty: number) {
       `has=${r.items.has(ITEM.POKE_BALL)}`);
 
   // ── D. a real encounter ────────────────────────────────────────────────
-  // Pace strictly between the fixture tile and ONE vetted neighbour (passable,
-  // not a warp) until a wild fires. Position-checked every iteration so drift
-  // from a blocked step can never wander us onto an unvetted warp tile.
+  // wq#587 hardening: the original single-neighbour pacing went SKIP-blind
+  // the moment the corpus rotated onto a fixture whose first safe neighbour
+  // has an asymmetric pair-block (wq#552) — blocked bumps roll no
+  // encounters. Vet each edge pair-aware BOTH ways and try every viable
+  // neighbour before conceding.
   const dirs: [number, number][] = [[0, 1], [0, -1], [1, 0], [-1, 0]];
-  const safe = dirs.find(([dx, dy]) => {
+  const cands = dirs.filter(([dx, dy]) => {
     const nx = p0.x + dx, ny = p0.y + dy;
-    return r.map.passable(nx, ny) &&
+    return (r.map as any).passableFrom?.(p0.x, p0.y, nx, ny) &&
+      (r.map as any).passableFrom?.(nx, ny, p0.x, p0.y) &&
       !r.map.warps.some((w: Warp) => w.x === nx && w.y === ny);
   });
-  if (!safe) {
-    skipped("D1 wild encounter triggered", "no safe pacing neighbour at fixture");
+  if (!cands.length) {
+    skipped("D1 wild encounter triggered", "no pair-safe pacing neighbour at fixture");
     console.log(`\nRESULT pass=${pass} fail=${fail} skip=${skip}`);
     process.exit(fail ? 1 : 0);
   }
-  const nb = { x: p0.x + safe[0], y: p0.y + safe[1] };
-  let inBattle = false, lost = false;
-  for (let i = 0; i < 80 && !inBattle && !lost; i++) {
-    const here = r.pos();
-    if (here.map === p0.map && here.x === p0.x && here.y === p0.y)
-      await r.nav.step(safe[0], safe[1]);
-    else if (here.map === p0.map && here.x === nb.x && here.y === nb.y)
-      await r.nav.step(-safe[0], -safe[1]);
-    else { lost = true; break; }               // drifted off the pacing pair
-    inBattle = r.rd.read().inBattle === 1;
-  }
-  if (lost) {
-    skipped("D1 wild encounter triggered", `pacing left the vetted pair at ${JSON.stringify(r.pos())}`);
-    console.log(`\nRESULT pass=${pass} fail=${fail} skip=${skip}`);
-    process.exit(fail ? 1 : 0);
+  let inBattle = false;
+  outer: for (const [dx, dy] of cands) {
+    const nb = { x: p0.x + dx, y: p0.y + dy };
+    for (let i = 0; i < 60; i++) {
+      const here = r.pos();
+      if (here.map === p0.map && here.x === p0.x && here.y === p0.y)
+        await r.nav.step(dx, dy);
+      else if (here.map === p0.map && here.x === nb.x && here.y === nb.y)
+        await r.nav.step(-dx, -dy);
+      else break;                                  // drifted: next candidate
+      if (r.rd.read().inBattle === 1) { inBattle = true; break outer; }
+    }
+    const here = r.pos();                          // re-anchor for next candidate
+    if (here.map === p0.map && here.x === nb.x && here.y === nb.y)
+      await r.nav.step(-dx, -dy);
+    if (r.rd.read().inBattle === 1) { inBattle = true; break; }
   }
   if (!inBattle) {
-    skipped("D1 wild encounter triggered", "no encounter in 80 cave steps (rare RNG) - rerun");
+    skipped("D1 wild encounter triggered", "no encounter across all pair-safe neighbours - rerun");
     console.log(`\nRESULT pass=${pass} fail=${fail} skip=${skip}`);
     process.exit(fail ? 1 : 0);
   }

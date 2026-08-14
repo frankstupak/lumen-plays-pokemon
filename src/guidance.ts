@@ -22,6 +22,7 @@ import { SymbolTable } from "./symbols";
 import { StateReader } from "./state";
 import { ITEM } from "./items";
 import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
+import { MOVES } from "./moves";
 
 // Story flag bit indices (see src/state.ts STORY_FLAGS for derivation)
 const F_BEAT_BROCK = 0x077;
@@ -35,6 +36,26 @@ const MAP = { CERULEAN: 3, ROUTE_4: 15, ROUTE_24: 35, ROUTE_25: 36,
 export const MISTY_MIN_LEVEL = 30;
 export const MISTY_MIN_POTIONS = 3;
 const POTION_TARGET = 5;           // buy up to this many before the gym
+
+/** wq#587: the old ready-branch line said "your best damage is your strongest
+ *  non-Fire move" — which, for CHARMELEON's Rage/Growl/Ember/Leer, resolves to
+ *  RAGE, the one move the harness must never volunteer (Gen 1 locks the user
+ *  in until the battle ends). Compute the recommendation from the ACTUAL
+ *  moveset instead: strongest non-lock damaging move, with an explicit RAGE
+ *  warning whenever the set contains a lock-in move. Exported for the probe. */
+export function mistyDamageLine(moves: number[]): string {
+  let name = "", pow = -1, fire = false, hasLock = false;
+  for (const id of moves) {
+    const m = MOVES[id];
+    if (!m) continue;
+    if (m.lockIn) { hasLock = true; continue; }
+    if (m.power > pow) { pow = m.power; name = m.name; fire = m.type === "FIRE"; }
+  }
+  const lead = name && pow > 0
+    ? `lead with ${name}${fire ? " (resisted here, still your safest damage)" : ""};`
+    : "lead with your strongest usable move;";
+  return hasLock ? `${lead} NEVER pick RAGE - Gen 1 locks you in until the battle ends;` : lead;
+}
 
 /** Count HP-restoring items in the bag (POTION family). RAM layout identical
  *  to Items.bag(): wNumBagItems entries of [id, qty] pairs at wBagItems. */
@@ -124,8 +145,8 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
     lines.push(
       `MISTY - YOU ARE READY (L${level} >= ${MISTY_MIN_LEVEL}, ${potions} potions >= ${MISTY_MIN_POTIONS}):`,
       "  heal first, then enter CERULEAN GYM (map65). STARYU L18 then",
-      "  STARMIE L21. Water/Psychic - your best damage is your strongest",
-      "  non-Fire move; use_item(potion) whenever HP drops below half.",
+      `  STARMIE L21. Water/Psychic - ${mistyDamageLine(lead?.moves ?? [])}`,
+      "  use_item(potion) whenever HP drops below half.",
       "  BUBBLEBEAM hits hard: never let HP sink under 1/3 without healing.");
   } else {
     const why = [
