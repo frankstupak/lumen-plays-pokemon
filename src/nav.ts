@@ -165,14 +165,67 @@ export class Navigator {
   }
 
   /**
+   * wq#579: the player is standing ON an interior warp tile that did not fire
+   * (typical after a resume from a post-transition checkpoint, or a goto that
+   * pathed onto the tile). Gen 1 interior warps fire on STEPPING ONTO the
+   * tile, so the only action that can succeed from here is: step OFF one
+   * tile, then step back ON — checking BOTH results, which is the entire fix
+   * (the old push loop performed exactly this step-back and threw its result
+   * away). Returns null when no adjacent tile lets us detach and re-enter
+   * cleanly — that is the door-warp shape (fires on outward push, not
+   * step-on), which the caller's push/raw-press machinery owns.
+   */
+  private async detachAndReenter(): Promise<string | null> {
+    for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0]] as const) {
+      const before = this.pos();
+      const off = await this.step(dx, dy);
+      if (off === "warped") {
+        // stepping OFF landed on an adjacent warp; a transition is a transition
+        this.bus.emit("tool_call", { tool: "enterWarp", push: `off${dx},${dy}`, result: "warped" });
+        return "warped";
+      }
+      if (off === "battle" || off === "dialog") return off;
+      const mid = this.pos();
+      if (mid.x === before.x && mid.y === before.y) continue;  // blocked; try another side
+      const back = await this.step(-dx, -dy);
+      if (back === "warped") {
+        this.bus.emit("tool_call", { tool: "enterWarp", push: `reenter${dx},${dy}`, result: "warped" });
+        return "warped";
+      }
+      if (back === "battle" || back === "dialog") return back;
+      // We detached and (re-entered or got blocked back) without a transition:
+      // an interior warp would have fired on the re-entry step, so this warp is
+      // door-shaped or the tile is contested. Hand back to the normal flow —
+      // goto() will walk us onto the tile again from wherever we now stand.
+      return null;
+    }
+    return null;
+  }
+
+  /**
    * Traverse a warp. Interior warps (stairs, ladders) fire on step-on. Edge
    * door warps do not: the player must be pushed outward across the map
    * boundary. Try the boundary-implied direction first, then the rest.
+   *
+   * wq#579, observed live 2026-08-14 (T1 03:43Z, T22-T31 04:12-04:31Z):
+   * standing ON the warp tile, goto() below is a no-op that cannot fire the
+   * warp, and the push loop's discarded step-back was the one action that
+   * could — see detachAndReenter(). The push loop also silently swallowed a
+   * step-back that DID warp: the loop then kept stepping against the NEW
+   * map's geometry and the tool finally reported "no_transition" while a
+   * floor transition had actually occurred (T31). Every step result in this
+   * function is now checked and honored.
    */
   async enterWarp(w: Warp): Promise<string> {
+    const p0 = this.pos();
+    if (p0.x === w.x && p0.y === w.y) {
+      const early = await this.detachAndReenter();
+      if (early) return early;
+    }
     const r = await this.goto(w.x, w.y);
     if (r === "warped") return "warped";
     if (r === "battle") return "battle";
+    if (r === "dialog") return "dialog";
     if (r === "stuck") return "stuck";
 
     const outward: [number, number][] = [];
@@ -193,8 +246,25 @@ export class Navigator {
         this.bus.emit("tool_call", { tool: "enterWarp", push: k, result: "warped" });
         return "warped";
       }
+      // wq#579: a battle/dialog here used to be ignored, so the loop kept
+      // "stepping" (each step no-ops in battle) and fell through to the
+      // raw-press fallback, which then mashed direction keys INTO the battle
+      // menu. Surface it; the transit machinery owns the resume.
+      if (sr === "battle" || sr === "dialog") return sr;
       const after = this.pos();
-      if (after.x !== before.x || after.y !== before.y) await this.step(-dx, -dy);
+      if (after.x !== before.x || after.y !== before.y) {
+        const back = await this.step(-dx, -dy);
+        // wq#579 (the original defect): this step-back is the action that
+        // re-enters the warp tile and fires an interior ladder. Its result
+        // was discarded, so the ONE step that could succeed was thrown away —
+        // and when it DID warp, the loop kept running on the new map and the
+        // tool reported "no_transition" over a real transition (T31 04:31Z).
+        if (back === "warped") {
+          this.bus.emit("tool_call", { tool: "enterWarp", push: `back${k}`, result: "warped" });
+          return "warped";
+        }
+        if (back === "battle" || back === "dialog") return back;
+      }
     }
     // Interior door warps (Center/Mart/building exits) sit on the visible bottom
     // row but the tile BELOW is collision-wall, so step() refuses and the push
