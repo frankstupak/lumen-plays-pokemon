@@ -27,7 +27,7 @@ import { SerialBus } from "./serialbus";
 import { installSerialHook } from "./hook";
 import { runCycles, setSlice } from "./lockstep";
 import { writeIdentity } from "./identity";
-import { ckptPath, eventsDir, romPath } from "../fixtures";
+import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
 const COLOSSEUM = 0xF0;
 const MENU = { cursor: 0xCC26, max: 0xCC28, watched: 0xCC29 };
@@ -36,7 +36,7 @@ function side(tag: string) {
   const emu = new Emulator(romPath("pokeblue.gb"));
   const sym = new SymbolTable(romPath("pokeblue.sym"));
   const rom = new Rom(romPath("pokeblue.gb"));
-  const ebus = new EventBus(eventsDir(), `col-${tag}-${Date.now()}`);
+  const ebus = new EventBus(linkEventsDir(), `col-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);

@@ -19,13 +19,13 @@ import { Screen } from "../screen";
 import { Sync } from "../sync";
 import { writeIdentity, describeMon } from "./identity";
 import { TradeSession, TradeSide } from "./trade";
-import { ckptPath, eventsDir, romPath } from "../fixtures";
+import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
 function side(tag: string): TradeSide {
   const emu = new Emulator(romPath("pokeblue.gb"));
   const sym = new SymbolTable(romPath("pokeblue.sym"));
   const rom = new Rom(romPath("pokeblue.gb"));
-  const ebus = new EventBus(eventsDir(), `m3-${tag}-${Date.now()}`);
+  const ebus = new EventBus(linkEventsDir(), `m3-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
   const sync = new Sync(emu, sym);

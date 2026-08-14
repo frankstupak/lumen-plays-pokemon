@@ -25,12 +25,12 @@ import { Dialog } from "../dialog";
 import { readLinkState, LINK_ADDR } from "../link/linkstate";
 import { SerialBus } from "../link/serialbus";
 import { installSerialHook } from "../link/hook";
-import { ckptPath, eventsDir, romPath } from "../fixtures";
+import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
 function stack(tag: string) {
   const emu = new Emulator(romPath("pokeblue.gb"));
   const sym = new SymbolTable(romPath("pokeblue.sym")); const rom = new Rom(romPath("pokeblue.gb"));
-  const ebus = new EventBus(eventsDir(), `m2b5-${tag}-${Date.now()}`);
+  const ebus = new EventBus(linkEventsDir(), `m2b5-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom); const scr = new Screen(emu, sym); const sync = new Sync(emu, sym);
   const nav = new Navigator(emu, sym, map, ebus, sync); const dlg = new Dialog(emu, scr, sync, ebus, sym);
   return { emu, nav, dlg, scr, tag };

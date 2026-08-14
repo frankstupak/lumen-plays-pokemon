@@ -186,6 +186,23 @@ export function repoPath(...segs: string[]): string {
 /** The one events directory the kiosk, metrics and replay actually read. */
 export function eventsDir(): string { return repoPath("events"); }
 
+/** wq#555: where LINK drivers and link probes emit, deliberately NOT the same
+ *  directory as run history.
+ *
+ *  Retention is by extension, so every .jsonl in events/ competes for the same
+ *  KEEP_FILES budget regardless of what produced it. Cable Club work emits one
+ *  log per side per rendezvous, and 24 of them had accumulated against a default
+ *  budget of 30 — leaving SIX slots for live-agent run history and directly
+ *  causing the scale of the wq#551 loss (51 of 61 runs). A link test evicting a
+ *  run log is not a retention policy anybody chose.
+ *
+ *  Separate directory, separate budget. The kiosk, metrics and the wq#547
+ *  backtests all filter on the `live-agent-` prefix, so nothing that reads
+ *  events/ ever wanted these files. live_agent.ts sweeps BOTH directories at
+ *  boot, so this stays one owner and link logs do not grow unbounded — which is
+ *  the 87MB incident the retention machinery exists to prevent. */
+export function linkEventsDir(): string { return repoPath("events", "link"); }
+
 /** A ROM or symbol file. Tracked, but anchored so drivers run from any CWD. */
 export function romPath(file: string): string { return repoPath("roms", file); }
 
