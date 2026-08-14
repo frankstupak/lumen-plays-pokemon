@@ -29,6 +29,7 @@ import { MilestoneLog, StuckWatch, RatesCache, sentinelAlerts, objectiveFrom, LO
 import { STORY_FLAGS } from "./state";
 import { corridorPhase, phaseReason, phaseWarnings, F_SUPER_NERD, F_DOME, F_HELIX,
          type CorridorPhase } from "./phase";
+import { mtMoonLeg, MT_MOON_MAPS, ROUTE_OVERVIEW, type RouteLeg } from "./mtmoon_route";   // wq#564
 
 // wq#476/486: reference to the currently-running Agent so the step-budget
 // watchdog can push warnings into the GUIDANCE channel (harness->brain), never
@@ -199,7 +200,8 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // (pokered constants); NO invented tile coordinates — the state block's WARPS
 // list is authoritative, guidance stays at route-intent level.
 function corridorNotepad(badgeCount: number, phase: CorridorPhase,
-                         superNerdBeaten = false, haveFossil = false): string {
+                         superNerdBeaten = false, haveFossil = false,
+                         routeLeg: RouteLeg | null = null): string {
   if (badgeCount === 0) return [
     "GOAL: beat BROCK in Pewter Gym (map54) for the Boulder Badge.",
     "PROGRESS: parcel done, forest crossed, Pewter reached. CHARMANDER ~L15",
@@ -250,7 +252,7 @@ function corridorNotepad(badgeCount: number, phase: CorridorPhase,
     // brain could not tell which map15 it was on, so both applied at once.
     // The two halves are now mutually exclusive and chosen from position.
     if (phase === "CERULEAN_APPROACH") return ceruleanApproachPack();
-    return mtMoonTransitPack(superNerdBeaten, haveFossil);
+    return mtMoonTransitPack(superNerdBeaten, haveFossil, routeLeg);
   }
   return [
     `GOAL: continue the badge campaign (badges so far: ${badgeCount}).`,
@@ -268,7 +270,8 @@ function corridorNotepad(badgeCount: number, phase: CorridorPhase,
 // WEST, the Mt Moon Pokecentre, or any Mt Moon floor). This pack owns the
 // crossing. It never mentions Cerulean-side navigation, and the east pack
 // never mentions this one.
-function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): string {
+function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean,
+                           routeLeg: RouteLeg | null = null): string {
   const objective = superNerdBeaten
     ? [
         "MT MOON IS ALREADY CLEARED (RAM-verified: the exit Super Nerd is beaten).",
@@ -276,28 +279,36 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): strin
         "  remaining job inside the mountain is to reach the EAST EXIT.",
       ]
     : [
-        "MT MOON B2F holds Rocket grunts and a SUPER NERD guarding TWO FOSSILS.",
-        "  Beat the Super Nerd, take ONE fossil, then head for the EAST EXIT.",
+        "MT MOON B2F holds Rocket grunts and a SUPER NERD standing next to TWO",
+        "  FOSSILS. The fossils are on the WEST side of B2F, which is several",
+        "  ladders away from where you start - see the CURRENT LEG above.",
         "FOSSIL POLICY (deterministic - do NOT deliberate): take the DOME FOSSIL.",
         "  If asked to choose, choose DOME and move on immediately. One fossil",
         "  only - the other disappears; that is normal, never go back for it.",
       ];
-  // wq#535: the exit is a single forced route, derived from the ROM warp graph
-  // and an independent flood fill, not from exploration. Stated explicitly
-  // because "take the next ladder onward" is what kept the agent cycling
-  // between B1F pockets that have no doorway.
-  const exitRoute = [
-    "THE EXIT IS ONE FORCED ROUTE - trust this over exploring:",
-    "    B2F(map61) (5,7) -> B1F(map60) (23,3) -> walk to (27,3) -> Route 4 EAST.",
-    "  No other ladder anywhere in the mountain reaches the outside.",
-    "DEAD-POCKET RECOVERY (read this the FIRST time a goto answers 'stuck'):",
-    "  If a goto on B1F returns stuck, (27,3) is NOT connected to the tile you",
-    "  are standing on and no amount of re-targeting will change that. Re-issuing",
-    "  the same goto, or interact on a tile you cannot reach, only burns turns.",
-    "  THE WAY OUT IS THE LADDER YOU ARRIVED BY, AND YOU ARE USUALLY STANDING ON",
-    "  IT: enter_warp the warp at your OWN coordinates to go back up to B2F,",
-    "  then take B2F (5,7). goto can never cross a warp - only enter_warp can.",
-  ];
+  // wq#564: THE EXIT IS NOT ONE FORCED ROUTE FROM WHERE YOU STAND, and saying
+  // it was is what cost this run five days. wq#535 named B2F (5,7) as the first
+  // tile of a global forced route; (5,7) is in a pocket the agent has never
+  // been able to walk to. The route is now resolved PER POCKET from the live
+  // MapModel (src/mtmoon_route.ts), so guidance can only name warps that are in
+  // the player's own reachable component. The old DEAD-POCKET RECOVERY is gone
+  // for the same reason it was wrong: from the B1F landing pocket, "go back up
+  // and take (5,7)" returns the agent to the sealed east pocket, which is the
+  // 61(25,9)<->60(17,11) ping-pong measured in wq#560.
+  const exitRoute = routeLeg
+    ? [
+        `CURRENT LEG ${routeLeg.leg} - you are in: ${routeLeg.pocket}.`,
+        ...routeLeg.lines,
+        "  goto can never cross a warp - only enter_warp can. If a goto returns",
+        "  'stuck' here, the target is in ANOTHER POCKET of this floor: do not",
+        "  re-target it, take the ladder named above.",
+        ...ROUTE_OVERVIEW,
+      ]
+    : [
+        "ROUTE: cross the mountain and come out its EAST side. Once you are on a",
+        "  Mt Moon floor you will be given the exact leg you are standing on,",
+        "  resolved from the tiles you can actually reach.",
+      ];
   // wq#535: the two fossils are SOLID objects sitting in the only corridor to
   // (5,7). This is not flavour text - while both stand there the exit is
   // physically unreachable and goto(5,7) can only ever answer "stuck". Taking
@@ -313,31 +324,46 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean): strin
     "  ((11,6) also works as the standing tile.) Then goto(5,7) and enter_warp it.",
     "  You need exactly ONE fossil. Taking it is not optional content - it is",
     "  the door.",
-    "  DO THIS WHILE YOU ARE STILL ON B2F, BEFORE TAKING ANY LADDER DOWN. Every",
-    "  other B2F ladder ((25,9), (21,17), (15,27)) drops into a B1F pocket with",
-    "  no way out, and you will have to climb back up to here anyway.",
+    // wq#564 deliverable 2. This block used to end with "DO THIS WHILE YOU ARE
+    // STILL ON B2F, BEFORE TAKING ANY LADDER DOWN". From the east pocket that
+    // is ANTI-guidance: the fossils are in the WEST pocket, unreachable from
+    // the east one (measured: east(30,11) -> (12,7) = no path), and the true
+    // first move IS a ladder down. The ordering is now positional, not global.
+    "  WHERE: the fossils are in the WEST pocket of B2F. You can only get there",
+    "  by going DOWN to B1F and around through 1F first - the CURRENT LEG line",
+    "  above tells you which step of that you are on. If the leg above does not",
+    "  say you are in the fossil pocket, you are not; go where it sends you.",
   ];
   return [
     "GOAL: cross MT MOON and come out its EAST side.",
-    "WHERE YOU ARE: at or before the mountain. The Route 4 you are standing on",
-    "  (if map 15) is the WEST pocket - a dead-end bowl whose only ways on are",
-    "  the Mt Moon entrance and the Pokemon Center. You cannot walk east from",
-    "  here; columns 20-23 are solid wall. Going through the cave is the ONLY",
-    "  forward path. Entering Mt Moon from here is CORRECT.",
+    // wq#564: the CURRENT LEG leads, because it is the only block that knows
+    // where the agent actually is. Everything below it is context for it.
+    ...exitRoute,
     "CORRIDOR: Route3(map14) -> Route4 west(map15) -> MT MOON 1F(map59)",
     "  -> B1F(map60) -> B2F(map61) -> ladder back up to the EAST exit.",
     "  Floors connect by LADDER warps - use the WARPS list in your state block;",
     "  those coordinates are exact, trust them over any memory.",
-    "FLOOR INTENT:",
-    "  * 1F (map59): a maze with trainers. Objective = the ladder DOWN.",
-    "    Fight trainers you cannot walk around - they are also your only income.",
-    "  * B1F (map60): FOUR DISCONNECTED POCKETS, not one floor. Its ladders",
-    "    (17,11), (21,17) and (13,27) drop into pockets that CANNOT reach the",
-    "    outside, no matter how long you search them. Only the pocket entered",
-    "    from B2F (5,7) touches the (27,3) doorway. If you are on B1F and cannot",
-    "    path to (27,3), you are in a dead pocket: go back up and use B2F (5,7).",
+    "IF YOU ARE STILL OUTSIDE (map 15, Route 4 WEST): that is a dead-end bowl",
+    "  whose only ways on are the Mt Moon entrance and the Pokemon Center. You",
+    "  cannot walk east from there; columns 20-23 are solid wall. Going through",
+    "  the cave is the ONLY forward path, so entering Mt Moon is CORRECT.",
+    "FLOOR INTENT - THE MOUNTAIN IS POCKETS, NOT FLOORS:",
+    "  * 1F (map59): ONE connected floor (~890 tiles) holding all five of its",
+    "    warps. A maze with trainers, but anywhere on it can be walked to from",
+    "    anywhere else. Fight trainers you cannot walk around - they are income.",
+    "  * B1F (map60): FOUR DISCONNECTED POCKETS, not one floor. Only the pocket",
+    "    holding (23,3) touches the (27,3) doorway to the outside, and the ONLY",
+    "    way into that pocket is the B2F (5,7) ladder. The other three pockets",
+    // wq#564: the old text called these three "dead pockets you must climb out
+    // of". Measured: the (5,5)+(21,17) pocket IS the mandatory route, and the
+    // (25,15)+(13,27) pocket reaches 1F. They are not dead; they are the way.
+    "    are NOT dead ends - two of them are steps ON the route. Which one you",
+    "    are in decides your next move, and the CURRENT LEG line above tells you.",
+    "  * B2F (map61): FOUR POCKETS. The east one (where this run began) is small",
+    "    (~67 tiles) with ONE ladder, and reaches neither the fossils nor the exit.",
+    "    The west one holds the fossils; taking one merges it with the north",
+    "    chamber and the exit ladder (5,7).",
     ...objective,
-    ...exitRoute,
     ...fossilDoor,
     haveFossil
       ? "  A fossil is already in hand (RAM-verified) - do not seek another."
@@ -466,6 +492,7 @@ function ceruleanApproachPack(): string {
     // after the agent had crossed -- the guidance outlived the situation it
     // described, and no amount of correct text fixes that.
     let phaseNow: CorridorPhase | undefined;
+    let legNow: string | undefined;   // wq#564: last announced route leg
     const refreshCorridorGuidance = () => {
       const st = reader.read();
       const next = corridorPhase(st, phaseNow);
@@ -480,7 +507,27 @@ function ceruleanApproachPack(): string {
         bus.emit("turn_summary", { line: `corridor ${phaseReason(st, next)}` });
         phaseNow = next;
       }
-      pad.setGuidance("CORRIDOR", corridorNotepad(st.badgeCount, next, nerd, fossil));
+      // wq#564: resolve WHICH LEG of the Mt Moon route the agent is standing
+      // on, from its own reachable component. Guarded three ways, because a
+      // wrong leg is worse than no leg: only on the three cave maps, never
+      // mid-battle (the overworld model is not meaningful then), and never on a
+      // throw — a geometry failure must not kill the turn loop. map.build() is
+      // a pure read of emulator memory, so this cannot perturb the game; the
+      // agent rebuilds it again itself when it composes the state block.
+      let leg: RouteLeg | null = null;
+      if (MT_MOON_MAPS.includes(st.map) && st.inBattle === 0) {
+        try {
+          map.build();
+          leg = mtMoonLeg(map, st.map, st.x, st.y);
+          if (leg && leg.leg !== legNow) {
+            bus.emit("turn_summary", { line: `route leg ${leg.leg} - ${leg.pocket} (map${st.map} ${st.x},${st.y})` });
+            legNow = leg.leg;
+          }
+        } catch (e: any) {
+          bus.emit("turn_summary", { line: `route leg unresolved: ${String(e?.message ?? e).slice(0, 80)}` });
+        }
+      }
+      pad.setGuidance("CORRIDOR", corridorNotepad(st.badgeCount, next, nerd, fossil, leg));
     };
     if (phaseWarnings.length) bus.emit("turn_summary", { line: `PHASE WARN: ${phaseWarnings.join("; ")}` });
     refreshCorridorGuidance();

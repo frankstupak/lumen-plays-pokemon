@@ -206,6 +206,46 @@ export function linkEventsDir(): string { return repoPath("events", "link"); }
 /** A ROM or symbol file. Tracked, but anchored so drivers run from any CWD. */
 export function romPath(file: string): string { return repoPath("roms", file); }
 
+// ---------------------------------------------------------------------------
+// wq#564: R5 — THE CITED RULE. A fifth way for a probe to pass while checking
+// nothing, found by walking into it.
+//
+// Several probes here assert on the SOURCE TEXT of a guidance pack, because
+// live_agent.ts cannot be imported (it binds a port and starts the agent). That
+// works until someone RETIRES a rule and, doing the right thing, explains the
+// retirement in a comment that quotes the old rule verbatim. The grep still
+// matches — so `chk("pack orders the fossil BEFORE any ladder down", ...)` went
+// GREEN against a pack that no longer contains that instruction anywhere.
+// The assertion had stopped discriminating: it passed on the defect AND on the
+// fix, which is the one property an assertion may never have.
+//
+// wq#533 hit the mirror image of this (its linter exempted a live instruction
+// because the line contained a quotation marker) and drew the right conclusion:
+// AN INSTRUCTION AND A CITATION ARE DIFFERENT KINDS OF TEXT, and the difference
+// is a property of the text rather than an inference about the author. Here the
+// difference is simply whether it is inside a comment.
+
+/** Strip comments so what remains is what the code actually DOES.
+ *  Full-line `//` comments and `/* *\/` blocks go; trailing tag comments stay,
+ *  since they cannot carry a retired instruction on their own. */
+export function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter(l => !/^\s*\/\//.test(l))
+    .join("\n");
+}
+
+/** The body of a top-level function, comments removed: the text it INSTRUCTS.
+ *  Assert defect-pinning greps against THIS, never against raw source, or a
+ *  comment explaining the fix will satisfy the assertion that pins the bug. */
+export function instructionBody(src: string, fnName: string): string {
+  const start = src.indexOf(`function ${fnName}`);
+  if (start < 0) return "";
+  const end = src.indexOf("\nfunction ", start + 10);
+  return stripComments(src.slice(start, end < 0 ? undefined : end));
+}
+
 /** A checkpoint by NAME. Named snapshots (seed-*, center-*) are inputs a driver
  *  legitimately knows; rotating campaign checkpoints must still go through
  *  findFixture(), which resolves BY PROPERTY. */
