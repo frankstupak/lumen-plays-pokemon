@@ -7,8 +7,8 @@
 // Map IDs verified against pret/pokered constants/map_constants.asm
 // (map_const expansion, 2026-08-13): CERULEAN_CITY=3, CERULEAN_POKECENTER=64,
 // CERULEAN_GYM=65, CERULEAN_MART=67, ROUTE_24=35, ROUTE_25=36, ROUTE_4=15.
-// Gen1 mart prices (Bulbapedia, cross-checked vs pokered mart data):
-// POTION 300, ANTIDOTE 100, PARLYZ_HEAL 200.
+// Prices: economy.PRICE is the single source (wq#559) — ROM-verified against
+// the ItemPrices table (bank 01:4608) by probe_cerulean section P.
 //
 // COUNTER-MON HOOK (deliverable 4, wq#478): catching a Grass counter for
 // Misty is ALREADY covered by the wq#422 catch layer — src/catch_policy.ts
@@ -21,6 +21,7 @@ import { Emulator } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { StateReader } from "./state";
 import { ITEM } from "./items";
+import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
 
 // Story flag bit indices (see src/state.ts STORY_FLAGS for derivation)
 const F_BEAT_BROCK = 0x077;
@@ -49,27 +50,49 @@ function potionCount(emu: Emulator, sym: SymbolTable): number {
   return total;
 }
 
-/** Affordable Cerulean-mart shopping list for the current purse. Priority:
- *  potions to POTION_TARGET, then 1 antidote, then 1 parlyz heal; keeps a
+/** Count throwable balls in the bag (POKE/GREAT/ULTRA), same RAM layout. */
+function ballCount(emu: Emulator, sym: SymbolTable): number {
+  const m = emu.mem();
+  const n = m[sym.addr("wNumBagItems")];
+  const a = sym.addr("wBagItems");
+  const BALLS: number[] = [ITEM.POKE_BALL, ITEM.GREAT_BALL, ITEM.ULTRA_BALL];
+  let total = 0;
+  for (let i = 0; i < Math.min(n, 20); i++)
+    if (BALLS.includes(m[a + i * 2])) total += m[a + i * 2 + 1];
+  return total;
+}
+
+/** Affordable Cerulean-mart shopping list for the current purse — ONE ordered
+ *  plan, BALLS FIRST (wq#559/#585): a party of one is the root risk in the
+ *  blackout->half-money loop, so ball capacity to MIN_SAFE_PARTY outranks
+ *  every heal. Then potions to POTION_TARGET, 1 antidote, 1 parlyz heal,
+ *  repels last. Prices come from economy.PRICE (single source, ROM-verified
+ *  by probe_cerulean's ItemPrices section) and every rendered call is the
+ *  REAL tool name buy_item — the old text rendered a nonexistent `buy(...)`
+ *  tool, teaching the brain a hallucinated call in our own guidance. Keeps a
  *  small reserve so a whiteout (half money) never zeroes the purse. */
-export function ceruleanBuyPlan(money: number, potions: number): string {
+export function ceruleanBuyPlan(money: number, potions: number, balls: number): string {
   const RESERVE = 200;
   let budget = Math.max(0, money - RESERVE);
   const buys: string[] = [];
+  // BALLS FIRST — the one purchase that changes the party-of-one root risk.
+  const wantBalls = Math.max(0, MIN_SAFE_PARTY - balls);
+  const nBall = Math.min(wantBalls, Math.floor(budget / PRICE[BALL]));
+  if (nBall > 0) { buys.push(`buy_item(poke_ball, ${nBall})`); budget -= nBall * PRICE[BALL]; }
   const wantPotions = Math.max(0, POTION_TARGET - potions);
-  const nPot = Math.min(wantPotions, Math.floor(budget / 300));
-  if (nPot > 0) { buys.push(`buy(potion, ${nPot})`); budget -= nPot * 300; }
-  if (budget >= 100) { buys.push("buy(antidote, 1)"); budget -= 100; }
-  if (budget >= 200) { buys.push("buy(parlyz_heal, 1)"); budget -= 200; }
+  const nPot = Math.min(wantPotions, Math.floor(budget / PRICE[ITEM.POTION]));
+  if (nPot > 0) { buys.push(`buy_item(potion, ${nPot})`); budget -= nPot * PRICE[ITEM.POTION]; }
+  if (budget >= PRICE[ITEM.ANTIDOTE]) { buys.push("buy_item(antidote, 1)"); budget -= PRICE[ITEM.ANTIDOTE]; }
+  if (budget >= PRICE[ITEM.PARLYZ_HEAL]) { buys.push("buy_item(parlyz_heal, 1)"); budget -= PRICE[ITEM.PARLYZ_HEAL]; }
   // wq#487: repels are the cheapest turn-saver in the game for cave transits
   // (ROM-verified 100 steps of no weak wild encounters — pokeblue bank 03
   // ItemUseRepel `ld b,$64`). $350 each; Cerulean is the FIRST mart that
   // stocks them, and Rock Tunnel is the next cave after Mt Moon. Lowest
   // priority: healing and the Misty gate come first.
-  const nRep = Math.min(2, Math.floor(budget / 350));
-  if (nRep > 0) { buys.push(`buy(repel, ${nRep})`); budget -= nRep * 350; }
+  const nRep = Math.min(2, Math.floor(budget / PRICE[ITEM.REPEL]));
+  if (nRep > 0) { buys.push(`buy_item(repel, ${nRep})`); budget -= nRep * PRICE[ITEM.REPEL]; }
   if (!buys.length)
-    return potions >= MISTY_MIN_POTIONS
+    return potions >= MISTY_MIN_POTIONS && balls >= MIN_SAFE_PARTY
       ? "stock is fine - no purchases needed"
       : "money too low to shop - grind Route 24/25 trainer payouts first, then return to the MART";
   return buys.join(" then ");
@@ -88,13 +111,14 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
   const lead = s.party[0];
   const level = lead?.level ?? 0;
   const potions = potionCount(emu, sym);
+  const balls = ballCount(emu, sym);
   const ready = level >= MISTY_MIN_LEVEL && potions >= MISTY_MIN_POTIONS;
   const lines = [
     `CERULEAN STAGE (live: L${level} lead, ${potions} potions, $${s.money}):`,
     "HEAL LOOP: heal at the CERULEAN POKEMON CENTER (map64, in the city)",
     "  BEFORE the gym and AFTER EVERY gym loss - it also resets your respawn",
     "  here. Never re-enter the gym at partial HP/PP.",
-    `MART (map67): ${ceruleanBuyPlan(s.money, potions)}.`,
+    `MART (map67): ${ceruleanBuyPlan(s.money, potions, balls)}.`,
   ];
   if (ready) {
     lines.push(
