@@ -11,6 +11,7 @@ import { Screen } from "./screen";
 import { Sync } from "./sync";
 import { Dialog } from "./dialog";
 import { EventBus } from "./events";
+import { readMenu } from "./menu";  // wq#620
 
 // Pokemon Centers are detected by TILESET, not map id: every Gen1 center uses
 // TILESET_POKECENTER (=6 in this build, verified vs Viridian map41) and shares
@@ -49,11 +50,18 @@ export class Heal {
     if (g === "stuck" || g === "adjacent_npc") return "heal_at_center: could not reach the counter (blocked)";
     await this.tap(KEYS.UP, 200);
     await this.tap(KEYS.A, 300);
-    // drive the dialog; at the YES/NO use a verified press (first A gets eaten)
+    // drive the dialog; at the YES/NO use a verified press (first A gets eaten).
+    // wq#620: the press at a cursor is now READ-GATED — A answers YES only when
+    // the decoded dialog actually asks about healing; any OTHER window that
+    // appears here (mis-aimed interact, PC menu) gets a B instead of a blind
+    // confirm. Ground-truth exits (full party + provably overworld) unchanged.
     let engaged = false;
     for (let i = 0; i < 60 && !(this.full() && this.overworld()); i++) {
       if (this.dlg.open() || this.sync.textUp() || this.scr.cursor() !== null) engaged = true;
       if (this.scr.cursor() !== null) {
+        const v = readMenu(this.scr.textGrid(), this.scr.cursor(), this.scr.awaitingPrompt(),
+                           this.r("wTwoOptionMenuID") !== 0);
+        if (v.yesNo && !/heal/i.test(v.dialog)) { await this.tap(KEYS.B, 300); continue; }
         const before = JSON.stringify(this.scr.cursor());
         await this.tap(KEYS.A, 300);   // YES is the default row
         if (JSON.stringify(this.scr.cursor()) === before) await this.tap(KEYS.A, 300);

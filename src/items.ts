@@ -14,6 +14,7 @@ import { Sync } from "./sync";
 import { Dialog } from "./dialog";
 import { EventBus } from "./events";
 import { decodeGen1Bytes } from "./names";
+import { readMenu, labelMatches, MenuView } from "./menu";  // wq#620
 
 /** Structural, so items.ts does not depend on the concrete Rom class (and so
  *  probes can hand in a stub). Matches Rom.byte(bank, addr). */
@@ -154,11 +155,20 @@ export class Items {
     return this.cur() === target;
   }
   // Research-probe-verified helpers (2026-08-06):
-  // cf91/wCurItem is written with the selected item id on A-press in list menus
-  // (hover does NOT update it) -> the deterministic post-select verify.
+  // cf91/wCurItem is written with the selected item id on A-press in list menus.
+  // wq#620 CORRECTION to the old "hover does NOT update it" note: in the MART
+  // list cf91 also gets written during SCROLL (recon620 observed cf91=12 with
+  // the arrow displayed on ANTIDOTE=11), so cf91 alone can disagree with what
+  // the player sees. It remains a useful post-A corroboration; it is no longer
+  // the selection GATE — the tilemap label under the arrow is (menuView below).
   private curItem() { return this.r("wCurItem"); }
   private maxMenu() { return this.r("wMaxMenuItem"); }
   private scroll() { return this.r("wListScrollOffset"); }
+  /** wq#620: structured view of whatever window is on screen right now. */
+  menuView(): MenuView {
+    return readMenu(this.scr.textGrid(), this.scr.cursor(),
+                    this.scr.awaitingPrompt(), this.twoOptionUp());
+  }
   // First tap after a menu init gets eaten -> normalize to top with harmless UP
   // spam, then require a stable cur()==0 across two reads.
   private async normalizeTop(spins = 6): Promise<boolean> {
@@ -220,18 +230,30 @@ export class Items {
     }
     if (!listOpen) { await this.exitMart(); return "buy: item list never opened"; }
     await this.sync.settle(300);          // let list init finish - first tap gets eaten mid-init
-    // Three-layer selection (probe-proven failure: stale cur() bought the wrong row):
-    // 1) normalize to top, 2) step to row with cur() verify, 3) cf91 must hold wantId after A.
-    let selected = false;
-    for (let attempt = 0; attempt < 2 && !selected; attempt++) {
-      if (!await this.normalizeTop()) continue;
-      if (!await this.moveCur(listIdx)) continue;
-      await this.tap(KEYS.A, 250);
-      if (await this.waitFor(() => this.curItem() === wantId, 600)) { selected = true; break; }
-      await this.tap(KEYS.B, 300);        // qty selector -> back to list, retry
+    // wq#620: SELECTION BY READING, not by counting. The old path stepped
+    // wCurrentMenuItem to a target index and gated on cf91 after A — and both
+    // registers can disagree with the display (cur pins while the list
+    // scrolls; cf91 gets written on scroll-hover, recon620). The gate is now
+    // the decoded tilemap label under the arrow — the thing the player sees —
+    // with scroll+cur only steering the tap direction. cf91 is recorded as
+    // corroboration, never the gate.
+    const wantLabel = ITEM_NAME[wantId];
+    let matched = false;
+    let lastView = this.menuView();
+    for (let t = 0; t < order.length * 2 + 8; t++) {
+      lastView = this.menuView();
+      if (lastView.selectedLabel && labelMatches(lastView.selectedLabel, wantLabel)) { matched = true; break; }
+      const at = this.scroll() + this.cur();
+      await this.tap(at < listIdx ? KEYS.DOWN : KEYS.UP, 160);
     }
-    if (!selected) { await this.exitMart(); return `buy: could not verify ${ITEM_NAME[wantId]} under cursor (cf91=${this.curItem()})`; }
-    if (!await this.waitFor(() => /x0?\d/.test(this.scr.text()))) { await this.exitMart(); return "buy: qty selector never opened"; }
+    if (!matched) {
+      const visible = lastView.entries.map(e => e.label + (e.price !== null ? ` $${e.price}` : "")).join(", ");
+      await this.exitMart();
+      return `buy: ${ITEM_NAME[wantId]} never came under the cursor; visible list: ${visible || "(unreadable)"}`;
+    }
+    await this.tap(KEYS.A, 250);
+    const cfAfterA = this.curItem();      // corroboration only (see note above)
+    if (!await this.waitFor(() => /x0?\d/.test(this.scr.text()))) { await this.exitMart(); return `buy: qty selector never opened (label matched "${lastView.selectedLabel}", cf91=${cfAfterA})`; }
     for (let i = 1; i < qty; i++) await this.tap(KEYS.UP, 120);
     await this.tap(KEYS.A, 250);
     // Confirm: multi-part dialog with a scroll prompt that WAITS for a press
@@ -239,15 +261,20 @@ export class Items {
     // no cursor is up - the cursor only appears with YES/NO, so A can't
     // accidentally confirm. Name-verify as the text prints, before YES.
     const confirmUp = () => this.twoOptionUp() || (this.scr.cursor() !== null && /YES/.test(this.scr.text()));
-    const frag = ITEM_NAME[wantId].toUpperCase().replace(/_/g, " ").replace("POKE", "POKe").slice(0, 6);
+    // wq#620: the confirm-name check normalizes both sides (é -> e, case,
+    // separators) — the shared charmap now decodes the real "POKé", so the old
+    // hardcoded "POKe" fragment would never match a ball purchase again.
+    const normTxt = (s: string) => s.toLowerCase().replace(/\u00e9/g, "e").replace(/[^a-z0-9]+/g, " ");
+    const frag = normTxt(ITEM_NAME[wantId]).trim().slice(0, 6);
+    const fragSeen = () => normTxt(this.scr.text()).includes(frag);
     let sawFrag = false;
     for (let i = 0; i < 14 && !confirmUp(); i++) {
-      if (this.scr.text().includes(frag)) sawFrag = true;
+      if (fragSeen()) sawFrag = true;
       if (this.scr.cursor() === null) await this.tap(KEYS.A, 250);
       else await this.emu.framesAsync(20);
     }
     if (!await this.waitFor(confirmUp, 600)) { await this.exitMart(); return "buy: confirm prompt never appeared"; }
-    if (!sawFrag && !this.scr.text().includes(frag)) {
+    if (!sawFrag && !fragSeen()) {
       await this.tap(KEYS.B, 300);        // NO - abort the purchase
       await this.exitMart();
       return `buy: confirm text mismatch (wanted ${frag}) - aborted before paying`;
