@@ -70,14 +70,19 @@ if (!fixture) {
   const start: [number, number] = [st.x, st.y];
   seen.add(start.join(","));
   const q: [number, number][] = [start];
+  // mm.passable() (not raw mm.grid) so this flood fill sees exactly what
+  // astar()/goto() see: terrain AND sprite occupancy. NPCs wander, so a
+  // terrain-only fill can call a corridor open when an NPC is currently
+  // standing in it -- this map's own (27,11) Trashed House warp is the
+  // live example (two NPCs parked at (27,12)/(28,12) block it at this
+  // exact checkpoint even though the terrain underneath is clear).
   while (q.length) {
     const [x, y] = q.shift()!;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= mm.gw || ny >= mm.gh) continue;
       const k = `${nx},${ny}`;
       if (seen.has(k)) continue;
-      if (mm.grid[ny][nx]) { seen.add(k); q.push([nx, ny]); }
+      if (mm.passable(nx, ny)) { seen.add(k); q.push([nx, ny]); }
     }
   }
   const eastEdgeWalkable = Array.from({ length: mm.gh }, (_, y) => y).filter(y => mm.grid[y][mm.gw - 1]);
@@ -98,6 +103,17 @@ if (!fixture) {
     chk(`${name} (map${destMap}) warp is reachable via WARPS (what the fixed guidance now points at)`,
         !!v && v.state !== "unreachable", v ? `${v.state}, ${v.steps} steps` : "no such warp");
   }
+  // wq#638 live follow-up: the very first deployed turn from this exact
+  // position picked the Trashed House warp (27,11) instead -- NOT one of the
+  // four this fix's guidance names -- and got a real "no path" back, because
+  // two NPCs happened to be parked at (27,12)/(28,12), the corridor's only
+  // tile-width. WARPS marks it unreachable too; this pins that the four
+  // buildings actually named in guidance survive even the stricter,
+  // sprite-aware check, while the one the brain picked on its own does not.
+  const trashedHouse = byDest(62);
+  chk("Trashed House (map62, NOT named by the fix's guidance) is genuinely blocked right now",
+      !trashedHouse || trashedHouse.state === "unreachable",
+      trashedHouse ? trashedHouse.state : "no such warp");
 }
 
 console.log("\n-- B: guidance text, source-verified (same technique as probe_phase514) --");
