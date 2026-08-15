@@ -39,6 +39,7 @@ import { renderMenuLine } from "./menu";  // wq#620
 import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits } from "./objects";  // wq#607
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
+import { VisionValve, consultVision } from "./vision";  // wq#621
 
 const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on disk
 
@@ -79,6 +80,10 @@ export class Agent {
   // at CEILING. Per-agent on purpose: a gameplay continue is a fresh brain
   // turn and deserves a fresh budget.
   private ceiling = new ActionCeiling();
+  // wq#621: escalation-only vision valve. Per-agent, same lifetime as ceiling
+  // — a fresh continue deserves a fresh streak/budget, same reasoning as
+  // wq#606's ActionCeiling above.
+  private visionValve = new VisionValve();
   private mapHistory: number[] = [];   // recent map ids for oscillation detection (this run)
   // wq#517: the same list, but surviving restarts and continues. A new Agent
   // is constructed inside live_agent's outer `for (;;)` loop, so the field
@@ -121,6 +126,29 @@ export class Agent {
     let lastMap = 0;
     try { lastMap = this.emu.mem()[this.sym.addr("wLastMap")]; } catch { lastMap = 0; }
     return warpViews(this.map, p.x, p.y, lastMap, id => this.mapLabel(id));
+  }
+
+  /** wq#621: feed one stuck_dump into the vision valve. Fires at most once per
+   *  stuck streak, refuses past the hourly budget (logged, not silent), and
+   *  never throws into the caller's turn — a vision failure must not take
+   *  down navigation. The result is a GUIDANCE hint only (notepad.ts), never
+   *  RAM-overriding. */
+  private async maybeConsultVision(pos: { map: number; x: number; y: number }, grid: string): Promise<void> {
+    if (!CFG.visionValve.enabled) return;
+    if (!this.visionValve.recordStuck(pos)) return;
+    if (!this.visionValve.tryConsumeBudget()) {
+      this.bus.emit("tool_call", { tool: "vision_refused",
+        line: `vision valve budget cap (${CFG.visionValve.maxPerHour}/hour) reached — ` +
+              `refused at map${pos.map} (${pos.x},${pos.y})` });
+      return;
+    }
+    this.bus.emit("tool_call", { tool: "vision_consult", pos, model: CFG.profiles.vision.model });
+    try {
+      const text = await consultVision(this.brain, this.emu.screenPngBuffer(), grid);
+      if (text) this.pad.setGuidance("VISION", `(hint only, does not override RAM/grid) ${text}`);
+    } catch (e: any) {
+      this.bus.emit("tool_call", { tool: "vision_error", reason: String(e?.message ?? e).slice(0, 200) });
+    }
   }
 
   /** Everything the brain needs to see this turn, rendered deterministically. */
@@ -319,8 +347,10 @@ export class Agent {
       if (!this.bat.active()) {
         try {
           this.map.build();
+          const grid = this.map.ascii(cpos.x, cpos.y);
           this.bus.emit("tool_call", { tool: "stuck_dump", pos: cpos,
-            sprites: this.map.sprites, grid: this.map.ascii(cpos.x, cpos.y) });
+            sprites: this.map.sprites, grid });
+          await this.maybeConsultVision(cpos, grid);
         } catch { /* a geometry failure must not kill the turn */ }
       }
       return result + `\n! RETRY CEILING (${CEILING}x): this exact action has now failed its own ` +
@@ -374,8 +404,10 @@ export class Agent {
           }
           if (r === "stuck") {
             const p = this.nav.pos();
+            const stuckGrid = this.map.ascii(p.x, p.y);
             this.bus.emit("tool_call", { tool: "stuck_dump", pos: p,
-              sprites: this.map.sprites, grid: this.map.ascii(p.x, p.y) });
+              sprites: this.map.sprites, grid: stuckGrid });
+            await this.maybeConsultVision(p, stuckGrid);
             // wq#538: a bare "stuck now {map,x,y}" carries no information the
             // brain can act on, so it re-picks from the same list and burns the
             // turn again. Say WHY it failed and name what would work instead.
