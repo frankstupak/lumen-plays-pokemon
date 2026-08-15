@@ -9,6 +9,15 @@ export interface Warp { y: number; x: number; destWarp: number; destMap: number 
  *  either order, while a given tileset is loaded. */
 export interface TilePair { a: number; b: number }
 
+/** One LedgeTiles entry (pokered HandleLedges): standing on tile `standing`,
+ *  pressing toward (dx,dy) with tile `ledge` in front, the game JUMPS the
+ *  player two cells in that direction. Ledge tiles are NOT in the walkable
+ *  set, so without these edges the model reads every ledge line as a solid
+ *  wall — wq#601: Route 4 east's only route to Cerulean is behind a hop-down
+ *  line at y=9, so eastbound A* died there and the run bounced off Mt Moon
+ *  for 145h while the pack promised "hopping a ledge is progress". */
+export interface LedgeEntry { standing: number; ledge: number; dx: number; dy: number }
+
 export class MapModel {
   width = 0; height = 0;          // in blocks
   gw = 0; gh = 0;                 // walk-unit grid dims (2x blocks)
@@ -19,6 +28,8 @@ export class MapModel {
   tilesetId = 0;
   /** TilePairCollisionsLand entries that apply to the CURRENT tileset. */
   landPairs: TilePair[] = [];
+  /** LedgeTiles entries — populated only on the overworld tileset (see build). */
+  ledges: LedgeEntry[] = [];
 
   constructor(private emu: Emulator, private sym: SymbolTable, private rom: Rom) {}
 
@@ -78,6 +89,28 @@ export class MapModel {
       if (entryTileset === this.tilesetId) this.landPairs.push({ a, b });
     }
 
+    // LedgeTiles (pokered HandleLedges). Unlike TilePairCollisionsLand the
+    // table carries NO tileset column; the gate lives in code — HandleLedges
+    // opens with `ld a, [wCurMapTileset] / and a / ret nz`, so ledges exist
+    // ONLY on tileset 0 (overworld). That gate is load-bearing here: cave
+    // tilesets reuse the same tile-id space, and ungated entries would mint
+    // phantom hop edges through Mt Moon walls. Entry: facing, standing tile,
+    // ledge tile, D-pad input; the input byte names the hop direction
+    // (D_DOWN=0x80, D_UP=0x40, D_LEFT=0x20, D_RIGHT=0x10).
+    this.ledges = [];
+    if (this.tilesetId === 0) {
+      const lt = s.sym("LedgeTiles");
+      for (let i = 0; i < 32; i++) {
+        const e2 = this.rom.bytes(lt.bank, lt.addr + i * 4, 4);
+        if (e2[0] === 0xff) break;
+        const input = e2[3];
+        const dx = input === 0x20 ? -1 : input === 0x10 ? 1 : 0;
+        const dy = input === 0x80 ? 1 : input === 0x40 ? -1 : 0;
+        if (dx === 0 && dy === 0) continue;
+        this.ledges.push({ standing: e2[1], ledge: e2[2], dx, dy });
+      }
+    }
+
     // NPC sprites 1..15 (0 = player); wSpriteStateData2[i*16+4/5] = mapY+4 / mapX+4
     this.sprites = [];
     const d1 = s.addr("wSpriteStateData1"), d2 = s.addr("wSpriteStateData2");
@@ -116,6 +149,29 @@ export class MapModel {
    *  (toX,toY)? Prefer this over passable() for movement decisions. */
   passableFrom(fromX: number, fromY: number, toX: number, toY: number): boolean {
     return this.passable(toX, toY) && !this.pairBlocked(fromX, fromY, toX, toY);
+  }
+
+  /** Ledge-hop landing cells from (x,y): for each LedgeTiles entry whose
+   *  standing tile matches the cell underfoot and whose ledge tile is the
+   *  next cell in the entry's direction, the game jumps the player TWO cells
+   *  that way. Directed by construction — the reverse hop needs its own table
+   *  entry and Gen 1 has none, which is exactly why Route 4 east is one-way.
+   *  A sprite on the ledge cell or the landing blocks the jump in-engine, so
+   *  it removes the edge here too (passable() already covers the landing). */
+  hops(x: number, y: number): { x: number; y: number }[] {
+    if (!this.ledges.length) return [];
+    const standing = this.tileIds[y]?.[x];
+    const out: { x: number; y: number }[] = [];
+    for (const l of this.ledges) {
+      if (l.standing !== standing) continue;
+      const mx = x + l.dx, my = y + l.dy;          // ledge cell
+      const lx = x + 2 * l.dx, ly = y + 2 * l.dy;  // landing cell
+      if (this.tileIds[my]?.[mx] !== l.ledge) continue;
+      if (!this.passable(lx, ly)) continue;
+      if (this.sprites.some(sp => sp.x === mx && sp.y === my)) continue;
+      if (!out.some(o => o.x === lx && o.y === ly)) out.push({ x: lx, y: ly });
+    }
+    return out;
   }
 
   /** Is (x,y) a warp tile? Pathfinding must not cross these as shortcuts. */

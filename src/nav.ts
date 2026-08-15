@@ -57,6 +57,23 @@ export function astar(map: MapModel, sx: number, sy: number, tx: number, ty: num
         open.set(nk, { x: nx, y: ny, g, f: g + h(nx, ny) });
       }
     }
+    // wq#601: ledge-hop edges. Ledge tiles are walls in the collision grid, so
+    // without these the planner reads every ledge line as sealed — Route 4
+    // east's ONLY route to Cerulean is behind a hop-down line, and eastbound
+    // A* died at it for 145h. Edges are DIRECTED (map.hops matches the ROM's
+    // LedgeTiles entries, and the reverse direction has no entry), land two
+    // cells out, and never land on an unrelated warp — same rule as steps.
+    for (const hop of map.hops(best.x, best.y)) {
+      const nk = key(hop.x, hop.y);
+      const isTgt = hop.x === tx && hop.y === ty;
+      if (extraBlocked.has(nk)) continue;
+      if (!isTgt && map.isWarp(hop.x, hop.y)) continue;
+      const g = best.g + 2;   // two cells of distance, one press
+      if (g < (gScore.get(nk) ?? Infinity)) {
+        gScore.set(nk, g); came.set(nk, bestK);
+        open.set(nk, { x: hop.x, y: hop.y, g, f: g + h(hop.x, hop.y) });
+      }
+    }
   }
   return null;
 }
@@ -93,6 +110,30 @@ export class Navigator {
       if (this.inBattle()) return "battle";
       await this.emu.tapAsync(KEYS[d.key], 8, 2);
       await this.emu.framesAsync(22);
+      if (this.sync) await this.sync.settle(300);
+      const now = this.pos();
+      if (now.map !== before.map) { await this.emu.framesAsync(90); return "warped"; }
+      if (now.x !== before.x || now.y !== before.y) return "moved";
+      // first attempt may have only turned the player; retry
+    }
+    return "blocked";
+  }
+
+  /** wq#601: one ledge hop — a single directional press that the game answers
+   *  with a TWO-cell jump animation. Separate from step() because the hop
+   *  takes ~40 frames: step()'s 22-frame wait reads the mid-air player as
+   *  "didn't move", retries into ignored input, and mis-learns the landing as
+   *  a wall. Returns the same vocabulary as step(). */
+  async hopStep(dx: number, dy: number): Promise<string> {
+    const d = DIRS.find(v => v.dx === dx && v.dy === dy)!;
+    if (this.sync) await this.sync.settle();
+    if (this.inBattle()) return "battle";
+    if (this.sync?.textUp()) return "dialog";
+    const before = this.pos();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (this.inBattle()) return "battle";
+      await this.emu.tapAsync(KEYS[d.key], 8, 2);
+      await this.emu.framesAsync(70);          // full jump arc, with margin
       if (this.sync) await this.sync.settle(300);
       const now = this.pos();
       if (now.map !== before.map) { await this.emu.framesAsync(90); return "warped"; }
@@ -173,12 +214,19 @@ export class Navigator {
       for (const cell of path) {
         const cur = this.pos();
         const dx = cell.x - cur.x, dy = cell.y - cur.y;
-        if (Math.abs(dx) + Math.abs(dy) !== 1) {
+        // wq#601: a 2-cell axis-aligned segment is a planned ledge hop — one
+        // press, two cells. Verified against the live model so a stale plan
+        // cell can never turn into a blind long-press: no hop edge here now
+        // means desync -> replan, exactly like any other divergence.
+        const isHop = ((Math.abs(dx) === 2 && dy === 0) || (Math.abs(dy) === 2 && dx === 0)) &&
+                      this.map.hops(cur.x, cur.y).some(h => h.x === cell.x && h.y === cell.y);
+        if (!isHop && Math.abs(dx) + Math.abs(dy) !== 1) {
           this.trace({ ev: "desync", replan: replans, at: { x: cur.x, y: cur.y },
                        want: [cell.x, cell.y] });
           break; // desynced from plan -> replan
         }
-        const r = await this.step(dx, dy);
+        const r = isHop ? await this.hopStep(Math.sign(dx), Math.sign(dy))
+                        : await this.step(dx, dy);
         const now = this.pos();
         this.trace({ ev: "step", replan: replans, from: [cur.x, cur.y],
                      want: [cell.x, cell.y], d: [dx, dy], r,

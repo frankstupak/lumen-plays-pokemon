@@ -5,8 +5,9 @@ import { writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from "fs
 import { Emulator, KEYS, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
-import { MapModel } from "./map";
-import { mtMoonLeg } from "./mtmoon_route";
+import { MapModel, Warp } from "./map";
+import { mtMoonLeg, MT_MOON_MAPS } from "./mtmoon_route";
+import { corridorPhase } from "./phase";
 import { Navigator, astar } from "./nav";
 import { EventBus } from "./events";
 import { Screen } from "./screen";
@@ -36,6 +37,23 @@ import { GameNames } from "./names";
 import { CFG } from "./config";
 
 const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on disk
+
+/** wq#601: while the phase says the agent is PAST Mt Moon, a warp that leads
+ *  back INTO it is refused in the tool itself. The pack forbade this in prose
+ *  and the agent took the (24,5) re-entry twenty times in one evening — the
+ *  wq#532 lesson again: a rule that exists only as prose is not a rule. Scope
+ *  is deliberately one tile-class on one map in one phase: Cerulean is full
+ *  of doors the agent must use, and MT_MOON_TRANSIT (westbound recovery,
+ *  blackout re-cross) keeps every warp. Pure so the probe can test the
+ *  decision without a live brain. Returns the refusal line, or null. */
+export function mtMoonReentryRefusal(onMap15: boolean, phase: string,
+                                     warp: Warp | undefined): string | null {
+  if (!onMap15 || phase !== "CERULEAN_APPROACH" || !warp) return null;
+  if (!MT_MOON_MAPS.includes(warp.destMap)) return null;
+  return `refused - (${warp.x},${warp.y}) warps back into Mt Moon (map${warp.destMap}) ` +
+         `and you are PAST the cave. Cerulean is EAST on foot; hopping DOWN a ledge ` +
+         `is one-way progress, never re-enter the cave (wq#601)`;
+}
 
 export class Agent {
   hist = new History();
@@ -247,6 +265,18 @@ export class Agent {
       switch (tool) {
         case "goto": {
           const tx = Number(args[0]), ty = Number(args[1]);
+          // wq#601: past the cave, the Mt Moon re-entry warp tile is refused
+          // here, not in prose. reader.read() is fresh RAM; map15 is ranked on
+          // every tile so corridorPhase needs no prev there.
+          {
+            const st = this.reader.read();
+            if (st.map === 15) {
+              this.map.build();
+              const w = this.map.warps.find(w => w.x === tx && w.y === ty);
+              const ref = mtMoonReentryRefusal(true, corridorPhase(st), w);
+              if (ref) return `goto: ${ref}`;
+            }
+          }
           const r = await this.nav.goto(tx, ty);
           // wq#487: a goto cut short by a battle becomes a harness-owned goal;
           // any other outcome retires it. Must run before the returns below.
@@ -275,6 +305,18 @@ export class Agent {
           return `goto -> ${r} now ${JSON.stringify(this.nav.pos())}`;
         }
         case "enter_warp": {
+          // wq#601: refresh warps before indexing on map15 — the loop below
+          // reads the index against CURRENT geometry, and the refusal must
+          // name the warp the game would actually fire.
+          {
+            const st = this.reader.read();
+            if (st.map === 15) {
+              this.map.build();
+              const ref = mtMoonReentryRefusal(true, corridorPhase(st),
+                                               this.map.warps[Number(args[0])]);
+              if (ref) return `enter_warp: ${ref}`;
+            }
+          }
           const w = this.map.warps[Number(args[0])];
           if (!w) return "enter_warp: bad index";
           const r = await this.nav.enterWarp(w);
