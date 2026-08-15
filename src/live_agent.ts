@@ -200,7 +200,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // guidance never pollutes other corridors. Content rules: map IDs verified
 // (pokered constants); NO invented tile coordinates — the state block's WARPS
 // list is authoritative, guidance stays at route-intent level.
-function corridorNotepad(badgeCount: number, phase: CorridorPhase,
+function corridorNotepad(badgeCount: number, phase: CorridorPhase, map: number,
                          superNerdBeaten = false, haveFossil = false,
                          routeLeg: RouteLeg | null = null): string {
   if (badgeCount === 0) return [
@@ -252,7 +252,7 @@ function corridorNotepad(badgeCount: number, phase: CorridorPhase,
     // "Route4 west(map15) -> MT MOON 1F" and "DO NOT re-enter Mt Moon". The
     // brain could not tell which map15 it was on, so both applied at once.
     // The two halves are now mutually exclusive and chosen from position.
-    if (phase === "CERULEAN_APPROACH") return ceruleanApproachPack();
+    if (phase === "CERULEAN_APPROACH") return ceruleanApproachPack(map);
     return mtMoonTransitPack(superNerdBeaten, haveFossil, routeLeg);
   }
   return [
@@ -388,14 +388,44 @@ function mtMoonTransitPack(superNerdBeaten: boolean, haveFossil: boolean,
   ].join("\n");
 }
 
+// wq#638: Cerulean City (3) plus every one of its own interiors, read straight
+// off map3's warp table (destMap) against the ROM-decoded names: Cerulean
+// Trashed House 62, Trade House 63, Pokecenter 64, Gym 65, Bike Shop 66, Mart
+// 67, Cave 1F 228, Badge House 230. Once the player is on ANY of these, the
+// Route-4-east crossing is over — see ceruleanApproachPack below.
+const CERULEAN_TOWN_MAPS = [3, 62, 63, 64, 65, 66, 67, 228, 230];
+
 // CERULEAN_APPROACH: badges 1, agent PAST the cave (Route 4 east or beyond).
 // wq#514 deliverable 4: this pack contains no instruction about entering the
 // mountain in ANY form, not even as a negation -- per wq#488, a negated
 // instruction still puts the action in context, and "do not re-enter Mt Moon"
 // sitting next to a ladder is how the agent spent five days re-entering it.
-function ceruleanApproachPack(): string {
-  return [
-    "GOAL: reach CERULEAN CITY (map3) and beat MISTY for badge 2.",
+//
+// wq#638: this pack used to be ONE block, same as pre-wq#514's Mt Moon pack,
+// with the same defect. "Keep heading EAST until the map id becomes 3" stayed
+// in context AFTER the map id WAS 3, because corridorPhase (see phase.ts)
+// deliberately HOLDS at CERULEAN_APPROACH while the player wanders Cerulean's
+// buildings (they rank -1, off the critical path). Measured cost: 5 hours
+// bouncing map3<->map63 (Trade House) 08:25-13:17Z, the brain calling
+// leave_edge(E) and goto() at outdoor-scale coordinates that no small
+// interior room could ever contain, chasing a direction that was already
+// behind it. The state block's WARPS line (wq#538, reach.ts) already carries
+// live reachability for every warp on the current map — this fix stops
+// contradicting it instead of duplicating it.
+function ceruleanApproachPack(map: number): string {
+  const arrived = CERULEAN_TOWN_MAPS.includes(map);
+  const whereYouAre = arrived ? [
+    "WHERE YOU ARE: you have ARRIVED — the map id is one of Cerulean's own",
+    "  (town or a building inside it). The Route 4 crossing is DONE. Do NOT",
+    "  leave_edge or goto a far-off coordinate chasing 'east' any more; there",
+    "  is no route east from inside town and repeating that is the exact",
+    "  stall this line exists to stop. Read the WARPS line THIS TURN and pick",
+    "  a REACHABLE one by name — never invent a coordinate.",
+    "IF THE MAP ID IS NOT 3: you are inside one of Cerulean's buildings, a",
+    "  small room, not the town. A goto sized for the town (x/y in the 20s or",
+    "  30s) does not exist in here and will read NO PATH forever. Use",
+    "  enter_warp on the door warp from your WARPS line to leave.",
+  ] : [
     "WHERE YOU ARE: on the EAST side of the mountain, past the crossing. This",
     "  is the far half of Route 4 and it is a DIFFERENT PLACE from the pocket",
     "  you started in, even though both report map 15. You are through. The",
@@ -405,6 +435,10 @@ function ceruleanApproachPack(): string {
     "  Keep heading EAST until the map id becomes 3 (CERULEAN CITY).",
     "IF A WARP LEADS BACK WEST UNDERGROUND, IT IS NOT YOUR ROUTE. Your route is",
     "  the open air to the EAST. Prefer walking east over any warp.",
+  ];
+  return [
+    "GOAL: reach CERULEAN CITY (map3) and beat MISTY for badge 2.",
+    ...whereYouAre,
     "IN CERULEAN (map3):",
     "  * POKEMON CENTER first if anyone is hurt - free full heal, sets respawn.",
     "  * MART: buy POKE BALLs (200 each) before anything else if you can afford",
@@ -412,8 +446,11 @@ function ceruleanApproachPack(): string {
     "  * GYM is MISTY: STARMIE L21 / STARYU L18, both WATER. A Fire starter is",
     "    at a type DISADVANTAGE here - do not lead with Ember and expect wins.",
     "    Level up on Route 4 east and Route 24 trainers first if under L25.",
+    "  * Pokecenter, Mart, Gym, Trade House, Bike Shop and the Badge House are",
+    "    all ordinary warps inside town (map3) - the WARPS line names each",
+    "    one and marks it reachable or not; trust that over any guess.",
     "MONEY: trainer battles are the ONLY income in this game. Fight the trainers",
-    "  you meet on the way east rather than routing around them - a full purse",
+    "  you meet along the way rather than routing around them - a full purse",
     "  is what makes balls and potions possible.",
     "RAM-VERIFIED CLAIMS ONLY: never assert an acquisition or a beaten trainer",
     "  from dialog alone; confirm with a state or inventory read.",
@@ -528,7 +565,7 @@ function ceruleanApproachPack(): string {
           bus.emit("turn_summary", { line: `route leg unresolved: ${String(e?.message ?? e).slice(0, 80)}` });
         }
       }
-      pad.setGuidance("CORRIDOR", corridorNotepad(st.badgeCount, next, nerd, fossil, leg));
+      pad.setGuidance("CORRIDOR", corridorNotepad(st.badgeCount, next, st.map, nerd, fossil, leg));
     };
     if (phaseWarnings.length) bus.emit("turn_summary", { line: `PHASE WARN: ${phaseWarnings.join("; ")}` });
     refreshCorridorGuidance();
