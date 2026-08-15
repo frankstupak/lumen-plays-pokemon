@@ -54,8 +54,19 @@ export const CFG = {
       model: envS("LPP_BRAIN_SUMMARIZE", "deepseek-v4-flash"),
       maxTokensOut: 3200,
     } as BrainProfile,
-    // screenshot turns only (unused by the text loop)
+    // wq#621: escalation-only valve, not the text loop's per-turn brain.
     vision: { model: "lumen-vision", maxTokensOut: 3200 } as BrainProfile,
+  },
+  // wq#621 VISION VERDICT VALVE: escalation-ONLY VLM consult (research
+  // reports/vision_research_brief.md — every harness that beat the game used
+  // RAM/text to correct vision, never the reverse; the symbolic ceiling is
+  // ~100% for Gen1, so vision is a rare safety-valve hint, not a channel the
+  // brain gets every turn). Fires only after `stuckN` CONSECUTIVE stuck_dumps
+  // at the same (map,x,y); hard-capped at `maxPerHour` calls, sliding window.
+  visionValve: {
+    enabled: envN0("LPP_VISION_ENABLE", 1) > 0,
+    stuckN: envN("LPP_VISION_STUCK_N", 3),
+    maxPerHour: envN("LPP_VISION_MAX_PER_HOUR", 4),
   },
   // wq#472 AUTO-turn rate lever: max PLANNED deterministic turns the harness
   // may run between brain calls (trainer-battle strongest-move, choice-free
