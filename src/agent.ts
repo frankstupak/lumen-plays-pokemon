@@ -36,6 +36,7 @@ import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#5
 import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
+import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits } from "./objects";  // wq#607
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
 
@@ -214,7 +215,21 @@ export class Agent {
     this.map.build();
     const p = this.nav.pos();
     block += `\n${renderWarps(this.currentWarpViews())}`;
-    block += `\nMAPGRID (P=you W=warp N=npc #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+    block += `\nMAPGRID (P=you W=warp N=npc B=item ball #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+    // wq#607: item-ball perception — the line renders ONLY when a ball is on
+    // this map (no dead prose). Steps via the same astar goto() uses, so
+    // "N steps" is a promise the executor can keep. NO auto-detour: this is
+    // perception + a nudge, never a nav goal (ticket deliverable 5).
+    {
+      const balls = decodeItemObjects(this.emu.mem(), this.sym);
+      if (balls.length) {
+        const bsteps = new Map<number, number | null>();
+        for (const b of balls)
+          bsteps.set(b.sprite, astar(this.map, p.x, p.y, b.x, b.y, new Set<string>())?.length ?? null);
+        const bline = itemBallLine(balls, bsteps);
+        if (bline) block += `\n${bline}`;
+      }
+    }
 
     // wq#528: the ONE income/XP goal the harness can actually complete, or
     // nothing. Every gate lives in trainers.ts and the module is fail-closed on
@@ -427,9 +442,34 @@ export class Agent {
           return `leave_edge -> ${r} now ${JSON.stringify(this.nav.pos())}`;
         }
         case "interact": {
-          const d = await this.act.interactAt(Number(args[0]), Number(args[1]));
+          // wq#607: when the target tile holds a decoded item ball, confirm
+          // the pickup by GROUND TRUTH — the missable flag region flips
+          // exactly one bit, the sprite despawns, and the bag grows. Dialog
+          // text is reported but never the confirmation.
+          const ix = Number(args[0]), iy = Number(args[1]);
+          const ballAt = decodeItemObjects(this.emu.mem(), this.sym)
+            .find(o => o.x === ix && o.y === iy);
+          const flagsBefore = ballAt ? toggleableFlags(this.emu.mem(), this.sym) : [];
+          const bagBefore = ballAt ? this.items.has(ballAt.itemId) : 0;
+          const d = await this.act.interactAt(ix, iy);
           if (!d) return "interact -> no_response";
-          return `interact -> ${d.stoppedAt}; text: ${d.lines.slice(-4).join(" / ").slice(0, 200)}`;
+          let pickup = "";
+          if (ballAt) {
+            // Ground truths: the missable flag flip + the bag delta. The
+            // sprite despawn is EVENTUAL (probe-measured: still drawn for some
+            // frames after the flag flips, gone by the next interaction), so
+            // it is reported when observed but never gates the confirmation.
+            const flips = flippedBits(flagsBefore, toggleableFlags(this.emu.mem(), this.sym));
+            const gained = this.items.has(ballAt.itemId) - bagBefore;
+            const rightBit = ballAt.globalId !== null && flips.length === 1 && flips[0] === ballAt.globalId;
+            if (gained > 0 && (rightBit || (ballAt.globalId === null && flips.length === 1)))
+              pickup = ` | PICKED UP ${ballAt.name} (bag +${gained}, object flag bit ${flips[0]} set)`;
+            else if (gained > 0)
+              pickup = ` | PICKED UP ${ballAt.name} (bag +${gained}; flag region flipped ${flips.length} bits - unusual, noting it)`;
+            else
+              pickup = ` | pickup NOT confirmed (bag unchanged - bag full, or the interaction missed)`;
+          }
+          return `interact -> ${d.stoppedAt}; text: ${d.lines.slice(-4).join(" / ").slice(0, 200)}${pickup}`;
         }
         case "talk": {   // advance whatever dialog is up
           const d = await this.dlg.advance(80);
