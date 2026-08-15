@@ -30,8 +30,16 @@ const get = async (path: string) => fetch(`http://127.0.0.1:${PORT}${path}`);
   const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");
   const names = new GameNames(new Rom("/home/lumen/pokemon/roms/pokeblue.gb"), sym);
   s.names = () => ({ maps: names.maps, mons: names.mons, badges: BADGE_NAMES, statusBits: STATUS_BITS });
+  // wq#612: tokens field on the same progress() closure, exercising both the
+  // populated-window and the empty-window ("--" on the tile) shapes at once.
   s.progress = () => ({ storyScore: 9, storyMax: 25, objective: "cross MT MOON", milestone: null,
-    rates: { turnsPerH: 41, brainPerH: 22, at: null }, stuck: { active: false, reasons: [] } });
+    rates: { turnsPerH: 41, brainPerH: 22, at: null }, stuck: { active: false, reasons: [] },
+    tokens: {
+      perCall: { avgPrompt: 1500, avgCompletion: 250, window: 2 },
+      perTurn: null,
+      perModel: { x: { avgPrompt: 1500, avgCompletion: 250, calls: 2 } },
+      campaign: { promptTotal: 3000, completionTotal: 500, calls: 2, turns: 5 },
+    } });
 
   const n = await (await get("/names.json")).json();
   ok("names.json map 59 is named", n.maps["59"] === "Mt Moon 1F", JSON.stringify(n.maps["59"]));
@@ -40,6 +48,9 @@ const get = async (path: string) => fetch(`http://127.0.0.1:${PORT}${path}`);
 
   const p = await (await get("/progress.json")).json();
   ok("progress.json round-trips", p.storyScore === 9 && p.objective === "cross MT MOON");
+  ok("progress.json tokens field round-trips (populated + empty windows)",
+    p.tokens && p.tokens.perCall.avgPrompt === 1500 && p.tokens.perTurn === null && p.tokens.campaign.calls === 2,
+    JSON.stringify(p.tokens));
 
   // Geometry beacon: record then read back.
   await get("/viewport?w=1368&h=912&dpr=2&gw=833&gh=750&sw=314");
@@ -48,7 +59,7 @@ const get = async (path: string) => fetch(`http://127.0.0.1:${PORT}${path}`);
     v && v.w === 1368 && v.h === 912 && v.gameW === 833 && v.statsW === 314, JSON.stringify(v));
 
   const html = await (await get("/")).text();
-  for (const id of ["s-map", "s-badges", "s-dex", "s-money", "s-time", "s-party", "s-story", "s-pace", "s-ms", "s-goal", "stuck"])
+  for (const id of ["s-map", "s-badges", "s-dex", "s-money", "s-time", "s-party", "s-story", "s-pace", "s-tok", "s-ms", "s-goal", "stuck"])
     ok(`page has #${id}`, html.includes(`id="${id}"`));
   ok("page pins the game frame against flex shrink", html.includes("#game { flex:none;"));
   ok("page never hardcodes a map name", !html.includes("Mt Moon"));

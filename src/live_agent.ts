@@ -189,6 +189,7 @@ stream.progress = () => {
     loop: loop ? { turns: loop.turns, spanX: loop.spanX, spanY: loop.spanY, map: loop.map } : null,
     loopRule: { window: LOOP_WINDOW, span: LOOP_SPAN },
     sentinel: alerts,
+    tokens: metrics.tokenSnapshot(),
     at: new Date().toISOString(),
   };
 };

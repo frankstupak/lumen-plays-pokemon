@@ -11,6 +11,7 @@
 import { execFile } from "child_process";
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "fs";
 import { dirname } from "path";
+import { TokenStats } from "./metrics";
 
 export interface Milestone {
   flag: string;         // raw STORY_FLAGS name, e.g. EVENT_BEAT_BROCK
@@ -28,6 +29,7 @@ export interface TrainerProgress {
   stuck: { active: boolean; reasons: string[] };
   loop: { turns: number; spanX: number; spanY: number; map: number } | null;
   sentinel: { key: string; agoSec: number }[];
+  tokens: TokenStats;
   at: string;
 }
 

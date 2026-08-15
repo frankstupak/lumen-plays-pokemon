@@ -61,6 +61,7 @@ body { background:#0d1117; color:#c9d1d9; font-family:'SF Mono',Menlo,monospace;
 <h3>PROGRESS</h3>
 <div class="row"><span class="lab">STORY</span><span class="val" id="s-story">--</span></div>
 <div class="row"><span class="lab">PACE</span><span class="val" id="s-pace">--</span></div>
+<div class="row"><span class="lab">TOKENS</span><span class="val" id="s-tok">--</span></div>
 <div class="row"><span class="lab">MILESTONE</span><span class="val" id="s-ms">--</span></div>
 <div class="sub" id="s-msago">&nbsp;</div>
 <div class="lab" style="margin-top:8px">OBJECTIVE</div>
@@ -227,6 +228,13 @@ async function pollProgress() {
     el("s-story").textContent = p.storyScore != null ? (p.storyScore + "/" + p.storyMax) : DASH;
     el("s-pace").textContent = (p.rates && p.rates.turnsPerH != null)
       ? (Math.round(p.rates.turnsPerH) + " t/h · " + Math.round(p.rates.brainPerH) + " brain/h") : DASH;
+    if (p.tokens) {
+      const t = p.tokens;
+      const perTurn = t.perTurn ? (Math.round(t.perTurn.avg) + "/turn(" + t.perTurn.window + "t)") : DASH;
+      const perCall = t.perCall ? (Math.round(t.perCall.avgPrompt + t.perCall.avgCompletion) + "/call") : DASH;
+      const totalM = ((t.campaign.promptTotal + t.campaign.completionTotal) / 1e6).toFixed(2) + "M total";
+      el("s-tok").textContent = perTurn + " · " + perCall + " · " + totalM;
+    } else { el("s-tok").textContent = DASH; }
     if (p.milestone) {
       el("s-ms").textContent = p.milestone.label;
       el("s-msago").textContent = (p.milestone.seeded ? "first seen " : "reached ") + agoText(p.milestone.firstSeen);

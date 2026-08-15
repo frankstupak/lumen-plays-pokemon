@@ -83,5 +83,48 @@ if (existsSync(f)) {
   chk("derived catchRate", j.derived.catchRate === 0.5, `cr=${j.derived.catchRate}`);
   chk("derived reason=badge1", j.derived.reason === "badge1", j.derived.reason);
 }
+// wq#612: tok/turn + tok/call windows, off the SAME fixture above. Both
+// tokens-bearing think_chunks (turn 1, turn 5) land before the first
+// turn_summary, so that turn closes with total=3500 and the second
+// turn_summary closes a turn with ZERO think_chunks in between — the
+// divide-by-zero case the ticket calls out, proven for free by the existing
+// fixture rather than a bespoke one.
+const tok = m.tokenSnapshot();
+chk("tok perCall avg (prompt/completion split)",
+  tok.perCall !== null && tok.perCall.avgPrompt === 1500 && tok.perCall.avgCompletion === 250 && tok.perCall.window === 2,
+  JSON.stringify(tok.perCall));
+chk("tok perTurn avg, zero-think_chunk turn does not divide-by-zero",
+  tok.perTurn !== null && tok.perTurn.avg === 1750 && tok.perTurn.window === 2,
+  JSON.stringify(tok.perTurn));
+chk("tok perModel split",
+  !!tok.perModel["x"] && tok.perModel["x"].avgPrompt === 1500 && tok.perModel["x"].avgCompletion === 250 && tok.perModel["x"].calls === 2,
+  JSON.stringify(tok.perModel));
+chk("tok campaign totals match lifetime counters",
+  tok.campaign.promptTotal === 3000 && tok.campaign.completionTotal === 500 && tok.campaign.calls === 2,
+  JSON.stringify(tok.campaign));
+
+// Fresh instance, zero events: windows must be null (not NaN, not a throw)
+// before anything has landed.
+const freshDir = mkdtempSync(`${tmpdir()}/metrics-`);
+const freshM = new Metrics(new EventBus(freshDir, "unit2"), "unit2", freshDir);
+const freshTok = freshM.tokenSnapshot();
+chk("tok empty state returns null windows, no divide-by-zero",
+  freshTok.perCall === null && freshTok.perTurn === null, JSON.stringify(freshTok));
+
+// Window truncation: 55 calls/turns in, only the last 50 should be averaged.
+const winDir = mkdtempSync(`${tmpdir()}/metrics-`);
+const winBus = new EventBus(winDir, "unit3");
+const winM = new Metrics(winBus, "unit3", winDir);
+for (let i = 1; i <= 55; i++) {
+  winBus.emit("think_chunk", { tokens: { prompt: i, completion: 0, model: "w" } } as any);
+  winBus.emit("turn_summary", { line: `T${i}` } as any);
+}
+const winTok = winM.tokenSnapshot();
+// last 50 prompts are 6..55: avg = (6+55)/2 = 30.5
+chk("tok perCall window caps at 50",
+  winTok.perCall !== null && winTok.perCall.window === 50 && winTok.perCall.avgPrompt === 30.5, JSON.stringify(winTok.perCall));
+chk("tok perTurn window caps at 50",
+  winTok.perTurn !== null && winTok.perTurn.window === 50 && winTok.perTurn.avg === 30.5, JSON.stringify(winTok.perTurn));
+
 console.log(`\n${pass} pass / ${fail} fail`);
 process.exit(fail ? 1 : 0);

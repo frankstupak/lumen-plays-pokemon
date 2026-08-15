@@ -30,6 +30,7 @@ invented name is the failure this ticket exists to prevent.
 | Objective | first `GOAL:` line in the guidance channel (wq#486) | The same text the brain was handed this turn. |
 | Milestone | a `STORY_FLAGS` bit turning on | Never a dialog line and never a brain claim. See "seeded" below. |
 | Pace | `tools/lpp-stats --json` | Reused, not reimplemented — two implementations of one rate is how the tablet ends up contradicting the board. |
+| Tokens (wq#612) | `brain.ts` `think_chunk{tokens}` events, aggregated in `Metrics` | Rolling avg tok/turn and tok/call over the last 50, plus campaign total. See below. |
 | Stuck | in-process loop watch + `lpp-sentinel` state | See below. |
 
 ROM table LENGTHS are derived with `SymbolTable.nextAddr()`, so a different ROM
@@ -60,12 +61,32 @@ Two independent triggers, either of which raises the red banner:
    the sentinel's own one-hour dedupe window. Read-only; the sentinel owns
    that file.
 
+## Token economics (wq#612)
+
+`src/brain.ts` emits a `think_chunk{tokens:{prompt,completion,model}}` event on
+every completed LLM call. `Metrics` (`src/metrics.ts`) — the same observe-only
+listener that already sums lifetime `tokensPrompt`/`tokensCompletion` — also
+keeps:
+
+- a **per-call** rolling window (last 50 tokens-bearing `think_chunk`s):
+  average prompt/completion split.
+- a **per-turn** rolling window (last 50 `turn_summary` boundaries): average
+  of the tokens summed between consecutive boundaries. A turn with zero
+  `think_chunk`s closes as a real `0` entry, not a gap — and an empty window
+  (nothing observed yet) returns `null`, never a divide-by-zero.
+- a **per-model** split, since the escalation profile bills differently from
+  the primary model.
+- **campaign totals**: lifetime prompt/completion tokens and call count.
+
+Exposed on `/progress.json` as `tokens: TokenStats` (`src/metrics.ts`) and
+rendered as the kiosk's TOKENS row: `avg/turn(Nt) · avg/call · total M`.
+
 ## Endpoints
 
 | Path | Cadence | Contents |
 | --- | --- | --- |
 | `/names.json` | once per page load | map, species, badge and status tables (static per ROM) |
-| `/progress.json` | every 10s | story score, objective, milestone, rates, stuck |
+| `/progress.json` | every 10s | story score, objective, milestone, rates, stuck, tokens |
 | `/viewport` | once per page load (write), any time (read) | the kiosk's self-reported geometry |
 
 The RAM-fast fields ride the existing `state_read` event instead of a poll, so
@@ -86,5 +107,9 @@ rather than an arithmetic coincidence that holds only at one viewport size.
 
 - `npx tsx src/probe_names.ts` — 48 checks: name tables, decode, prettifier,
   stuck-detector false-positive guards, milestone seeding.
-- `npx tsx src/probe_panel.ts` — 20 checks: endpoint shapes on a spare port
-  (8899, never the live 8871), including the null-provider boot path.
+- `npx tsx src/probe_panel.ts` — 22 checks: endpoint shapes on a spare port
+  (8899, never the live 8871), including the null-provider boot path and the
+  `tokens` field round-trip.
+- `npx tsx src/probe_metrics.ts` — synthetic `think_chunk`/`turn_summary`
+  stream -> exact tok/turn, tok/call, per-model and campaign figures,
+  including the zero-think_chunk-turn and 55-into-50-window edge cases.
