@@ -134,8 +134,28 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
   const potions = potionCount(emu, sym);
   const balls = ballCount(emu, sym);
   const ready = level >= MISTY_MIN_LEVEL && potions >= MISTY_MIN_POTIONS;
+  // wq#606 deliverable 3: ONE ordered NEXT objective, so finishing a goal
+  // (the 01:41Z ball purchase) never leaves the brain goal-less. The old
+  // heal line only fired at the 25% CRITICAL threshold or around gym visits;
+  // the live party wandered hurt at 52% HP with PP 9 on a core move for two
+  // hours. Heal urgency here is broader: under 60% HP, or any damaging move
+  // low on PP, and healing outranks everything else in the region.
+  const hpFrac = lead && lead.maxHp > 0 ? lead.hp / lead.maxHp : 1;
+  const lowPP = lead ? lead.moves.some((mv, i) =>
+    mv && MOVES[mv] && MOVES[mv].power > 0 && lead.pp[i] <= 5) : false;
+  const needHeal = hpFrac < 0.6 || lowPP;
+  const thenLine = ready
+    ? "enter CERULEAN GYM (map3 building, map65 inside) and fight MISTY."
+    : "ROUTE 24 (map35), NORTH exit of Cerulean: fight the Nugget Bridge trainers" +
+      " for money/XP and walk the grass to catch BELLSPROUT/ODDISH (Misty counter).";
+  const next = needHeal
+    ? `NEXT OBJECTIVE: heal at the CERULEAN POKEMON CENTER (map64, in the city) FIRST` +
+      ` — lead ${lead ? `${lead.hp}/${lead.maxHp}` : "?"}${lowPP ? ", low PP on a damaging move" : ""}.` +
+      ` THEN: ${thenLine}`
+    : `NEXT OBJECTIVE: ${thenLine}`;
   const lines = [
     `CERULEAN STAGE (live: L${level} lead, ${potions} potions, $${s.money}):`,
+    next,
     "HEAL LOOP: heal at the CERULEAN POKEMON CENTER (map64, in the city)",
     "  BEFORE the gym and AFTER EVERY gym loss - it also resets your respawn",
     "  here. Never re-enter the gym at partial HP/PP.",

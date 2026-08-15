@@ -30,6 +30,13 @@ export class MapModel {
   landPairs: TilePair[] = [];
   /** LedgeTiles entries — populated only on the overworld tileset (see build). */
   ledges: LedgeEntry[] = [];
+  /** wq#606: the map header's connection byte (pokered wCurMapConnections,
+   *  d370 = wCurMapHeaderEnd - 1; the byte carries no label in pokeblue.sym).
+   *  Bits per pokered map_data_constants: EAST=1, WEST=2, SOUTH=4, NORTH=8.
+   *  0 means NO adjacent map exists to walk into — an interior, where the
+   *  only exits are door warps. Bit layout verified empirically by
+   *  probe_scope606 §E on maps 3 (0x0F), 15 (0x05), 67 (0x00). */
+  connections = 0;
 
   constructor(private emu: Emulator, private sym: SymbolTable, private rom: Rom) {}
 
@@ -40,6 +47,10 @@ export class MapModel {
     this.height = m[s.addr("wCurMapHeight")];
     this.gw = this.width * 2; this.gh = this.height * 2;
     this.tilesetId = m[s.addr("wCurMapTileset")];
+    // wq#606: wCurMapConnections is the header's last byte and unlabeled in
+    // the .sym — derive it from the labeled end marker rather than a magic
+    // address, so a re-dumped symbol file cannot silently skew it.
+    this.connections = m[s.addr("wCurMapHeaderEnd") - 1];
 
     const ts = s.sym("Tilesets");
     const e = this.rom.bytes(ts.bank, ts.addr + this.tilesetId * 12, 12);

@@ -34,6 +34,8 @@ import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
 import { GameNames } from "./names";
+import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
+import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
 
 const CKPT_KEEP_AUTO = 40;   // rolling window of auto-* checkpoints kept on disk
@@ -71,6 +73,10 @@ export class Agent {
   // OURS: we flee the encounter and re-walk the same target deterministically
   // instead of paying a brain turn per encounter. Per-agent, not persisted.
   transit = new TransitTracker();
+  // wq#606: retry ceiling — verbatim replay of a verify-failing action stops
+  // at CEILING. Per-agent on purpose: a gameplay continue is a fresh brain
+  // turn and deserves a fresh budget.
+  private ceiling = new ActionCeiling();
   private mapHistory: number[] = [];   // recent map ids for oscillation detection (this run)
   // wq#517: the same list, but surviving restarts and continues. A new Agent
   // is constructed inside live_agent's outer `for (;;)` loop, so the field
@@ -245,12 +251,26 @@ export class Agent {
     return block;
   }
 
-  /** Parse "ACT: tool(args)" and run it. Returns a one-line result summary. */
+  /** Parse "ACT: tool(args)" and run it. Returns a one-line result summary.
+   *  wq#606: wraps dispatchInner with the RETRY CEILING — an action that
+   *  fails its own verify CEILING times consecutively from the same tile is
+   *  refused verbatim (forced stuck_dump + a board-visible event) instead of
+   *  being replayed forever. The 04:00-04:26Z live burn was 12 identical
+   *  failing buy_item calls; the ceiling ends that class at 3. */
   async dispatch(actLine: string): Promise<string> {
     const m = actLine.match(/(\w+)\s*\(([^)]*)\)/);
     if (!m) return "parse_error: no tool call found";
     const tool = m[1].toLowerCase();
-    const args = m[2].split(",").map(a => a.trim().replace(/^["']|["']$/g, ""));
+    let rawArgs = m[2];
+    // wq#606: the generic arg regex stops at the FIRST ")", which truncated any
+    // note containing coordinates — "note(counter at (4,7))" lost everything
+    // from ")" on and the map-scoping could never see a complete token. Notes
+    // are free text: take everything to the LAST ")" for them.
+    if (tool === "note") {
+      const g = actLine.match(/\w+\s*\(([\s\S]*)\)/);
+      if (g) rawArgs = g[1];
+    }
+    const args = rawArgs.split(",").map(a => a.trim().replace(/^["']|["']$/g, ""));
     this.bus.emit("tool_call", { tool, args, src: "brain" });
 
     // S1 trainer-battle gate: movement is meaningless in any battle and the
@@ -261,15 +281,51 @@ export class Agent {
         : `${tool}: refused - in a wild battle; fight it with battle_move`;
     }
 
+    const cpos = this.nav.pos();
+    const argsKey = args.join(",");
+    const pre = this.ceiling.check(tool, argsKey, cpos);
+    if (pre) return pre;
+    const result = await this.dispatchInner(tool, args, rawArgs);
+    if (this.ceiling.record(tool, argsKey, cpos, result)) {
+      // one board-visible line: lpp-sentinel forwards retry_ceiling events
+      this.bus.emit("tool_call", { tool: "retry_ceiling",
+        line: `${tool}(${argsKey}) failed its verify ${CEILING}x at map${cpos.map} ` +
+              `(${cpos.x},${cpos.y}) — verbatim retries stopped`, src: "harness" });
+      if (!this.bat.active()) {
+        try {
+          this.map.build();
+          this.bus.emit("tool_call", { tool: "stuck_dump", pos: cpos,
+            sprites: this.map.sprites, grid: this.map.ascii(cpos.x, cpos.y) });
+        } catch { /* a geometry failure must not kill the turn */ }
+      }
+      return result + `\n! RETRY CEILING (${CEILING}x): this exact action has now failed its own ` +
+        `verify ${CEILING} times from this tile and will be REFUSED verbatim. Do NOT repeat it. ` +
+        `Reconsider the goal — move at least one tile, use a different tool, or pick a new target.`;
+    }
+    return result;
+  }
+
+  private async dispatchInner(tool: string, args: string[], rawArgs: string): Promise<string> {
     try {
       switch (tool) {
         case "goto": {
-          const tx = Number(args[0]), ty = Number(args[1]);
+          // wq#606: a goto target is a (map,x,y) tuple. Bare (x,y) means the
+          // CURRENT map (backcompat); a target carrying a different map id —
+          // whether written goto(67,4,7), goto(map67 4,7), or a notepad
+          // annotation replayed verbatim — is refused with both maps named,
+          // never silently pathed to the same-numbered tile on the wrong map.
+          const st0 = this.reader.read();
+          const tgt = parseGotoTarget(rawArgs);
+          if (!tgt) return "goto: bad args — use goto(x,y) for a tile on YOUR CURRENT map, " +
+            "or goto(map,x,y) to name the map explicitly";
+          const xref = crossMapRefusal(tgt, st0.map, id => this.mapLabel(id));
+          if (xref) return `goto: ${xref}`;
+          const tx = tgt.x, ty = tgt.y;
           // wq#601: past the cave, the Mt Moon re-entry warp tile is refused
           // here, not in prose. reader.read() is fresh RAM; map15 is ranked on
           // every tile so corridorPhase needs no prev there.
           {
-            const st = this.reader.read();
+            const st = st0;
             if (st.map === 15) {
               this.map.build();
               const w = this.map.warps.find(w => w.x === tx && w.y === ty);
@@ -341,7 +397,21 @@ export class Agent {
           return `enter_warp -> ${r} now ${JSON.stringify(this.nav.pos())}${osc}`;
         }
         case "leave_edge": {
-          const r = await this.nav.leaveMapEdge(args[0].toUpperCase() as any);
+          const dir = String(args[0] ?? "").toUpperCase();
+          if (!["N", "S", "E", "W"].includes(dir)) return "leave_edge: bad direction (N|S|E|W)";
+          // wq#606: interiors have NO edge connections (header byte = 0), so
+          // walking an edge there is 14 steps into a wall — refuse with the
+          // door warps listed instead. Decided from the connection byte, never
+          // a hardcoded map list. Outdoor maps refuse only directions whose
+          // connection bit is unset.
+          {
+            const st = this.reader.read();
+            this.map.build();
+            const eref = edgeRefusal(this.map.connections, dir as any, this.map.warps,
+                                     st.map, this.mapLabel(st.map));
+            if (eref) return `leave_edge: ${eref}`;
+          }
+          const r = await this.nav.leaveMapEdge(dir as any);
           if (r === "battle") return "leave_edge interrupted by a wild battle - fight it with battle_move";
           if (r === "dialog") return "leave_edge blocked: a dialog or sign text is open - use talk() to clear it first";
           return `leave_edge -> ${r} now ${JSON.stringify(this.nav.pos())}`;
@@ -407,7 +477,11 @@ export class Agent {
           return await this.heal.atCenter();
         }
         case "note": {
-          return this.pad.note(args.join(","));
+          // wq#606: mechanically map-scope bare (x,y) tokens at WRITE time —
+          // "(4,7)" written inside the mart is stored as "(4,7 on map67)", so
+          // a note replayed on another map either reads correctly or, pasted
+          // verbatim into goto(), carries the map id the refusal needs.
+          return this.pad.note(scopeNoteCoords(args.join(","), this.reader.read().map));
         }
         default: return `unknown tool: ${tool}`;
       }

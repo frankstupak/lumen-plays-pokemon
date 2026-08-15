@@ -293,6 +293,17 @@ def check_violations(evs, window):
     return [("rule_violation", f"RULE VIOLATIONS: {len(v)} borrow-guard rejection(s) in the recent window "
                                f"— last: {str(v[-1].get('reason'))[:70]}")]
 
+def check_retry_ceiling(evs, window):
+    """wq#606: the harness stopped a verify-failing action from being retried
+    verbatim (3x same action+position). Forward the harness's own line to the
+    board — this is the ticket's 'one board-visible line'; emit() dedupes."""
+    c = [e for e in evs[-(window * 6):]
+         if e.get("kind") == "tool_call" and e.get("tool") == "retry_ceiling"]
+    if not c:
+        return []
+    return [("retry_ceiling", f"RETRY CEILING: {str(c[-1].get('line', '(no detail)'))[:160]}"
+                              + (f" ({len(c)} trips in window)" if len(c) > 1 else ""))]
+
 def check_turnrate():
     """turns/h below 30% of the 24h mean, from run-summary files."""
     now = time.time()
@@ -458,6 +469,7 @@ def main():
     alerts += check_notepad()
     alerts += check_stall(evs, args.window)
     alerts += check_violations(evs, args.window)
+    alerts += check_retry_ceiling(evs, args.window)
     alerts += check_turnrate()
     if not args.no_stall_checks:
         alerts += check_no_progress(evs, args.min_static_turns, args.stale_after)
