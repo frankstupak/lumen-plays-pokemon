@@ -157,6 +157,19 @@ export interface Progress {
 // "further" checkpoint that is one encounter away from a loop of deaths.
 export const VIABLE_HP_PCT = 0.5;
 
+// wq#628: VIABLE_HP_PCT is a display/quality threshold, not a story-blocking
+// one any more. MEASURED CASE: a 2026-08-15 06:07Z restart had a story=9,
+// hpPct=0.494 candidate (post-rival win) on disk alongside a story=8,
+// hpPct=1 one -- 0.6% of one bar of HP outvoted a whole story flag, and the
+// campaign silently re-lost the rival win + $595 on the deploy. A 1-HP
+// difference should never outweigh permanent progress. CRITICAL_HP_PCT is
+// the line that still matters: below it (or with no usable move), a state
+// really is one encounter from a whiteout loop and story cannot buy that
+// back, so it still sorts after any healthier candidate regardless of story.
+export const CRITICAL_HP_PCT = 0.25;
+export const criticalCondition = (p: { hpPct: number; ppOk: boolean }): boolean =>
+  p.hpPct < CRITICAL_HP_PCT || !p.ppOk;
+
 export function readProgress(file: string, sym: SymbolTable, romPath: string): Progress {
   const mtime = (() => { try { return statSync(file).mtimeMs; } catch { return 0; } })();
   const sc = file.replace(/\.state\.gz$/, ".json");
@@ -271,7 +284,17 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
     } catch {}
   }
   const scored = cands.map(f => ({ f, ...readProgress(f, sym, romPath) }));
-  // wq#471 ordering: viable -> badges -> storyScore -> STORY_ORDER rank
+  // wq#628: the primary gate is CRITICAL health, not the (stricter) VIABLE_HP_PCT
+  // display threshold. A hard `viable` gate here made a 1-HP difference (0.494
+  // vs the 0.5 threshold) outvote a whole story flag and silently traded away
+  // real progress. Below CRITICAL_HP_PCT (or with no usable move) a state really
+  // is one encounter from a whiteout loop, so it still sorts after every
+  // healthier candidate regardless of story — story cannot buy back a dead
+  // party. Above that line, story leads exactly as the comments below describe.
+  // `viable` itself (VIABLE_HP_PCT) is UNCHANGED and still drives the repeat-guard
+  // escape hatch below and the boot log — this only touches primary ordering.
+  //
+  // wq#471 ordering: not-critical -> badges -> storyScore -> STORY_ORDER rank
   // (tiebreak) -> raw events -> mtime.
   // storyScore is a popcount over STORY-CRITICAL flags only (src/state.ts
   // STORY_FLAGS), each permanent once set, so it is monotonic and immune to
@@ -303,7 +326,7 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
   // ladder tile (the wq#579 boot shape), without ever outvoting real
   // progress signals.
   scored.sort((a, b) =>
-    (Number(b.viable) - Number(a.viable)) || (b.badges - a.badges) ||
+    (Number(criticalCondition(a)) - Number(criticalCondition(b))) || (b.badges - a.badges) ||
     ((a.story >= 0 && b.story >= 0) ? (b.story - a.story) : 0) ||
     (b.rank - a.rank) || (b.fine - a.fine) ||
     (b.events - a.events) ||
@@ -312,6 +335,21 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
   if (!winner) return cands[0];
 
   const short = (p: string) => p.split("/").pop();
+  // wq#628 deliverable 2: a story trade must never be silent. Fires whenever
+  // the FINAL winner (after the repeat guard below, since that can also move
+  // the pick) carries less story than something on disk — not just at
+  // selection time, so a repeat-guard demotion into a lower-story state is
+  // caught too. `storyCheck` runs again after the repeat guard resolves.
+  const storyCheck = () => {
+    if (winner.story < 0) return;
+    const better = scored.filter(c => c.f !== winner.f && c.story > winner.story);
+    if (!better.length) return;
+    const top = better.reduce((m, c) => c.story > m.story ? c : m);
+    log(`resume: WARNING — picked ${short(winner.f)} at story=${winner.story} while ` +
+      `${short(top.f)} carries story=${top.story} on disk (hpPct=${top.hpPct}, ppOk=${top.ppOk}); ` +
+      `story is being traded away for ${criticalCondition(top) ? "a critical-health rejection (expected)" :
+        "a reason OTHER than critical health -- investigate"}.`);
+  };
   const hist = readHistory(historyFile);
   const recent = hist.picks.slice(-RESUME_REPEAT_LIMIT).map(p => p.file);
   const repeated = recent.length >= RESUME_REPEAT_LIMIT && recent.every(f => f === winner.f);
@@ -329,6 +367,7 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
       log(`resume: repeat guard saw ${RESUME_REPEAT_LIMIT} identical picks but no newer alternative — keeping ${short(winner.f)}`);
     }
   }
+  storyCheck();
   log(`resume: ${short(winner.f)} — ${rankLabel(winner.map, winner.x, winner.y)} (map ${winner.map} @ ${winner.x},${winner.y}) ` +
     `rank=${winner.rank} fine=${winner.fine} onWarp=${winner.onWarp} story=${winner.story} badges=${winner.badges} viable=${winner.viable}, ${scored.length} candidates`);
   hist.picks.push({ file: winner.f, at: now().toISOString() });

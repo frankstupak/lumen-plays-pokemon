@@ -26,6 +26,7 @@ PROBES=(
   probe_pocket534
   probe_route564
   probe_resume586
+  probe_resume628
   probe_reach538
   probe_transit
   probe_steptrace542

@@ -15,7 +15,7 @@ import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel } from "./map";
 import { StateReader } from "./state";
-import { pickResume, readProgress, progressRank, rankLabel, SPLIT_MAPS, POCKET_MAPS, STORY_ORDER, VIABLE_HP_PCT } from "./resume";
+import { pickResume, readProgress, progressRank, rankLabel, SPLIT_MAPS, POCKET_MAPS, STORY_ORDER, VIABLE_HP_PCT, criticalCondition } from "./resume";
 
 const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
@@ -165,7 +165,11 @@ console.log("\n=== C. real checkpoint set ===");
   chk("does NOT resume the pre-cave Route 4 west save", winner !== WEST_STATE, winner.split("/").pop());
   chk("resumes at or beyond Mt Moon 1F", p.rank >= progressRank(59),
     `rank ${p.rank} >= ${progressRank(59)} — the one-sentence acceptance from the ticket`);
-  chk("winner is viable", p.viable, `hp=${p.hpPct} ppOk=${p.ppOk}`);
+  // wq#628: the primary gate is CRITICAL health (one bar of HP no longer
+  // outvotes a whole story flag), not the stricter VIABLE_HP_PCT display
+  // threshold — a winner can legitimately read viable=false (e.g. hp=0.494)
+  // while still being the right pick. "not critical" is the real invariant.
+  chk("winner is not in critical condition", !criticalCondition(p), `hp=${p.hpPct} ppOk=${p.ppOk}`);
   // and show what the OLD list would have done with the same files, for contrast
   const OLD = [38, 37, 0, 40, 12, 1, 42, 13, 51, 2, 56, 58, 54, 14, 68, 59, 60, 61, 15, 3];
   const oldRank = (m: number) => OLD.indexOf(m);
