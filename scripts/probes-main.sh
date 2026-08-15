@@ -20,6 +20,7 @@ PROBES=(
   probe_notepad
   probe_notepad584
   probe_claims
+  probe_arrival642
   probe_economy
   probe_cerulean
   probe_resume518

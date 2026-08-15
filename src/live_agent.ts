@@ -508,6 +508,21 @@ function ceruleanApproachPack(map: number): string {
                 `EVENT_GOT_HELIX_FOSSIL=${fmt(helix)}.`,
     };
   };
+  // wq#642: RAM-verifies "heading to X (mapN)" pins the same way wq#519/531
+  // verify possession pins above. Current map is always readable, so this
+  // always returns a verdict (never null/cannot-check). Exact map match
+  // always counts as arrived; Cerulean's own interiors (CERULEAN_TOWN_MAPS,
+  // wq#638) also count when the target is Cerulean itself (map3) — those
+  // buildings are off the critical path (phase.ts ranks them -1) but
+  // arriving at any of them IS arriving at Cerulean. This is the exact
+  // evidence: turn 1 of the wq#638 deploy showed the brain still reading a
+  // "heading to Cerulean City (map3)" pin while standing at map3 (13,16).
+  pad.arrivalChecker = (c) => {
+    const st = reader.read();
+    const arrived = st.map === c.targetMap ||
+      (c.targetMap === 3 && CERULEAN_TOWN_MAPS.includes(st.map));
+    return { arrived, evidence: `current position is map${st.map} (${st.x},${st.y})` };
+  };
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
