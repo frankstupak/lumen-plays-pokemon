@@ -34,6 +34,7 @@ PROBES=(
   probe_scope606
   probe_menu620
   probe_items607
+  probe_cerulean638
 )
 
 failed=()
