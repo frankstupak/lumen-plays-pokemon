@@ -101,6 +101,38 @@ function normaliseLine(s: string): string {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+/** wq#642. A pin that asserts the agent is still EN ROUTE to a named map —
+ *  "heading to Cerulean City (map3)", "... via EAST edge to Cerulean City
+ *  (map3)" — the class of note the live loop kept writing before arrival and
+ *  never retired after: wq#638 fixed the HARNESS's CORRIDOR guidance
+ *  (regenerated every turn, always current), but the BRAIN's own pinned
+ *  notes persist across restarts and had no verifier at all for this claim
+ *  shape, unlike possession claims (wq#519/531 above). Deliberately
+ *  text-only and scoped to pins that name an explicit map id — a "heading
+ *  to X" pin with no "(mapN)" cannot be RAM-verified without inventing an
+ *  interpretation, so it is left untouched, same principle as an unrecognised
+ *  possession subject. */
+export interface ArrivalClaim { raw: string; targetMap: number; targetName: string }
+
+/** Verdict on an arrival claim. `null` means CANNOT CHECK (same contract as
+ *  ClaimCheck) — kept untouched rather than guessed at. */
+export type ArrivalCheck = (c: ArrivalClaim) => { arrived: boolean; evidence: string } | null;
+
+const ARRIVAL_RE = /\bto\s+([A-Za-z][A-Za-z0-9' -]*?)\s*\(\s*map\s*(\d+)\s*\)/i;
+
+/** Extract an arrival claim, or null if the line does not name a "heading to
+ *  <place> (mapN)" target. Exported so the probe can pin the exact strings
+ *  the live agent wrote. */
+export function parseArrivalClaim(text: string): ArrivalClaim | null {
+  const t = String(text ?? "").trim();
+  if (!t) return null;
+  const m = t.match(ARRIVAL_RE);
+  if (!m) return null;
+  const targetMap = Number(m[2]);
+  if (!Number.isFinite(targetMap)) return null;
+  return { raw: t, targetMap, targetName: m[1].trim() };
+}
+
 export class Notepad {
   pinned: string[] = [];
   summary = "";
@@ -113,6 +145,9 @@ export class Notepad {
    *  first render, so the whole feature lives inside notepad.ts and no caller
    *  has to remember to invoke it (wq#514 will be editing live_agent.ts). */
   claimChecker?: ClaimCheck;
+  /** wq#642 hook, same contract/wiring convention as `claimChecker` above:
+   *  `pad.arrivalChecker = fn` after bind(). */
+  arrivalChecker?: ArrivalCheck;
   /** Set by verifyClaims(); surfaced so a caller can emit an event/metric. */
   lastVerification: { checked: number; dropped: string[]; kept: number } | null = null;
   private verified = false;
@@ -319,29 +354,52 @@ export class Notepad {
       } else fresh.push(p);
     }
     this.pinned = fresh;
-    if (!this.claimChecker) {
+    if (!this.claimChecker && !this.arrivalChecker) {
       const collapsed = this.dedupeCorrections();
       if (result.dropped.length || collapsed) { this.compact(); this.save(); }
       this.lastVerification = result; return result;
     }
     const survivors: string[] = [];
     for (const p of this.pinned) {
-      const claim = parsePossessionClaim(p);
-      if (!claim) { survivors.push(p); continue; }
-      result.checked++;
-      let verdict: { holds: boolean; evidence: string } | null = null;
-      try { verdict = this.claimChecker(claim); }
-      catch { verdict = null; }               // a broken checker must not drop pins
-      const asserted = !claim.negated;        // what the pin says about possession
-      if (verdict && verdict.holds !== asserted) {
-        result.dropped.push(p);
-        this.pushCorrection(claim.negated
-          ? `CORRECTION (state check): the pinned claim "${p}" is FALSE — you DO possess it. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`
-          : `CORRECTION (state check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
-      } else {
-        survivors.push(p);
-        result.kept++;
+      const claim = this.claimChecker ? parsePossessionClaim(p) : null;
+      if (claim) {
+        result.checked++;
+        let verdict: { holds: boolean; evidence: string } | null = null;
+        try { verdict = this.claimChecker!(claim); }
+        catch { verdict = null; }               // a broken checker must not drop pins
+        const asserted = !claim.negated;        // what the pin says about possession
+        if (verdict && verdict.holds !== asserted) {
+          result.dropped.push(p);
+          this.pushCorrection(claim.negated
+            ? `CORRECTION (state check): the pinned claim "${p}" is FALSE — you DO possess it. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`
+            : `CORRECTION (state check): the pinned claim "${p}" is FALSE. ${verdict.evidence} The pin has been removed. Do not re-pin it; verify with a state read before asserting possession again.`);
+        } else {
+          survivors.push(p);
+          result.kept++;
+        }
+        continue;
       }
+      // wq#642: a pin cannot assert BOTH possession and arrival (the patterns
+      // don't overlap in practice), so this only ever fires when possession
+      // didn't match.
+      const arrival = this.arrivalChecker ? parseArrivalClaim(p) : null;
+      if (arrival) {
+        result.checked++;
+        let verdict: { arrived: boolean; evidence: string } | null = null;
+        try { verdict = this.arrivalChecker!(arrival); }
+        catch { verdict = null; }
+        if (verdict && verdict.arrived) {
+          result.dropped.push(p);
+          this.pushCorrection(`RETIRED stale pin "${p}": you have already reached ` +
+            `${arrival.targetName} (map${arrival.targetMap}). ${verdict.evidence} ` +
+            `Navigate from your CURRENT position — this pin describes a place you left behind.`);
+        } else {
+          survivors.push(p);
+          result.kept++;
+        }
+        continue;
+      }
+      survivors.push(p);
     }
     this.pinned = survivors;
     const collapsed = this.dedupeCorrections();
