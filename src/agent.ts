@@ -37,6 +37,7 @@ import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
 import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits } from "./objects";  // wq#607
+import { nearbyHiddenItems, hiddenItemLine, hiddenItemFlags } from "./hidden_items";  // wq#622
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
 import { VisionValve, consultVision } from "./vision";  // wq#621
@@ -257,6 +258,16 @@ export class Agent {
         const bline = itemBallLine(balls, bsteps);
         if (bline) block += `\n${bline}`;
       }
+    }
+    // wq#622: hidden-item perception — no pixels can ever see this class (no
+    // sprite exists at all), so this is the ONLY channel. Line renders ONLY
+    // when an undiscovered one is on/adjacent to the player (no dead prose,
+    // same wq#488 rule as the item-ball line above). NO auto-detour: pure
+    // perception, mirrors the item-ball nudge, never a nav goal.
+    {
+      const hidden = nearbyHiddenItems(this.rom, this.sym, this.emu.mem(), st.map, p.x, p.y);
+      const hline = hiddenItemLine(hidden);
+      if (hline) block += `\n${hline}`;
     }
 
     // wq#528: the ONE income/XP goal the harness can actually complete, or
@@ -483,7 +494,22 @@ export class Agent {
             .find(o => o.x === ix && o.y === iy);
           const flagsBefore = ballAt ? toggleableFlags(this.emu.mem(), this.sym) : [];
           const bagBefore = ballAt ? this.items.has(ballAt.itemId) : 0;
+          // wq#622: the same ground-truth diff for a hidden item, checked
+          // BEFORE the `!d` early return below — a hidden item has no
+          // sprite/dialog, so interactAt() may legitimately return null even
+          // on a real pickup, and this must still get to see it.
+          const stMap = this.reader.read().map;
+          const hiddenAt = nearbyHiddenItems(this.rom, this.sym, this.emu.mem(), stMap, ix, iy)
+            .find(h => h.x === ix && h.y === iy);
+          const hiddenFlagsBefore = hiddenAt ? hiddenItemFlags(this.emu.mem(), this.sym) : [];
           const d = await this.act.interactAt(ix, iy);
+          if (hiddenAt) {
+            const hflips = flippedBits(hiddenFlagsBefore, hiddenItemFlags(this.emu.mem(), this.sym));
+            if (hflips.length)
+              return `interact -> ${d?.stoppedAt ?? "no_response"}; ` +
+                `text: ${(d?.lines ?? []).slice(-4).join(" / ").slice(0, 200)} | ` +
+                `HIDDEN ITEM FOUND at (${hiddenAt.x},${hiddenAt.y}) (flag bit ${hflips.join(",")} set)`;
+          }
           if (!d) return "interact -> no_response";
           let pickup = "";
           if (ballAt) {
@@ -518,9 +544,28 @@ export class Agent {
         case "press": {
           const key = KEYS[args[0].toUpperCase()];
           if (key === undefined) return "press: unknown button";
+          // wq#622: a hidden item has no sprite to watch despawn, so pickup is
+          // confirmed the same way as wq#607's item balls — a before/after
+          // flag-region diff, ground truth from the engine itself. Only
+          // computed when A is pressed near an undiscovered hidden item
+          // (cheap no-op everywhere else — a 54-entry filter, skipped
+          // entirely for every other button).
+          const isA = args[0].toUpperCase() === "A";
+          const p0 = this.nav.pos();
+          const candidates = isA
+            ? nearbyHiddenItems(this.rom, this.sym, this.emu.mem(), p0.map, p0.x, p0.y) : [];
+          const flagsBefore = candidates.length ? hiddenItemFlags(this.emu.mem(), this.sym) : [];
           await this.sync.settle();
           await this.emu.tapAsync(key, 8, 24);
           await this.sync.settle(300);
+          if (candidates.length) {
+            const flips = flippedBits(flagsBefore, hiddenItemFlags(this.emu.mem(), this.sym));
+            if (flips.length) {
+              const got = candidates.find(c => flips.includes(c.idx));
+              return `press(a) done | HIDDEN ITEM FOUND at ${got ? `(${got.x},${got.y})` : "?"} ` +
+                `(flag bit ${flips.join(",")} set)`;
+            }
+          }
           return `press(${args[0]}) done`;
         }
         case "flee": {

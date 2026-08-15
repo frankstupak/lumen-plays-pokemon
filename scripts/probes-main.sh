@@ -38,6 +38,7 @@ PROBES=(
   probe_items607
   probe_cerulean638
   probe_vision621
+  probe_hidden622
 )
 
 failed=()
