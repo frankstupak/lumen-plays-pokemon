@@ -31,6 +31,7 @@ PROBES=(
   probe_steptrace542
   probe_goto583
   probe_warp579
+  probe_scope606
 )
 
 failed=()
