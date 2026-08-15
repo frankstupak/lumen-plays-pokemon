@@ -4,6 +4,7 @@
 
 import { Emulator } from "./emulator";
 import { SymbolTable } from "./symbols";
+import { GEN1_CHAR } from "./names";
 
 export const W = 20, H = 18;
 
@@ -16,23 +17,15 @@ export const TILE = {
   BOX_V: 0x7c, BOX_BL: 0x7d, BOX_BR: 0x7f,
 };
 
+/** wq#620: one character map, one home — the ROM-verified GEN1_CHAR in
+ *  names.ts (font tile ID == character code, so tilemap and ROM strings share
+ *  the encoding). This function previously carried its own hand-typed copy,
+ *  and the copies had drifted (0xE1/0xE2 as "P"/"M", 0xBA as bare "e", no
+ *  0xBD): the mart list rendered "POKe BALL" from one table while ItemNames
+ *  decoded "POKé BALL" from the other. Cursor/prompt stay control tiles. */
 function ch(t: number): string {
-  if (t === TILE.SPACE) return " ";
-  if (t >= 0x80 && t <= 0x99) return String.fromCharCode(65 + (t - 0x80));   // A-Z
-  if (t >= 0xa0 && t <= 0xb9) return String.fromCharCode(97 + (t - 0xa0));   // a-z
-  if (t >= 0xf6 && t <= 0xff) return String.fromCharCode(48 + (t - 0xf6));   // 0-9
-  switch (t) {
-    case 0xba: return "e";
-    case 0x9a: return "("; case 0x9b: return ")"; case 0x9c: return ":";
-    case 0x9d: return ";"; case 0x9e: return "["; case 0x9f: return "]";
-    case 0xe0: return "'"; case 0xe1: return "P"; case 0xe2: return "M";
-    case 0xe3: return "-"; case 0xe6: return "?"; case 0xe7: return "!";
-    case 0xe8: return "."; case 0xef: return "M"; case 0xf5: return "F";
-    case 0xf1: return "x"; case 0xf2: return "."; case 0xf3: return "/";
-    case 0xf4: return ","; case 0xe4: return "'"; case 0xe5: return "'";
-    case 0xed: case 0xee: return "\u0000";  // cursor/prompt: control, not text
-    default: return "\u0000";  // not a text tile
-  }
+  if (t === TILE.CURSOR || t === TILE.PROMPT) return "\u0000";  // control, not text
+  return GEN1_CHAR[t] ?? "\u0000";  // not a text tile
 }
 
 export class Screen {

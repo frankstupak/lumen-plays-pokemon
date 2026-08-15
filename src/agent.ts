@@ -35,6 +35,7 @@ import { assess as assessOscillation, historyFile as oscHistoryFile,
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
 import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
+import { renderMenuLine } from "./menu";  // wq#620
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
 
@@ -247,6 +248,15 @@ export class Agent {
 
     const text = this.scr.text();
     if (text.trim()) block += `\nSCREEN TEXT:\n${text}`;
+    // wq#620: structured window view — decoded menu label/prices/cursor and
+    // dialog text, rendered ONLY while a window is open (no dead prose). This
+    // is the symbolic perception the vision research prescribed for menus.
+    {
+      const mv = this.items.menuView();
+      const mline = renderMenuLine(mv, this.emu.mem()[this.sym.addr("wCurrentMenuItem")],
+        this.emu.mem()[this.sym.addr("wListScrollOffset")], MART_ORDER[st.map]?.length ?? 0);
+      if (mline) block += `\n${mline}`;
+    }
     if (this.scr.cursor()) block += `\nCURSOR AT CHOICE (use choose(yes) / choose(no) / choose(<index>))`;
     return block;
   }

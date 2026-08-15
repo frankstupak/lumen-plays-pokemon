@@ -32,6 +32,7 @@ PROBES=(
   probe_goto583
   probe_warp579
   probe_scope606
+  probe_menu620
 )
 
 failed=()

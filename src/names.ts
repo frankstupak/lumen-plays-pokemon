@@ -26,6 +26,34 @@ import { SymbolTable } from "./symbols";
 
 /** Gen 1 string encoding -> ASCII. 0x50 terminates. Unknown bytes decode to
  *  "?" so a misaligned read is visibly wrong instead of quietly plausible. */
+/** wq#620: THE ONE HOME of the Gen 1 character map, as data. Both ROM string
+ *  decode (decodeGen1Bytes below) and live tilemap decode (screen.ts) consume
+ *  THIS table — the font is loaded so tile ID == character code, so the two
+ *  decoders were always reading the same encoding, but screen.ts carried its
+ *  own hand-typed copy and the copies had drifted (0xE1/0xE2 as "P"/"M" vs
+ *  "PK"/"MN", no 0xBD, no 0xBA accent). Byte values here are the ones the
+ *  wq#503/#519 work read out of THIS ROM's own name tables (MonsterNames,
+ *  ItemNames), plus the pokered charmap punctuation screen.ts had verified
+ *  against live boxes; backfillItemNames() re-verifies the letter set against
+ *  ItemNames on every boot and THROWS on any unmapped byte, so drift between
+ *  this table and the ROM fails loudly. */
+export const GEN1_CHAR: Record<number, string> = (() => {
+  const t: Record<number, string> = {};
+  for (let i = 0; i <= 25; i++) { t[0x80 + i] = String.fromCharCode(0x41 + i);   // A-Z
+                                  t[0xa0 + i] = String.fromCharCode(0x61 + i); } // a-z
+  for (let i = 0; i <= 9; i++) t[0xf6 + i] = String.fromCharCode(0x30 + i);      // 0-9
+  Object.assign(t, {
+    0x7f: " ",
+    0x9a: "(", 0x9b: ")", 0x9c: ":", 0x9d: ";", 0x9e: "[", 0x9f: "]",
+    0xba: "\u00e9",        // é — POKé BALL (read out of ItemNames, wq#519)
+    0xbd: "'s",            // 's ligature — OAK's PARCEL (wq#519)
+    0xe0: "'", 0xe1: "PK", 0xe2: "MN", 0xe3: "-",
+    0xe4: "'", 0xe5: "'", 0xe6: "?", 0xe7: "!", 0xe8: ".",
+    0xef: "\u2642", 0xf5: "\u2640",   // male/female signs (NIDORAN, wq#503)
+    0xf1: "x", 0xf2: ".", 0xf3: "/", 0xf4: ",",
+  });
+  return t;
+})();
 /** Decode Gen 1 text AND report which bytes had no mapping.
  *
  *  wq#519: the "?" character is genuinely part of Gen 1 text (0xE6) -- items 7
@@ -40,39 +68,14 @@ export function decodeGen1Bytes(bytes: ArrayLike<number>): { text: string; unmap
   for (let i = 0; i < bytes.length; i++) {
     const t = bytes[i];
     if (t === 0x50) break;
-    if (t >= 0x80 && t <= 0x99) s += String.fromCharCode(0x41 + t - 0x80);         // A-Z
-    else if (t >= 0xa0 && t <= 0xb9) s += String.fromCharCode(0x61 + t - 0xa0);    // a-z
-    else if (t === 0x7f) s += " ";
-    // Byte values confirmed by reading MonsterNames directly: NIDORAN ends
-    // 8d 88 83 8e 91 80 8d EF (id 3) and ...F5 (id 15), FARFETCH ends 87 E0 83.
-    // Without these three, those names decode with a "?" and get filtered out
-    // of the table entirely, so the kiosk would show "SPECIES 3" for a Pokemon
-    // that is catchable two routes back.
-    else if (t === 0xe0) s += "'";
-    else if (t === 0xef) s += "\u2642";   // male sign
-    else if (t === 0xf5) s += "\u2640";   // female sign
-    else if (t === 0xe1) s += "PK";
-    else if (t === 0xe2) s += "MN";
-    else if (t === 0xe3) s += "-";
-    else if (t === 0xe8) s += ".";
-    // wq#519, all three read out of ItemNames (01:472b) in this ROM, not recalled:
-    //   0xBA sits one past 'z' (0xb9) and is "e-acute" -- id 4 is
-    //        8f 8e 8a BA 7f 81 80 8b 8b, i.e. POKE BALL, and ids 9/51/73 use it
-    //        too. This is the SAME gap class wq#503 fixed for MonsterNames, one
-    //        table over, landing on the most common item in the game; wq#503's
-    //        own drop-names-containing-"?" guard would have deleted POKE BALL
-    //        from a ROM-derived table exactly the way NIDORAN went missing.
-    //   0xBD is the "'s" ligature -- id 70 is 8e 80 8a BD 7f 8f 80 91 82 84 8b,
-    //        which is OAK's PARCEL and reads correctly no other way.
-    //   0xE6 is a literal question mark: ids 7 and 44 are five 0xE6 bytes and
-    //        really are the unused "?????" slots. It used to decode correctly
-    //        only by falling through to the "?" default, which is why the
-    //        output could not be used to detect a broken decode.
-    else if (t === 0xba) s += "\u00e9";
-    else if (t === 0xbd) s += "'s";
-    else if (t === 0xe6) s += "?";
-    else if (t === 0xf6) s += "0";
-    else if (t >= 0xf7 && t <= 0xff) s += String.fromCharCode(0x31 + t - 0xf7);    // 1-9
+    const c = GEN1_CHAR[t];
+    // Byte provenance notes preserved from the pre-wq#620 inline map (all read
+    // out of THIS ROM, not recalled): NIDORAN ends ...EF / ...F5 (male/female
+    // signs, wq#503); 0xBA is the é in POKé BALL and 0xBD the 's in OAK's
+    // PARCEL (both out of ItemNames 01:472b, wq#519); 0xE6 is a literal "?" —
+    // ids 7/44 really are "?????", which is why broken decodes are detected
+    // from the INPUT bytes (unmapped list), never from a "?" in the output.
+    if (c !== undefined) s += c;
     else { s += "?"; unmapped.push(t); }
   }
   return { text: s, unmapped };
