@@ -23,7 +23,9 @@ export class MapModel {
   gw = 0; gh = 0;                 // walk-unit grid dims (2x blocks)
   grid: boolean[][] = [];         // [y][x] true = walkable terrain
   tileIds: number[][] = [];       // [y][x] the collision tile id sampled per cell
-  sprites: { y: number; x: number }[] = [];
+  /** wq#607: pic = wSpriteStateData1 picture id, so callers can give
+   *  sprites IDENTITY (0x3D = ground item ball; see objects.ts). */
+  sprites: { y: number; x: number; pic: number }[] = [];
   warps: Warp[] = [];
   tilesetId = 0;
   /** TilePairCollisionsLand entries that apply to the CURRENT tileset. */
@@ -129,7 +131,7 @@ export class MapModel {
       const pic = m[d1 + i * 16];
       if (pic === 0 || pic === 0xff) continue;
       const sy = m[d2 + i * 16 + 4] - 4, sx = m[d2 + i * 16 + 5] - 4;
-      if (sy >= 0 && sy < this.gh && sx >= 0 && sx < this.gw) this.sprites.push({ y: sy, x: sx });
+      if (sy >= 0 && sy < this.gh && sx >= 0 && sx < this.gw) this.sprites.push({ y: sy, x: sx, pic });
     }
 
     const n = m[s.addr("wNumberOfWarps")];
@@ -196,6 +198,7 @@ export class MapModel {
       for (let x = 0; x < this.gw; x++) {
         if (x === px && y === py) out += "P";
         else if (this.warps.some(w => w.x === x && w.y === y)) out += "W";
+        else if (this.sprites.some(sp => sp.x === x && sp.y === y && sp.pic === 0x3d)) out += "B";  // wq#607: item ball
         else if (this.sprites.some(sp => sp.x === x && sp.y === y)) out += "N";
         else out += this.grid[y][x] ? "." : "#";
       }
