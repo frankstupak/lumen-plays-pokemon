@@ -32,11 +32,14 @@ const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
 const CKPTS = "/home/lumen/pokemon/checkpoints";
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const chk = (name: string, ok: boolean, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? " :: " + detail : ""}`);
   ok ? pass++ : fail++;
 };
+// wq#643: a fixture being absent is corpus rot, not a code defect — it must
+// never turn probes-main.sh red. See probe_resume628 for the precedent.
+const sk = (name: string, why: string) => { skip++; console.log(`SKIP ${name} :: ${why}`); };
 
 const sym = new SymbolTable(SYM);
 const rom = new Rom(ROM);
@@ -85,7 +88,7 @@ const b2 = checkpointsOn(61);
 
 console.log("=== A. map60 is four pockets, and POCKET_MAPS names the right one ===");
 if (!b1.length) {
-  chk("a map60 checkpoint exists to build the model from", false, "none found");
+  sk("A. map60 pocket model (sections A-B)", "no map60 checkpoint on disk (corpus rotated)");
 } else {
   const mm = new MapModel(b1[0].emu, sym, rom); mm.build();
   console.log(`  using ${b1[0].file} — grid ${mm.gw}x${mm.gh}, ${mm.sprites.length} sprites, ${mm.warps.length} warps`);
@@ -146,7 +149,7 @@ if (!b1.length) {
       mm61.warps.length > 0 && mm61.warps.every(w => w.destMap === 60),
       mm61.warps.map(w => `(${w.x},${w.y})->${w.destMap}`).join(" "));
   } else {
-    chk("a map61 checkpoint exists to verify the warp bijection", false, "none found");
+    sk("map60<->map61 warp bijection", "no map61 checkpoint on disk (corpus rotated)");
   }
 
   // The ticket's premise, tested as a falsifiable claim rather than argued.
@@ -252,15 +255,20 @@ const pick = (dir: string) =>
   // durable contract is that DEAD-pocket saves rank below B2F and EXIT-pocket
   // saves rank above it; how many of each exist on disk is progress, not a
   // pass/fail condition.
-  chk("D3 [REAL] every on-disk map60 checkpoint ranks by its own pocket",
-    b1.length > 0 && b1.every(s => POCKET_MAPS[60].tiles.has(`${s.x},${s.y}`)
-      ? progressRank(60, s.x, s.y) > progressRank(61)
-      : progressRank(60, s.x, s.y) < progressRank(61)),
-    `${b1.length} checkpoints`);
-  console.log(`   REALITY CHECK, reported whichever way it falls: ${inPocket} of ${b1.length} ` +
-    `map60 checkpoints are in the exit pocket. Zero means D1/D2 above are the ONLY ` +
-    `evidence for the exit-pocket rank, and they are synthetic.`);
+  if (b1.length > 0) {
+    chk("D3 [REAL] every on-disk map60 checkpoint ranks by its own pocket",
+      b1.every(s => POCKET_MAPS[60].tiles.has(`${s.x},${s.y}`)
+        ? progressRank(60, s.x, s.y) > progressRank(61)
+        : progressRank(60, s.x, s.y) < progressRank(61)),
+      `${b1.length} checkpoints`);
+    console.log(`   REALITY CHECK, reported whichever way it falls: ${inPocket} of ${b1.length} ` +
+      `map60 checkpoints are in the exit pocket. Zero means D1/D2 above are the ONLY ` +
+      `evidence for the exit-pocket rank, and they are synthetic.`);
+  } else {
+    sk("D3 [REAL] every on-disk map60 checkpoint ranks by its own pocket",
+      "no map60 checkpoints on disk (corpus rotated) — D1/D2 above are the only evidence, and synthetic");
+  }
 }
 
-console.log(`\n${pass} PASS / ${fail} FAIL`);
+console.log(`\n${pass} PASS / ${fail} FAIL / ${skip} SKIP`);
 process.exit(fail ? 1 : 0);

@@ -145,10 +145,13 @@ function findIndoorDoorFixture(): { path: string; r: Rig; w: Warp } | null {
   // ── A. fixture facts ────────────────────────────────────────────────────
   const fx = findOnWarpCaveFixture();
   if (!fx) {
-    chk("A1 an on-warp cave fixture resolves by property", false,
-        "no checkpoint has player standing on a warp of maps 59/60/61");
+    // wq#643: no checkpoint on disk right now has the player standing ON a
+    // cave warp — that is corpus rotation, not a defect in enterWarp(), so it
+    // must not turn probes-main.sh red (used to chk(false) + exit(1)).
+    skipped("A1-C2 the on-tile enterWarp defect",
+        "no checkpoint has player standing on a warp of maps 59/60/61 (corpus rotated)");
     console.log(`\nRESULT pass=${pass} fail=${fail} skip=${skip}`);
-    process.exit(1);
+    process.exit(0);
   }
   const { path, r, w } = fx;
   const p0 = r.pos();

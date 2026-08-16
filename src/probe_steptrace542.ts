@@ -143,7 +143,12 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   const limit = Number(process.argv[2] ?? 12);
   const idx = fixtureIndex().filter(f => f.sc.map === MAP);
   haveSamples("map61 checkpoints", idx.length);
-  chk("F1 fixtures available", idx.length > 0, `${idx.length} map61 checkpoints`);
+  // wq#643: a missing fixture is corpus rot, not a code defect — F1 used to
+  // chk(false) here, which both failed the suite red AND left every idx[0]
+  // access below it unguarded (crashed on "Cannot read properties of
+  // undefined" the moment the corpus had zero map61 checkpoints).
+  if (idx.length > 0) chk("F1 fixtures available", true, `${idx.length} map61 checkpoints`);
+  else skipped("F1 fixtures available", "no map61 checkpoints on disk (corpus rotated)");
 
   // ---- A. THE TICKET'S QUESTION, AS PURE GEOMETRY (wq#553 via wq#588) ------
   // wq#542 asked "does the plan escape while execution does not?" and the answer
@@ -158,7 +163,9 @@ function reachableTarget(path: string): { x: number; y: number } | null {
   // on; it sweeps EVERY passable strip cell. There is no legal southward exit:
   // every non-terrain column of y=12 is 0x05, and probe_collision552 measures
   // that against raw emulator presses on all 11 decided columns.
-  {
+  if (idx.length === 0) {
+    skipped("A0-A1 sealed-strip sweep", "no map61 checkpoint on disk to build a MapModel from (corpus rotated)");
+  } else {
     const emuA = new Emulator(ROM);
     loadSnapshotFile(emuA, idx[0].path);
     const mmA = new MapModel(emuA, sym, rom); mmA.build();
@@ -188,9 +195,23 @@ function reachableTarget(path: string): { x: number; y: number } | null {
     const j = await runJourney(f.path, t.x, t.y);
     if (j) journeys.push(j);
   }
-  chk("F2 journeys driven from live map61 checkpoints", journeys.length > 0,
-      `${journeys.length} journeys`);
-  if (!journeys.length) { console.log(`\n${pass} passed / ${fail} failed`); process.exit(fail ? 1 : 0); }
+  if (journeys.length > 0) {
+    chk("F2 journeys driven from live map61 checkpoints", true, `${journeys.length} journeys`);
+  } else if (idx.length === 0) {
+    // Same corpus-rot condition F1 already named; not a second, independent defect.
+    skipped("F2 journeys driven from live map61 checkpoints", "no map61 checkpoints on disk (corpus rotated)");
+  } else {
+    // idx had candidates but NONE produced a journey — reachableTarget()/
+    // runJourney() finding nothing from a real corpus is a code question, not
+    // a fixture-availability one, so this stays a real FAIL.
+    chk("F2 journeys driven from live map61 checkpoints", false,
+        `0 journeys from ${idx.length} map61 checkpoint(s) on disk`);
+  }
+  if (!journeys.length) {
+    const skipNote = skip ? ` / ${skip} skipped` : "";
+    console.log(`\n${pass} passed / ${fail} failed${skipNote}`);
+    process.exit(fail ? 1 : 0);
+  }
 
   // ---- C. PER-STEP LEDGER --------------------------------------------------
   // wq#588 rebase: the strip-specific churn counters (southward attempts) are
