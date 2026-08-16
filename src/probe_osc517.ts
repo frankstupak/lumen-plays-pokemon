@@ -155,7 +155,10 @@ console.log("\n=== D. only REAL arrivals are recorded (the 7-of-8 defect) ===");
   chk("D2 the unconditional call is gone",
     !/const osc = this\.notePotentialOscillation\(landed\);/.test(block));
   chk("D3 the auto path still records only on a real warp",
-    /if \(r === "warped"\) \{ this\.notePotentialOscillation/.test(src));
+    // wq#658: notePotentialOscillation became async (it now also drives a
+    // vision-valve consult on an oscillation trip), so the auto path awaits
+    // it — same guard, same call, one keyword added.
+    /if \(r === "warped"\) \{ await this\.notePotentialOscillation/.test(src));
   chk("D4 the guard is wired to the extracted module", /from "\.\/oscillation"/.test(src));
   // Matches the CODE, not the words: the phrase "distinct <= 2" now legitimately
   // appears in the comments explaining why the conjunct was removed, and an

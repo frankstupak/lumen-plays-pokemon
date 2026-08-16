@@ -20,6 +20,13 @@ import { Battle } from "./battle";
 import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { Agent } from "./agent";
+import { CFG } from "./config";
+
+// wq#658: notePotentialOscillation now also feeds a real vision-valve consult
+// (network call) on every trip. This probe is pure oscillation-counter logic
+// and must stay offline/deterministic, so the valve is switched off here —
+// its own behavior is covered by probe_vision621, not this file.
+CFG.visionValve.enabled = false;
 
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
@@ -46,28 +53,30 @@ const bat = new Battle(emu, sym, scr, sync, dlg2, bus);
 const reader = new StateReader(emu, sym);
 const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg2, act, bat, reader, new Brain(bus), bus, "/tmp/osc-ck");
 
-const note = (m: number): string => (agent as any).notePotentialOscillation(m);
+const note = (m: number): Promise<string> => (agent as any).notePotentialOscillation(m);
 
-// healthy linear progression -> no warning
-let out = "";
-for (const m of [51, 50, 13, 46]) out = note(m);
-chk("linear progression: no warning", out === "", `last="${out}"`);
+(async () => {
+  // healthy linear progression -> no warning
+  let out = "";
+  for (const m of [51, 50, 13, 46]) out = await note(m);
+  chk("linear progression: no warning", out === "", `last="${out}"`);
 
-// oscillation 51<->50 repeated -> notice fires
-// wq#517: the message is now "LOOP NOTICE" rather than "OSCILLATION", and it no
-// longer asserts a direction. wq#535 proved the only exit from Mt Moon runs
-// 61->60, so text calling a repeat "BACKWARD" argues against the one move that
-// leaves the cave. The guard reports repetition and nothing more.
-out = "";
-for (const m of [51, 50, 51, 50, 51, 50]) out = note(m);
-chk("oscillation flagged", /LOOP NOTICE/.test(out), out.slice(0, 80));
-chk("warning names the map", /map50/.test(out), out.slice(0, 60));
-chk("warning does NOT claim the warp was backward", !/BACKWARD/i.test(out));
+  // oscillation 51<->50 repeated -> notice fires
+  // wq#517: the message is now "LOOP NOTICE" rather than "OSCILLATION", and it no
+  // longer asserts a direction. wq#535 proved the only exit from Mt Moon runs
+  // 61->60, so text calling a repeat "BACKWARD" argues against the one move that
+  // leaves the cave. The guard reports repetition and nothing more.
+  out = "";
+  for (const m of [51, 50, 51, 50, 51, 50]) out = await note(m);
+  chk("oscillation flagged", /LOOP NOTICE/.test(out), out.slice(0, 80));
+  chk("warning names the map", /map50/.test(out), out.slice(0, 60));
+  chk("warning does NOT claim the warp was backward", !/BACKWARD/i.test(out));
 
-// after moving on to new maps, warning clears
-out = "";
-for (const m of [2, 54, 55]) out = note(m);
-chk("clears after progress", out === "", `last="${out}"`);
+  // after moving on to new maps, warning clears
+  out = "";
+  for (const m of [2, 54, 55]) out = await note(m);
+  chk("clears after progress", out === "", `last="${out}"`);
 
-console.log(`\n${pass} pass / ${fail} fail`);
-process.exit(fail ? 1 : 0);
+  console.log(`\n${pass} pass / ${fail} fail`);
+  process.exit(fail ? 1 : 0);
+})();

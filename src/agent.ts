@@ -91,6 +91,14 @@ export class Agent {
   // above resets on every continue while the loop it is meant to catch spans
   // dozens of runs.
   private crossRunWarps: number[] | null = null;
+  // wq#658: rising-edge debounce for the oscillation->vision escalation.
+  // assessOscillation() has NO debounce of its own — the LOOP NOTICE is
+  // meant to keep repeating every turn the condition holds, unlike
+  // VisionValve.recordStuck()'s explicit once-per-streak latch. Escalating
+  // vision on every trip (not just the first) would burn the hourly budget
+  // in a handful of turns and defeat the "rare escalation" design (wq#621
+  // config comment: "not a channel the brain gets every turn").
+  private lastOscTrip = false;
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
   private btTurns = 0;
@@ -129,27 +137,58 @@ export class Agent {
     return warpViews(this.map, p.x, p.y, lastMap, id => this.mapLabel(id));
   }
 
-  /** wq#621: feed one stuck_dump into the vision valve. Fires at most once per
-   *  stuck streak, refuses past the hourly budget (logged, not silent), and
-   *  never throws into the caller's turn — a vision failure must not take
-   *  down navigation. The result is a GUIDANCE hint only (notepad.ts), never
-   *  RAM-overriding. */
-  private async maybeConsultVision(pos: { map: number; x: number; y: number }, grid: string): Promise<void> {
-    if (!CFG.visionValve.enabled) return;
-    if (!this.visionValve.recordStuck(pos)) return;
+  /** wq#621/wq#658: spend one vision-valve budget slot and consult, or refuse
+   *  loudly past the hourly cap. Shared by both trigger shapes below — never
+   *  throws into the caller's turn (a vision failure must not take down
+   *  navigation), and the result is a GUIDANCE hint only (notepad.ts), never
+   *  RAM-overriding. `trigger` is board-visible so a reader can tell which
+   *  detector fired the consult apart from another. */
+  private async escalateVision(pos: { map: number; x: number; y: number },
+                               grid: string, trigger: "stuck" | "oscillation"): Promise<void> {
     if (!this.visionValve.tryConsumeBudget()) {
-      this.bus.emit("tool_call", { tool: "vision_refused",
+      this.bus.emit("tool_call", { tool: "vision_refused", trigger,
         line: `vision valve budget cap (${CFG.visionValve.maxPerHour}/hour) reached — ` +
-              `refused at map${pos.map} (${pos.x},${pos.y})` });
+              `refused at map${pos.map} (${pos.x},${pos.y}) [${trigger}]` });
       return;
     }
-    this.bus.emit("tool_call", { tool: "vision_consult", pos, model: CFG.profiles.vision.model });
+    this.bus.emit("tool_call", { tool: "vision_consult", pos, model: CFG.profiles.vision.model, trigger });
     try {
       const text = await consultVision(this.brain, this.emu.screenPngBuffer(), grid);
       if (text) this.pad.setGuidance("VISION", `(hint only, does not override RAM/grid) ${text}`);
     } catch (e: any) {
       this.bus.emit("tool_call", { tool: "vision_error", reason: String(e?.message ?? e).slice(0, 200) });
     }
+  }
+
+  /** wq#621: feed one stuck_dump into the vision valve. Fires at most once per
+   *  stuck streak (same tile, `stuckN` consecutive stuck_dumps) — see
+   *  vision.ts. */
+  private async maybeConsultVision(pos: { map: number; x: number; y: number }, grid: string): Promise<void> {
+    if (!CFG.visionValve.enabled) return;
+    if (!this.visionValve.recordStuck(pos)) return;
+    await this.escalateVision(pos, grid, "stuck");
+  }
+
+  /** wq#658: the wq#621 valve's OTHER trigger shape. recordStuck() above
+   *  requires the SAME (map,x,y) on consecutive stuck_dumps, which a warp
+   *  PING-PONG structurally never produces — stuck_dump itself is also never
+   *  emitted for a "successful" enter_warp, so a looping-but-warped warp was
+   *  invisible to the valve at both the feed point AND the trigger shape
+   *  (wq#652's audit: confirmed live, zero vision events across a full
+   *  loop_repeat window). wq#517's oscillation detector already does its OWN
+   *  N-in-a-window counting over exactly this shape (repeated map ids), so
+   *  this bypasses recordStuck's streak requirement entirely and treats an
+   *  oscillation TRIP itself as the signal — still gated by the same
+   *  enabled flag and hourly budget as every other consult. */
+  private async maybeConsultVisionOnOscillation(pos: { map: number; x: number; y: number }): Promise<void> {
+    if (!CFG.visionValve.enabled) return;
+    if (this.bat.active()) return;   // a script-owned/battle frame has no stable grid to show
+    try {
+      this.map.build();
+      const grid = this.map.ascii(pos.x, pos.y);
+      this.bus.emit("tool_call", { tool: "stuck_dump", pos, sprites: this.map.sprites, grid, trigger: "oscillation" });
+      await this.escalateVision(pos, grid, "oscillation");
+    } catch { /* a geometry failure must not kill the turn */ }
   }
 
   /** Everything the brain needs to see this turn, rendered deterministically. */
@@ -460,7 +499,7 @@ export class Agent {
           // which never happened. The auto path at the bottom of this file has
           // always been guarded this way; the brain-facing path was not.
           const osc = r === "warped"
-            ? this.notePotentialOscillation(this.reader.read().map)
+            ? await this.notePotentialOscillation(this.reader.read().map)
             : "";
           return `enter_warp -> ${r} now ${JSON.stringify(this.nav.pos())}${osc}`;
         }
@@ -639,7 +678,7 @@ export class Agent {
     for (let i = 0; i < this.map.warps.length; i++) {
       const w = this.map.warps[(start + i) % this.map.warps.length];
       const r = await this.nav.enterWarp(w);
-      if (r === "warped") { this.notePotentialOscillation(this.reader.read().map); return `enter_warp->${w.destMap} auto`; }
+      if (r === "warped") { await this.notePotentialOscillation(this.reader.read().map); return `enter_warp->${w.destMap} auto`; }
       if (r === "battle") { await this.bat.run(() => 0); return "battle auto"; }
     }
     // no warp took: fall back to rotating edge pushes
@@ -917,7 +956,7 @@ export class Agent {
    *  the agent which direction is forward, and why the `distinct <= 2` conjunct
    *  that made the wider loop invisible is gone.
    *  CALLERS MUST ONLY CALL THIS ON AN ACTUAL ARRIVAL (r === "warped"). */
-  private notePotentialOscillation(mapId: number): string {
+  private async notePotentialOscillation(mapId: number): Promise<string> {
     this.mapHistory.push(mapId);
     if (this.mapHistory.length > 16) this.mapHistory.shift();
     const file = oscHistoryFile();
@@ -925,6 +964,11 @@ export class Agent {
     this.crossRunWarps.push(mapId);
     saveOscHistory(file, this.crossRunWarps);
     const v = assessOscillation(mapId, this.mapHistory, this.crossRunWarps);
+    // wq#658: rising edge only — assessOscillation has no debounce of its own
+    // and keeps tripping true every turn the condition holds (by design: the
+    // LOOP NOTICE text is meant to persist). Escalate vision once per episode.
+    const rising = v.trip && !this.lastOscTrip;
+    this.lastOscTrip = v.trip;
     if (!v.trip) return "";
     // Distinct event kind so wq#515's detectors and lpp-stats can count trips
     // without parsing prose out of turn_summary.
@@ -934,6 +978,10 @@ export class Agent {
       crossCount: v.crossCount, crossWindow: v.crossWindow,
       recent: v.recent,
     });
+    // An oscillation TRIP is exactly the shape the vision valve's same-tile
+    // stuck_dump streak structurally cannot see (the position changes every
+    // call by definition). Feed it in on its own trigger path.
+    if (rising) await this.maybeConsultVisionOnOscillation(this.nav.pos());
     return v.message;
   }
 

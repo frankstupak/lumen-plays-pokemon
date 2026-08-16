@@ -40,6 +40,7 @@ PROBES=(
   probe_vision621
   probe_hidden622
   probe_warploop652
+  probe_vision658
 )
 
 failed=()
