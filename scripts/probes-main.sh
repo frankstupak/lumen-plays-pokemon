@@ -39,6 +39,7 @@ PROBES=(
   probe_cerulean638
   probe_vision621
   probe_hidden622
+  probe_warploop652
 )
 
 failed=()

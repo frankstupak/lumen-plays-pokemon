@@ -112,7 +112,35 @@ export class Navigator {
       await this.emu.framesAsync(22);
       if (this.sync) await this.sync.settle(300);
       const now = this.pos();
-      if (now.map !== before.map) { await this.emu.framesAsync(90); return "warped"; }
+      if (now.map !== before.map) {
+        // wq#652: a warp exit (e.g. a building door) can hand control to a
+        // SCRIPTED auto-walk that keeps moving the player after wCurMap has
+        // already flipped. Root-caused frame-by-frame (RAM poll, Cerulean
+        // Gym exit): wCurMap updates at once, but there is an IDLE-LOOKING
+        // GAP of dozens of frames — wJoyIgnore/wStatusFlags5/wWalkCounter all
+        // zero — BEFORE the walk-out script actually engages those flags and
+        // starts moving wXCoord/wYCoord off the door tile. A single
+        // sync.settle() call made right here can return during that gap
+        // (genuinely quiet, just not yet finished), so the caller's very next
+        // pos() read lands ON the door tile the warp is defined at - which
+        // reads to the brain as "standing on this warp again" and drives an
+        // enter_warp/enter_warp ping-pong (live-agent-1786841530991.jsonl
+        // T74-75, warp3: reported landing (30,19), the door, while the engine
+        // kept walking and only settled one tile south at (30,20) ~150ms
+        // later, after the gap and the script had both finished). Waiting on
+        // the flags alone is not sufficient because of that gap; instead poll
+        // POSITION across repeated settle+wait rounds until it stops moving,
+        // which is true however many idle/busy phases the exit script has.
+        let last = this.pos();
+        for (let i = 0; i < 10; i++) {
+          if (this.sync) await this.sync.settle(); else await this.emu.framesAsync(90);
+          await this.emu.framesAsync(30);
+          const cur = this.pos();
+          if (cur.map === last.map && cur.x === last.x && cur.y === last.y) break;
+          last = cur;
+        }
+        return "warped";
+      }
       if (now.x !== before.x || now.y !== before.y) return "moved";
       // first attempt may have only turned the player; retry
     }
