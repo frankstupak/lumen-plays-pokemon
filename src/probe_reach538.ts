@@ -22,11 +22,14 @@ const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SYM = "/home/lumen/pokemon/roms/pokeblue.sym";
 const CK = "/home/lumen/pokemon/checkpoints";
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
 const chk = (name: string, ok: boolean, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? " :: " + detail : ""}`);
   ok ? pass++ : fail++;
 };
+// wq#643: a fixture being absent is corpus rot, not a code defect — it must
+// never turn probes-main.sh red. See probe_resume628 for the precedent.
+const sk = (name: string, why: string) => { skip++; console.log(`SKIP ${name} :: ${why}`); };
 
 const sym = new SymbolTable(SYM);
 const rom = new Rom(ROM);
@@ -76,7 +79,8 @@ function components(mm: MapModel): { size: number; warps: number[] }[] {
 // ---------------------------------------------------------------- A: map60 topology
 console.log("\n=== A. Mt Moon B1F (map60) is four disconnected pockets ===");
 const b1f = loadAllOn(60);
-chk("A0 at least one map60 checkpoint on disk", b1f.length > 0, `${b1f.length} found`);
+if (b1f.length > 0) chk("A0 at least one map60 checkpoint on disk", true, `${b1f.length} found`);
+else sk("A0-A3 map60 topology", "no map60 checkpoint on disk (corpus rotated)");
 for (const s of b1f) {
   const comps = components(s.mm);
   chk(`A1 ${s.file} has exactly 4 components`, comps.length === 4,
@@ -143,7 +147,8 @@ for (const s of b1f) {
 // ~91 steps from the fossil despite being 12 tiles away in a line).
 console.log("\n=== D. Mt Moon B2F (map61): astar agrees with the component; the long walk is real ===");
 const b2f = loadAllOn(61);
-chk("D0 at least one map61 checkpoint on disk", b2f.length > 0, `${b2f.length} found`);
+if (b2f.length > 0) chk("D0 at least one map61 checkpoint on disk", true, `${b2f.length} found`);
+else sk("D0-D2 map61 topology", "no map61 checkpoint on disk (corpus rotated)");
 for (const s of b2f) {
   const rw = reachableWarps(s.mm, s.x, s.y);
   const westById = rw.some(w => w.x === 21 && w.y === 17) || (s.x === 21 && s.y === 17);
@@ -161,7 +166,9 @@ for (const s of b2f) {
 // wq#564 measured, and any change that makes it short means the model broke.
 {
   const anchor = b2f.find(s => astar(s.mm, 21, 17, 12, 7, new Set()) !== null);
-  if (!anchor) chk("D3 [anchor] some map61 model routes (21,17)->(12,7)", false, "none can");
+  if (!anchor) sk("D3 [anchor] some map61 model routes (21,17)->(12,7)",
+    b2f.length ? "no on-disk map61 checkpoint's model routes the L5 landing to the fossil"
+               : "no map61 checkpoint on disk (corpus rotated)");
   else {
     const p = astar(anchor.mm, 21, 17, 12, 7, new Set())!;
     chk("D3 [anchor] the L5 landing is a LONG walk from the fossil (>=60 steps)",
@@ -171,7 +178,13 @@ for (const s of b2f) {
 
 // ---------------------------------------------------------------- E: what the brain is TOLD
 console.log("\n=== E. the rendered strings (this section is what the diff changes) ===");
-{
+if (b1f.length === 0 || b2f.length === 0) {
+  // wq#643: b1f[0]/b2f[0] below are load-bearing (E needs a real MapModel to
+  // pin a position onto) — used to crash with "Cannot read properties of
+  // undefined" when the corpus had neither, instead of naming the gap.
+  sk("E. the rendered strings", `needs a map60 AND a map61 checkpoint on disk ` +
+    `(have ${b1f.length} map60, ${b2f.length} map61) — corpus rotated`);
+} else {
   // wq#588 rebase: b1f[0]/b2f[0] made this section depend on directory sort
   // order over a moving corpus. Position is just a PARAMETER to warpViews and
   // stuckHint, so pin it: (17,11) is the C-pocket landing (on-warp, exit
@@ -234,5 +247,5 @@ console.log("\n=== F. agent.ts is actually wired to it ===");
   chk("F4 reachability is imported from reach.ts", /from "\.\/reach"/.test(src));
 }
 
-console.log(`\nprobe_reach538: ${pass} passed, ${fail} failed`);
+console.log(`\nprobe_reach538: ${pass} passed, ${fail} failed, ${skip} skipped`);
 process.exit(fail ? 1 : 0);

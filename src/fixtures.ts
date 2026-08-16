@@ -71,22 +71,29 @@ export function findFixture(pred: (sc: FixtureSidecar) => boolean,
   return hit ? hit.path : null;
 }
 
-/** A fixture the probe cannot run without. Prints a FAIL-shaped line naming the
- *  property that could not be satisfied, then exits 1.
+/** A fixture the probe cannot run without. Prints a SKIP-shaped line naming
+ *  the property that could not be satisfied, then exits 0.
  *
- *  The point is that this is a LEGIBLE failure with a name and a reason, not an
- *  ENOENT stack trace out of readFileSync. A reader of CI output can tell
- *  "the corpus no longer contains what this test needs" apart from
- *  "the code under test is broken", which was impossible before. */
+ *  wq#643: this used to exit(1) — a missing fixture and a broken diff both
+ *  turned probes-main.sh red, and the suite trains people to ignore red once
+ *  "probably just corpus rot" becomes the default read of any failure. A
+ *  fixture being absent is a fact about what the live campaign happens to
+ *  have on disk right now, never a fact about the code under test, so it can
+ *  never be the reason a CI-shaped gate fails. The point is still a LEGIBLE
+ *  message with a name and a reason, not an ENOENT stack trace out of
+ *  readFileSync — just SKIP-shaped instead of FAIL-shaped now. A reader of
+ *  probes-main.sh output can tell "the corpus no longer contains what this
+ *  test needs" apart from "the code under test is broken", which was
+ *  impossible before either way. */
 export function requireFixture(what: string, path: string | null,
                                opts: { copy?: boolean } = {}): string {
   if (path) return opts.copy === false ? path : copyFixture(path);
-  console.log(`FAIL FIXTURE MISSING: no checkpoint or save satisfies "${what}"`);
+  console.log(`SKIP FIXTURE MISSING: no checkpoint or save satisfies "${what}"`);
   console.log(`     This is CORPUS ROT, not a defect in the code under test.`);
   console.log(`     Checkpoint rotation removed whatever this probe used to load.`);
   console.log(`     Re-run once the campaign produces a matching state, or widen the predicate.`);
-  console.log(`\n0 passed, 1 failed (fixture unavailable)`);
-  process.exit(1);
+  console.log(`\n0 passed, 0 failed (fixture unavailable, skipped)`);
+  process.exit(0);
 }
 
 /** wq#551 / R4 FIXTURE DELETED MID-RUN: take a private copy of a fixture before
