@@ -13,6 +13,7 @@ export interface Wanted { name: string; why: string; urgent: boolean; noWeaken?:
 
 // Blue-version targets for the S6 campaign (Mt Moon -> Cerulean/Misty).
 export const WANTED: Record<number, Wanted> = {
+  185: { name: "ODDISH",     urgent: true,  why: "Grass type - counter for Misty's water gym (Routes 24/25 grass, Blue version)" },
   188: { name: "BELLSPROUT", urgent: true,  why: "Grass type - the counter for Misty's water gym (Routes 24/25 grass)" },
   148: { name: "ABRA",       urgent: true,  noWeaken: true,
          why: "Psychic, elite long-term - it TELEPORTS away fast, throw immediately" },
