@@ -19,7 +19,7 @@
 // gives the existing catch advisory its encounter opportunities.
 import { Emulator } from "./emulator";
 import { SymbolTable } from "./symbols";
-import { StateReader } from "./state";
+import { StateReader, PartyMon } from "./state";
 import { ITEM } from "./items";
 import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
 import { MOVES } from "./moves";
@@ -35,7 +35,41 @@ const MAP = { CERULEAN: 3, ROUTE_4: 15, ROUTE_24: 35, ROUTE_25: 36,
 // under-stocked — Charmeleon vs Water is the campaign's worst matchup.
 export const MISTY_MIN_LEVEL = 30;
 export const MISTY_MIN_POTIONS = 3;
+// wq#674: the live agent hit L30+/3+ potions with a SOLO Charmeleon (moveset
+// Rage/Growl/Ember/Leer — Ember is its only damaging move and Water resists
+// it) and "ready" flipped true purely on level/potions, so the "GRIND FIRST"
+// text was replaced by "YOU ARE READY, enter the gym" every single turn even
+// though level was never the wall. Three whiteouts, partyCount stuck at 1 for
+// 30+ hours (events/live-agent-1786998394993.jsonl). Same threshold
+// catch_policy.ts already uses for its own "solo = insurance-worthy" signal
+// (partyCount < 2) — a second body is the minimum bar, not a new number.
+export const MISTY_MIN_ROSTER = 2;
 const POTION_TARGET = 5;           // buy up to this many before the gym
+
+// wq#677: even partyCount>=2 with level/potions cleared is not enough —
+// two Charmeleons still can't beat an all-Water gym (Ember resisted on both).
+// At least one party member must be type-effective against Water.
+//
+// Gen 1 internal species IDs, verified from the ROM via SpeciesNames:
+//   Grass: ODDISH=185 (0xB9), BELLSPROUT=188 (0xBC), PARAS=109 (0x6D)
+//   Rock:  GEODUDE=169 (0xA9)
+// IDs confirmed by: npx tsx -e "import {SpeciesNames} from './src/link/species'..." 2026-08-18
+export const MISTY_TYPE_COUNTER_SPECIES = new Set<number>([185, 188, 109, 169]);
+
+/** True if at least one party member is a type-effective counter against
+ *  Misty's Water-type gym (Grass or Rock type). */
+export function hasTypeCounter(party: Pick<PartyMon, "species">[]): boolean {
+  return party.some(m => MISTY_TYPE_COUNTER_SPECIES.has(m.species));
+}
+
+/** Shared readiness predicate — the ONE place "ready for Misty" is decided,
+ *  used both by the prose guidance below and by agent.ts's hard entry gate
+ *  (mistyGymEntryRefusal). Level/potions/roster alone is not enough (wq#674,
+ *  wq#677): also requires a Grass/Rock type counter vs her Water gym. */
+export function misty_ready(level: number, potions: number, partyCount: number, hasCounter: boolean): boolean {
+  return level >= MISTY_MIN_LEVEL && potions >= MISTY_MIN_POTIONS
+      && partyCount >= MISTY_MIN_ROSTER && hasCounter;
+}
 
 /** wq#587: the old ready-branch line said "your best damage is your strongest
  *  non-Fire move" — which, for CHARMELEON's Rage/Growl/Ember/Leer, resolves to
@@ -133,13 +167,14 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
   const level = lead?.level ?? 0;
   const potions = potionCount(emu, sym);
   const balls = ballCount(emu, sym);
-  const ready = level >= MISTY_MIN_LEVEL && potions >= MISTY_MIN_POTIONS;
   // wq#606 deliverable 3: ONE ordered NEXT objective, so finishing a goal
   // (the 01:41Z ball purchase) never leaves the brain goal-less. The old
   // heal line only fired at the 25% CRITICAL threshold or around gym visits;
   // the live party wandered hurt at 52% HP with PP 9 on a core move for two
   // hours. Heal urgency here is broader: under 60% HP, or any damaging move
   // low on PP, and healing outranks everything else in the region.
+  const hasCounter = hasTypeCounter(s.party);
+  const ready = misty_ready(level, potions, s.partyCount, hasCounter);
   const hpFrac = lead && lead.maxHp > 0 ? lead.hp / lead.maxHp : 1;
   const lowPP = lead ? lead.moves.some((mv, i) =>
     mv && MOVES[mv] && MOVES[mv].power > 0 && lead.pp[i] <= 5) : false;
@@ -163,7 +198,8 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
   ];
   if (ready) {
     lines.push(
-      `MISTY - YOU ARE READY (L${level} >= ${MISTY_MIN_LEVEL}, ${potions} potions >= ${MISTY_MIN_POTIONS}):`,
+      `MISTY - YOU ARE READY (L${level} >= ${MISTY_MIN_LEVEL}, ${potions} potions >= ${MISTY_MIN_POTIONS}, ` +
+      `party ${s.partyCount} >= ${MISTY_MIN_ROSTER}, Grass/Rock counter present):`,
       "  heal first, then enter CERULEAN GYM (map65). STARYU L18 then",
       `  STARMIE L21. Water/Psychic - ${mistyDamageLine(lead?.moves ?? [])}`,
       "  use_item(potion) whenever HP drops below half.",
@@ -172,6 +208,10 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
     const why = [
       level < MISTY_MIN_LEVEL ? `lead L${level} < ${MISTY_MIN_LEVEL}` : "",
       potions < MISTY_MIN_POTIONS ? `${potions} potions < ${MISTY_MIN_POTIONS}` : "",
+      s.partyCount < MISTY_MIN_ROSTER
+        ? `party of ${s.partyCount} < ${MISTY_MIN_ROSTER} - no backup body/Water counter (wq#674)` : "",
+      !hasCounter
+        ? "no Grass/Rock type counter in party (BELLSPROUT/ODDISH/PARAS=Grass, GEODUDE=Rock)" : "",
     ].filter(Boolean).join(" and ");
     lines.push(
       `MISTY GATE - DO NOT ENTER THE GYM (map65) YET: ${why}.`,
@@ -183,4 +223,36 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
       "  Heal at the center between grind loops. Return when the gate lifts.");
   }
   return lines.join("\n");
+}
+
+/** wq#674 HARD gate — the "MISTY GATE" text above is prose, and prose alone
+ *  was proven not to work here: the live agent read it every turn and kept
+ *  re-entering the gym solo anyway the moment level/potions cleared, because
+ *  nothing actually stopped the enter_warp call (wq#532 lesson — a rule that
+ *  exists only as prose is not a rule, same shape as agent.ts's own
+ *  mtMoonReentryRefusal / movedSinceWarp refusals). Called from agent.ts at
+ *  the enter_warp call site, only when the target warp leads into the gym
+ *  (map65); returns the refusal line, or null if entry is fine (ready, or
+ *  this campaign stage doesn't apply). Cheap RAM reads only, same convention
+ *  as ceruleanGuidance. */
+export function mistyGymEntryRefusal(emu: Emulator, sym: SymbolTable, reader: StateReader): string | null {
+  if (!reader.eventFlag(F_BEAT_BROCK) || reader.eventFlag(F_BEAT_MISTY)) return null;
+  const s = reader.read();
+  const lead = s.party[0];
+  const level = lead?.level ?? 0;
+  const potions = potionCount(emu, sym);
+  const hasCounter = hasTypeCounter(s.party);
+  if (misty_ready(level, potions, s.partyCount, hasCounter)) return null;
+  const why = [
+    level < MISTY_MIN_LEVEL ? `lead L${level} < ${MISTY_MIN_LEVEL}` : "",
+    potions < MISTY_MIN_POTIONS ? `${potions} potions < ${MISTY_MIN_POTIONS}` : "",
+    s.partyCount < MISTY_MIN_ROSTER
+      ? `party of ${s.partyCount} < ${MISTY_MIN_ROSTER} - no backup body/Water counter` : "",
+    !hasCounter
+      ? "no Grass/Rock type counter (need BELLSPROUT, ODDISH, PARAS, or GEODUDE)" : "",
+  ].filter(Boolean).join(" and ");
+  return `refused - not ready for MISTY (${why}). A Fire-type party has no winning line against an ` +
+    `all-Water gym regardless of level (Ember is resisted; Rage locks you in for 20 base power). ` +
+    `GRIND Route 24 (map35) + Route 25 (map36) first and catch a BELLSPROUT/ODDISH (Grass counter) ` +
+    `or GEODUDE (Rock counter) in the grass there before trying Misty again (wq#674/#677).`;
 }
