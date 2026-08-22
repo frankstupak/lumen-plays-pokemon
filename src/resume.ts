@@ -34,8 +34,19 @@ import { mtMoonLeg } from "./mtmoon_route";
 // leads UP to B2F, so B2F is not a dead end: it is the mandatory way in to the
 // pocket that holds the exit. The first 60 ranks the three dead pockets BELOW
 // B2F; the second ranks the exit pocket ABOVE it. See POCKET_MAPS.
+// 2026-08-19 (wq#685): extended past Cerulean — the list previously ENDED at
+// Cerulean (3), so Route 24 (35), Route 25 (36), Bill's cottage (88) and the
+// Cerulean interiors all ranked -1 and every boot fell back to the newest
+// Cerulean City state, discarding post-Cerulean progress (76h frontier freeze,
+// deepest single loss 266 turns). This is the SAME regression the 08-12 note
+// above describes one gym earlier ("the old list ended one step past Pewter
+// Gym"). Order past 3 follows the campaign's actual plan (guidance.ts: grind
+// Route 24/25 + Bill BEFORE Misty): Cerulean PC (64, heal-state precedent per
+// 68/58), Route 24, Route 25, Bill's cottage, Cerulean Gym (65), Route 5 (16).
+// Map ids verified against tools/map_names.json.
 export const STORY_ORDER: number[] = [
   38, 37, 0, 40, 12, 1, 42, 13, 51, 2, 56, 58, 54, 14, 15, 68, 59, 60, 61, 60, 15, 3,
+  64, 35, 36, 88, 65, 16,
 ];
 
 /** Maps that are TWO places sharing one map id, separated by terrain the player

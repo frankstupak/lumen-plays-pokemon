@@ -25,7 +25,7 @@ import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
 import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
-import { MISTY_MIN_LEVEL } from "./guidance";        // wq#516: next-gym level target
+import { MISTY_MIN_LEVEL, mistyGymEntryRefusal } from "./guidance";        // wq#516/#674
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
@@ -99,6 +99,10 @@ export class Agent {
   // in a handful of turns and defeat the "rare escalation" design (wq#621
   // config comment: "not a channel the brain gets every turn").
   private lastOscTrip = false;
+  // wq#674: true once at least one goto/leave_edge has actually MOVED the
+  // player since the last warp arrival. False right after any warp lands —
+  // see the enter_warp refusal below for why this exists.
+  private movedSinceWarp = true;
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
   private btTurns = 0;
@@ -437,6 +441,19 @@ export class Agent {
               const ref = mtMoonReentryRefusal(true, corridorPhase(st), w);
               if (ref) return `goto: ${ref}`;
             }
+            // wq#674: Cerulean Gym's outside door (map3) is a single-tile
+            // warp that fires the instant goto() steps onto it — there is no
+            // separate enter_warp call to intercept for THIS direction (the
+            // enter_warp gate below only covers re-entry from inside). Same
+            // gate, same reason: see guidance.ts's mistyGymEntryRefusal.
+            if (st.map === 3) {
+              this.map.build();
+              const w = this.map.warps.find(w => w.x === tx && w.y === ty);
+              if (w && w.destMap === 65) {
+                const ref = mistyGymEntryRefusal(this.emu, this.sym, this.reader);
+                if (ref) return `goto: ${ref}`;
+              }
+            }
           }
           const r = await this.nav.goto(tx, ty);
           // wq#487: a goto cut short by a battle becomes a harness-owned goal;
@@ -465,6 +482,10 @@ export class Agent {
             return `goto -> stuck now ${JSON.stringify(p)}` +
               stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews());
           }
+          // wq#674: "warped" lands on the new map's arrival tile with zero
+          // steps taken there yet; anything else that actually got the player
+          // moving (arrived/moved) clears the just-arrived state.
+          this.movedSinceWarp = r !== "warped";
           return `goto -> ${r} now ${JSON.stringify(this.nav.pos())}`;
         }
         case "enter_warp": {
@@ -479,15 +500,48 @@ export class Agent {
                                                this.map.warps[Number(args[0])]);
               if (ref) return `enter_warp: ${ref}`;
             }
+            // wq#674: hard-gate entry into Cerulean Gym (map65) while the
+            // roster/level/potions aren't ready — see guidance.ts for why the
+            // pre-existing "MISTY GATE" prose alone did not stop this (three
+            // whiteouts, partyCount stuck at 1 for 30+ hours booted solo).
+            if (st.map === 3) {
+              this.map.build();
+              const target = this.map.warps[Number(args[0])];
+              if (target && target.destMap === 65) {
+                const ref = mistyGymEntryRefusal(this.emu, this.sym, this.reader);
+                if (ref) return `enter_warp: ${ref}`;
+              }
+            }
           }
           const w = this.map.warps[Number(args[0])];
           if (!w) return "enter_warp: bad index";
+          // wq#674: the door tile you just warped IN on is ALSO the warp back
+          // out (true of every gym/building entrance) - firing enter_warp on
+          // it again with zero steps taken since arrival just replays your
+          // own arrival and bounces you straight back where you came from.
+          // Observed live 43h straight at Cerulean Gym (map65 30,19,
+          // live-agent-1786898534540.jsonl): the brain read "standing on a
+          // warp" as "must enter it", never took the one step further into
+          // the room, and never once reached inBattle - the "losing to Misty"
+          // read on this stall was wrong; it never got the fight to start.
+          // A hard refusal here, not a prose warning - the LOOP NOTICE text
+          // already said this every time and was ignored for two days
+          // (wq#532 lesson, same as mtMoonReentryRefusal above).
+          if (!this.movedSinceWarp) {
+            const p = this.nav.pos();
+            if (p.x === w.x && p.y === w.y) {
+              return `enter_warp: refused - (${w.x},${w.y}) is the tile you just warped IN on and you ` +
+                `have not moved since. Firing this warp again replays your OWN arrival and sends you ` +
+                `right back out. goto() a DIFFERENT tile first to actually enter the room (wq#674).`;
+            }
+          }
           const r = await this.nav.enterWarp(w);
           // wq#487: enterWarp walks to the tile first, so a wild encounter
           // interrupts it exactly like a goto - same ownership rules.
           this.transit.onWarp(w, r, this.nav.pos().map);
           if (r === "battle") return "enter_warp interrupted by a wild battle - the harness will flee it and resume this warp automatically";
           if (r === "dialog") return "enter_warp blocked: a dialog or sign text is open - use talk() to clear it first";
+          if (r === "warped") this.movedSinceWarp = false;
           // wq#517: record an arrival ONLY when the warp actually happened.
           // This call used to be unconditional, so an enter_warp that returned
           // "stuck" pushed the CURRENT map into the warp-arrival history as
@@ -521,6 +575,10 @@ export class Agent {
           const r = await this.nav.leaveMapEdge(dir as any);
           if (r === "battle") return "leave_edge interrupted by a wild battle - fight it with battle_move";
           if (r === "dialog") return "leave_edge blocked: a dialog or sign text is open - use talk() to clear it first";
+          // wq#674: edge crossings land off any warp tile, so they can't
+          // trigger the door-bounce refusal above - but they DO count as
+          // having moved, same as a successful goto.
+          this.movedSinceWarp = true;
           return `leave_edge -> ${r} now ${JSON.stringify(this.nav.pos())}`;
         }
         case "interact": {
