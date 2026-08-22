@@ -36,7 +36,7 @@ body { background:#0d1117; color:#c9d1d9; font-family:'SF Mono',Menlo,monospace;
 #stuck { display:none; background:#3d1418; border:2px solid #f85149; border-radius:6px; padding:7px 9px; margin-bottom:10px; }
 #stuck .hd { color:#f85149; font-size:17px; font-weight:700; letter-spacing:2px; }
 #stuck .why { color:#ffa198; font-size:12px; line-height:1.45; margin-top:3px; }
-#bottom { height:104px; border-top:2px solid #30363d; padding:6px 16px; overflow:hidden; background:#010409; }
+#bottom { height:208px; border-top:2px solid #30363d; padding:6px 16px; overflow:hidden; background:#010409; }
 #ticker { font-size:12px; line-height:1.6; height:100%; overflow-y:auto; scrollbar-width:thin; }
 #ticker div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .k-tool { color:#d29922; } .k-state { color:#3fb950; } .k-think { color:#bc8cff; } .k-sys { color:#8b949e; }

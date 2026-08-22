@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the LPP stuck-supervisor every 30 minutes (wq#671-673)
+
+[Timer]
+OnBootSec=5min
+# 30 min, not lpp-sentinel's 10 min: each stuck-supervisor poll that finds the
+# incident still open logs one MORE K-bounded intervention attempt. At 10 min
+# spacing all K=3 attempts would exhaust in 30 minutes flat, which is faster
+# than any prescribed action (e.g. "grind to L18-21") could plausibly play
+# out in-game. 30 min spacing gives K=3 up to 1.5h to actually take effect,
+# comfortably inside the 3h Frank-escalation mark with margin for the ticket
+# to exist before the page fires.
+OnUnitActiveSec=30min
+RandomizedDelaySec=90s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

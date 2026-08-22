@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""lpp-stuck-supervisor — wires wq#671 (detect+classify) -> wq#672 (bounded
+intervention) -> wq#673 (auto-ticket + 3h escalation) into one timer-driven
+entrypoint, the same shape as tools/lpp-sentinel's own standing-monitor
+pattern (wq#489) but for the story_score/MODE axis instead of the tile/rank
+axes lpp-sentinel already covers.
+
+    tools/lpp-stuck-supervisor [--dry-run] [--quiet]
+
+Each step persists its own state file exactly as it does when run standalone
+(runtime/stuck_mode.json, runtime/intervention_log.json,
+runtime/supervisor_directive.json, runtime/stuck_escalation.json) — this
+wrapper adds no state of its own, only sequencing and CLI ergonomics for
+cron/systemd.
+
+Installed the same way lpp-sentinel is (see docs/SENTINEL.md's own note:
+"unit sources kept in deploy/, installed to /etc/systemd/system/"):
+
+    sudo cp deploy/lumen-lpp-stuck-supervisor.service \
+            deploy/lumen-lpp-stuck-supervisor.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now lumen-lpp-stuck-supervisor.timer
+
+Not installed by this ticket — see docs/STUCK_SUPERVISOR.md's "click-path"
+section. This script deliberately makes ZERO systemd calls itself.
+
+ANTI-FOOTGUN (spec section 4): this entrypoint's only side effects are the
+same ones its three component modules already have individually — writing
+the four runtime/*.json files above, and (only past K=3 exhaustion, only
+once per incident) one `wq add`/`wq edit`/`wq done` call and one `ntfy-send`
+call. It never claims a work-queue ticket, never starts an agent process,
+never touches the game or the systemd service.
+"""
+import json, os, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import lpp_stuck_mode as M
+import lpp_stuck_intervene as I
+import lpp_stuck_feedback as F
+
+
+def main(argv=None):
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--dry-run", action="store_true", help="compute and print, write nothing, call nothing")
+    p.add_argument("--quiet", action="store_true", help="print only when an action is taken")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    state = M.compute()
+    if not args.dry_run and state.get("ok"):
+        M.persist(state)
+
+    out = {"stuckMode": {k: state.get(k) for k in
+                          ("ok", "stalled", "mode", "modeLocation", "frozenHours", "storyScore")}}
+
+    if not state.get("ok"):
+        out["intervention"] = None
+        out["feedback"] = None
+    else:
+        log = I.load_log()
+        decision = I.decide(state=state, log=log)
+        if not args.dry_run:
+            I.save_log(log)
+            if decision.get("intervened"):
+                tmp = I.DIRECTIVE_PATH + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(decision["directive"], f, indent=1)
+                os.replace(tmp, I.DIRECTIVE_PATH)
+        out["intervention"] = {k: decision.get(k) for k in ("intervened", "mode", "attempt", "k", "exhausted")}
+
+        escal = F.load_state()
+        result, escal = F.run(state=state, intervention_log=log, escal=escal)
+        if not args.dry_run:
+            F.save_state(escal)
+        out["feedback"] = result
+
+    took_action = (
+        (out.get("intervention") or {}).get("intervened")
+        or (out.get("feedback") or {}).get("filed")
+        or (out.get("feedback") or {}).get("ntfy")
+        or (out.get("feedback") or {}).get("resolved")
+    )
+    if args.json:
+        print(json.dumps(out, indent=1))
+    elif not args.quiet or took_action:
+        sm = out["stuckMode"]
+        if not sm.get("ok"):
+            print(f"stuck-supervisor: DEAD — {state.get('reason')}")
+        elif not sm.get("stalled"):
+            print(f"stuck-supervisor: OK story_score={sm.get('storyScore')}")
+        else:
+            iv = out["intervention"]
+            fb = out["feedback"] or {}
+            bits = [f"STALLED mode={sm.get('mode')}@{sm.get('modeLocation')} frozen={sm.get('frozenHours'):.1f}h"]
+            if iv.get("intervened"):
+                bits.append(f"intervened attempt {iv.get('attempt')}/{iv.get('k')}")
+            elif iv.get("exhausted"):
+                bits.append("K exhausted")
+            if fb.get("filed"):
+                bits.append(f"ticket {fb['filed']['action']} wq#{fb['filed']['ticketId']}")
+            if fb.get("ntfy"):
+                bits.append(f"ntfy sent={fb['ntfy']['sent']}")
+            if fb.get("resolved"):
+                bits.append(f"resolved {len(fb['resolved'])} incident(s)")
+            print("stuck-supervisor: " + " — ".join(bits))
+    return 0 if state.get("ok", True) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,14 @@
+[Unit]
+Description=LPP stuck-supervisor — story_score/MODE stall detect + bounded intervene + auto-ticket/escalate (wq#671-673)
+Documentation=file:///home/lumen/pokemon/docs/STUCK_SUPERVISOR.md
+
+[Service]
+Type=oneshot
+User=lumen
+WorkingDirectory=/home/lumen/pokemon
+ExecStart=/home/lumen/pokemon/tools/lpp-stuck-supervisor --quiet
+# Side effects are bounded and documented in STUCK_SUPERVISOR.md: writes only
+# its own runtime/*.json state files, and — only past K=3 exhaustion, only
+# once per incident — one wq add/edit/done call and one ntfy-send call. Never
+# touches the game, never restarts a service, never spawns an agent.
+Nice=10
