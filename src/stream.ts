@@ -351,12 +351,53 @@ export class StreamServer {
       }
       res.writeHead(200, { "Content-Type": "text/html" }); res.end(PAGE);
     });
-    const wss = new WebSocketServer({ server: srv, path: "/ws" });
+    // wq#860: noServer mode so the WSS does not inherit the HTTP server's error
+    // events. The EADDRINUSE from srv.listen() propagated through the WSS and
+    // crashed as an unhandled 'error' event before the retry handler on srv
+    // could catch it. With noServer, we upgrade manually on 'upgrade' events
+    // (which only fire AFTER the server is bound), so WSS never sees bind
+    // errors at all.
+    const wss = new WebSocketServer({ noServer: true, path: "/ws" });
+    srv.on("upgrade", (req, socket, head) => {
+      if (req.url === "/ws") {
+        wss.handleUpgrade(req, socket, head, ws => { wss.emit("connection", ws, req); });
+      } else {
+        socket.destroy();
+      }
+    });
     wss.on("connection", ws => {
       this.clients.add(ws);
       ws.on("close", () => this.clients.delete(ws));
     });
-    srv.listen(port, "0.0.0.0", () => console.log(`stream server on :${port}`));
+    // wq#860: EADDRINUSE retry. The BRB splash (or any other stale port
+    // squatter) previously killed the live agent permanently — 712 crash-loop
+    // restarts, 1h40m outage. Retry with backoff so a transient squatter
+    // (lpp-brb-splash stopping, a debug http.server left running) is survived
+    // rather than fatal. After ~90s of retries the port truly is stuck and we
+    // exit loudly so systemd's restart limit fires.
+    let retries = 0;
+    const maxRetries = 12;
+    const tryListen = () => {
+      srv.listen(port, "0.0.0.0", () => {
+        if (retries > 0) console.log(`stream server on :${port} (after ${retries} retries)`);
+        else console.log(`stream server on :${port}`);
+      });
+    };
+    srv.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE" && retries < maxRetries) {
+        retries++;
+        const delay = Math.min(1000 * Math.pow(1.5, retries - 1), 15000);
+        console.warn(`[stream] port ${port} in use, retry ${retries}/${maxRetries} in ${Math.round(delay)}ms`);
+        setTimeout(() => {
+          srv.close();
+          tryListen();
+        }, delay);
+      } else {
+        console.error(`[stream] FATAL: cannot bind port ${port}: ${err.message}`);
+        process.exit(1);
+      }
+    });
+    tryListen();
   }
   broadcast(obj: object) {
     // Trim bulky fields (multi-KB reasoning dumps) before they hit slow clients.

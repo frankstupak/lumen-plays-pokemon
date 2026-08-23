@@ -1,0 +1,23 @@
+# wq#860: Proper BRB splash unit replacing ad-hoc systemd-run.
+# Serves the BRB page on port 8871 ONLY when lumen-pokemon-live is not running.
+# Conflicts= ensures systemd stops this unit before starting the live agent,
+# freeing the port. This is the fix for the 712-restart EADDRINUSE outage:
+# the old transient unit had no Conflicts= and squatted the port indefinitely.
+#
+# Install: cp to ~/.config/systemd/user/ && systemctl --user daemon-reload
+# The live agent service should add BindsTo= or Wants= if auto-start of
+# BRB on live-agent stop is desired.
+[Unit]
+Description=LPP BRB splash page (shows when the live agent is down)
+Conflicts=lumen-pokemon-live.service
+Before=lumen-pokemon-live.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lumen/pokemon/assets
+ExecStart=/usr/bin/python3 -m http.server 8871 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
