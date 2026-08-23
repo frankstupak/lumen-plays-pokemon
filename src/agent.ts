@@ -229,7 +229,7 @@ export class Agent {
   /** wq#538: the warp list annotated with reachability from where the player is
    *  standing right now, resolved through the same astar that goto() uses. */
   private currentWarpViews(): WarpView[] {
-    const p = this.nav.pos();
+    const p = this.nav.posChecked();
     let lastMap = 0;
     try { lastMap = this.emu.mem()[this.sym.addr("wLastMap")]; } catch { lastMap = 0; }
     return warpViews(this.map, p.x, p.y, lastMap, id => this.mapLabel(id));
@@ -379,7 +379,7 @@ export class Agent {
     if (rAdv) block += `\n${rAdv}`;
 
     this.map.build();
-    const p = this.nav.pos();
+    const p = this.nav.posChecked();
     block += `\n${renderWarps(this.currentWarpViews())}`;
     block += `\nMAPGRID (P=you W=warp N=npc B=item ball #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
     // wq#607: item-ball perception — the line renders ONLY when a ball is on
@@ -483,7 +483,7 @@ export class Agent {
         : `${tool}: refused - in a wild battle; fight it with battle_move`;
     }
 
-    const cpos = this.nav.pos();
+    const cpos = this.nav.posChecked();
     const argsKey = args.join(",");
     const pre = this.ceiling.check(tool, argsKey, cpos);
     if (pre) return pre;
@@ -553,11 +553,11 @@ export class Agent {
           const r = await this.nav.goto(tx, ty);
           // wq#487: a goto cut short by a battle becomes a harness-owned goal;
           // any other outcome retires it. Must run before the returns below.
-          this.transit.onGoto(tx, ty, r, this.nav.pos().map);
+          this.transit.onGoto(tx, ty, r, this.nav.posChecked().map);
           if (r === "battle") return "goto interrupted by a wild battle - the harness will flee it and resume this goto automatically";
           if (r === "dialog") return "goto blocked: a dialog or sign text is open - use talk() to clear it first";
           if (r === "adjacent_npc") {
-            const p = this.nav.pos();
+            const p = this.nav.posChecked();
             // wq#583: honest arrival-adjacent instead of 25 replans + a lying
             // "reachable" hint. The brain's next verb is the point.
             return `goto: (${tx},${ty}) is occupied by an NPC standing on it, so you cannot stand there.` +
@@ -565,7 +565,7 @@ export class Agent {
               ` or pick a different destination tile.`;
           }
           if (r === "stuck") {
-            const p = this.nav.pos();
+            const p = this.nav.posChecked();
             const stuckGrid = this.map.ascii(p.x, p.y);
             this.bus.emit("tool_call", { tool: "stuck_dump", pos: p,
               sprites: this.map.sprites, grid: stuckGrid });
@@ -581,7 +581,7 @@ export class Agent {
           // steps taken there yet; anything else that actually got the player
           // moving (arrived/moved) clears the just-arrived state.
           this.movedSinceWarp = r !== "warped";
-          return `goto -> ${r} now ${JSON.stringify(this.nav.pos())}`;
+          return `goto -> ${r} now ${JSON.stringify(this.nav.posChecked())}`;
         }
         case "enter_warp": {
           // wq#601: refresh warps before indexing on map15 — the loop below
@@ -635,7 +635,7 @@ export class Agent {
           // already said this every time and was ignored for two days
           // (wq#532 lesson, same as mtMoonReentryRefusal above).
           if (!this.movedSinceWarp) {
-            const p = this.nav.pos();
+            const p = this.nav.posChecked();
             if (p.x === w.x && p.y === w.y) {
               return `enter_warp: refused - (${w.x},${w.y}) is the tile you just warped IN on and you ` +
                 `have not moved since. Firing this warp again replays your OWN arrival and sends you ` +
@@ -645,7 +645,7 @@ export class Agent {
           const r = await this.nav.enterWarp(w);
           // wq#487: enterWarp walks to the tile first, so a wild encounter
           // interrupts it exactly like a goto - same ownership rules.
-          this.transit.onWarp(w, r, this.nav.pos().map);
+          this.transit.onWarp(w, r, this.nav.posChecked().map);
           if (r === "battle") return "enter_warp interrupted by a wild battle - the harness will flee it and resume this warp automatically";
           if (r === "dialog") return "enter_warp blocked: a dialog or sign text is open - use talk() to clear it first";
           if (r === "warped") this.movedSinceWarp = false;
@@ -662,7 +662,7 @@ export class Agent {
           const osc = r === "warped"
             ? await this.notePotentialOscillation(this.reader.read().map)
             : "";
-          return `enter_warp -> ${r} now ${JSON.stringify(this.nav.pos())}${osc}`;
+          return `enter_warp -> ${r} now ${JSON.stringify(this.nav.posChecked())}${osc}`;
         }
         case "leave_edge": {
           const dir = String(args[0] ?? "").toUpperCase();
@@ -686,7 +686,7 @@ export class Agent {
           // trigger the door-bounce refusal above - but they DO count as
           // having moved, same as a successful goto.
           this.movedSinceWarp = true;
-          return `leave_edge -> ${r} now ${JSON.stringify(this.nav.pos())}`;
+          return `leave_edge -> ${r} now ${JSON.stringify(this.nav.posChecked())}`;
         }
         case "interact": {
           // wq#607: when the target tile holds a decoded item ball, confirm
@@ -755,7 +755,7 @@ export class Agent {
           // (cheap no-op everywhere else — a 54-entry filter, skipped
           // entirely for every other button).
           const isA = args[0].toUpperCase() === "A";
-          const p0 = this.nav.pos();
+          const p0 = this.nav.posChecked();
           const candidates = isA
             ? nearbyHiddenItems(this.rom, this.sym, this.emu.mem(), p0.map, p0.x, p0.y) : [];
           const flagsBefore = candidates.length ? hiddenItemFlags(this.emu.mem(), this.sym) : [];
@@ -957,7 +957,7 @@ export class Agent {
     // clear them, and only then does walking make sense again.
     if (this.sync.textUp() || this.dlg.open() || this.scr.cursor()) return null;
     this.transit.battleEnded();
-    const p = this.nav.pos();
+    const p = this.nav.posChecked();
     const d = this.transit.overworldStep({ map: p.map, x: p.x, y: p.y }, CFG.transitResumeCap);
     if (d.action !== "resume") return null;
 
@@ -970,14 +970,14 @@ export class Agent {
       if (!w) { this.transit.clear(); return null; }   // warp gone: brain re-reads WARPS
       this.bus.emit("tool_call", { tool: "enter_warp", args: [`${goal.x},${goal.y}`], src: "transit" });
       const rw = await this.nav.enterWarp(w);
-      this.transit.onWarp(w, rw, this.nav.pos().map);
-      return { kind: "resume_warp", result: `enter_warp(${goal.x},${goal.y}->map${goal.destMap}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${rw} now ${JSON.stringify(this.nav.pos())}` };
+      this.transit.onWarp(w, rw, this.nav.posChecked().map);
+      return { kind: "resume_warp", result: `enter_warp(${goal.x},${goal.y}->map${goal.destMap}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${rw} now ${JSON.stringify(this.nav.posChecked())}` };
     }
 
     this.bus.emit("tool_call", { tool: "goto", args: [String(goal.x), String(goal.y)], src: "transit" });
     const r = await this.nav.goto(goal.x, goal.y);
-    this.transit.onGoto(goal.x, goal.y, r, this.nav.pos().map);
-    return { kind: "resume", result: `goto(${goal.x},${goal.y}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${r} now ${JSON.stringify(this.nav.pos())}` };
+    this.transit.onGoto(goal.x, goal.y, r, this.nav.posChecked().map);
+    return { kind: "resume", result: `goto(${goal.x},${goal.y}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${r} now ${JSON.stringify(this.nav.posChecked())}` };
   }
 
   /** wq#423: per-battle counters. HP-only signature: PP is deliberately
@@ -1107,7 +1107,7 @@ export class Agent {
         }
         if (this.noiseStreak >= Agent.NOISE_K * 2) {
           // Escalate: vision valve + stuck_dump, same as oscillation path
-          const p = this.nav.pos();
+          const p = this.nav.posChecked();
           if (!this.bat.active()) {
             try {
               this.map.build();
@@ -1128,7 +1128,12 @@ export class Agent {
       this.autoBudget = CFG.autoTurnRatio;
     }
     this.bus.emit("think_chunk", { turn: this.turn, think });
-    await this.sync.settle();
+    // wq#699: settle() alone returns inside the map-load gap, so `after` — and
+    // therefore the turn-summary POS prefix, the `progressed` test, and the
+    // checkpoint sidecar written from it — could all carry the departed map's
+    // coordinates under the arriving map's id. awaitMapSettled() waits on the
+    // loaded map DATA, then quiet, then a stable in-bounds tuple.
+    await this.nav.awaitMapSettled();
 
     const after = this.reader.read();
     const progressed = after.map !== before.map || after.x !== before.x ||
@@ -1180,7 +1185,7 @@ export class Agent {
     // An oscillation TRIP is exactly the shape the vision valve's same-tile
     // stuck_dump streak structurally cannot see (the position changes every
     // call by definition). Feed it in on its own trigger path.
-    if (rising) await this.maybeConsultVisionOnOscillation(this.nav.pos());
+    if (rising) await this.maybeConsultVisionOnOscillation(this.nav.posChecked());
     return v.message;
   }
 
@@ -1191,6 +1196,18 @@ export class Agent {
     // Stability guard: never snapshot mid-battle / mid-dialog / mid-script -
     // transition-frame RAM is not a resume target.
     if (this.bat.active() || this.dlg.open() || this.sync.textUp()) return;
+    // wq#699: "mid-script" is exactly what the guard above could NOT see. A
+    // map load in flight leaves wCurMap on the destination while the header,
+    // warp table and coordinates still describe the map being left, and all
+    // three flags read zero throughout the first dozen frames of it. Every
+    // `auto-*-map88` checkpoint on disk was written in that window: map88 with
+    // Route 25's (45,3) and onWarp computed off Route 25's warp list. That is
+    // the literal case this guard's own comment promised to exclude.
+    if (this.map.loadPending()) {
+      this.bus.emit("tool_call", { tool: "checkpoint_skipped", reason: "map_load_pending",
+        src: "harness", at: { map: after.map, x: after.x, y: after.y } });
+      return;
+    }
     const runTag = (this as any)._runTag ?? ((this as any)._runTag = Date.now().toString(36));
 
     // Milestone: badge gained, or a full heal just landed (Center / white-out

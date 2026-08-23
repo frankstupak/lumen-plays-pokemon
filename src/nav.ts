@@ -96,12 +96,101 @@ export class Navigator {
   pos() { const m = this.emu.mem();
     return { map: m[this.sym.addr("wCurMap")], x: m[this.sym.addr("wXCoord")], y: m[this.sym.addr("wYCoord")] }; }
 
+  /** wq#699: pos() for anything the BRAIN will see. Identical to pos() except
+   *  that a read taken while the map data is mid-load — the one case where the
+   *  tuple is known to be a lie — emits `torn_read` instead of passing
+   *  silently. Every transition path settles before returning now, so this
+   *  should never fire; it is the tripwire that says a new path forgot to. */
+  posChecked(): { map: number; x: number; y: number } {
+    const p = this.pos();
+    if (this.map.loadPending())
+      this.bus.emit("nav_trace", { ev: "torn_read", at: p,
+        hdr: this.map.romHeader(p.map) });
+    return p;
+  }
+
+  /** wq#699/#700: block until the engine's map state is SELF-CONSISTENT, and
+   *  return the position that is then safe to report. null = never settled
+   *  inside the budget, and a caller that gets null must not report a position
+   *  it could not verify.
+   *
+   *  Three gates, in order, because each one alone is known to pass on a lie:
+   *   1. MapModel.loadPending() — the loaded header must describe wCurMap.
+   *      This is the gate that the old code lacked entirely.
+   *   2. Sync.settle() — the engine must be accepting input again (post-warp
+   *      auto-walk scripts move the player AFTER the load, wq#652).
+   *   3. the tuple must hold still across consecutive samples AND sit inside
+   *      the new map's bounds. Bounds are only meaningful once (1) holds, and
+   *      stability alone is what the old poll loop used — it read two samples
+   *      taken inside the same idle gap, found them equal, and called a
+   *      transition that had not started yet "finished".
+   *
+   *  Any of the three going false restarts the stability count, so a second
+   *  transition firing during the wait (warp chains, forced-walk scripts) is
+   *  waited out rather than reported half-done. The MapModel is rebuilt on
+   *  success: after a transition every caller's geometry is otherwise the
+   *  DEPARTED map's (the wq#579 probe was bitten by exactly that). */
+  async awaitMapSettled(maxFrames = 900): Promise<{ map: number; x: number; y: number } | null> {
+    let spent = 0;
+    const stableNeeded = 2;
+    let last = this.pos(), stable = 0;
+    while (spent < maxFrames) {
+      if (this.map.loadPending()) {
+        stable = 0; last = this.pos();
+        await this.emu.framesAsync(4); spent += 4;
+        continue;
+      }
+      if (this.sync && this.sync.busy()) {
+        stable = 0; last = this.pos();
+        await this.emu.framesAsync(4); spent += 4;
+        continue;
+      }
+      const cur = this.pos();
+      stable = (cur.map === last.map && cur.x === last.x && cur.y === last.y) ? stable + 1 : 0;
+      last = cur;
+      if (stable >= stableNeeded) {
+        const m = this.emu.mem();
+        const gw = m[this.sym.addr("wCurMapWidth")] * 2, gh = m[this.sym.addr("wCurMapHeight")] * 2;
+        if (cur.x < gw && cur.y < gh) {
+          this.map.build();
+          this.trace({ ev: "map_settled", at: [cur.x, cur.y], map: cur.map, frames: spent });
+          return cur;
+        }
+        // In-bounds is a HARD invariant: coordinates outside the loaded map
+        // are the stale-coordinate signature (map88 with Route 25's (45,3)).
+        stable = 0;
+      }
+      await this.emu.framesAsync(8); spent += 8;
+    }
+    this.trace({ ev: "map_unsettled", at: [last.x, last.y], map: last.map, frames: spent,
+                 loadPending: this.map.loadPending() });
+    return null;
+  }
+
+  /** wq#700: absorb a transition that was already in flight when this call
+   *  started, so it is never credited to the action about to run. A goto whose
+   *  first step coincides with someone else's pending warp used to return
+   *  'warped' with zero net movement (live T6 2026-08-19) — and 'warped'
+   *  retires the brain's transit goal, so a false one silently kills the
+   *  objective. Returns true if a transition was absorbed. */
+  private async absorbPendingTransition(): Promise<boolean> {
+    if (!this.map.loadPending()) return false;
+    const at = this.pos();
+    const settled = await this.awaitMapSettled();
+    this.trace({ ev: "pending_transition_absorbed", from: [at.x, at.y], fromMap: at.map,
+                 to: settled ? [settled.x, settled.y] : null, toMap: settled?.map ?? null });
+    return true;
+  }
+
   inBattle(): boolean { return this.emu.mem()[this.sym.addr("wIsInBattle")] !== 0; }
 
   /** One walk-unit step. Returns 'moved' | 'blocked' | 'warped' */
   /** One walk-unit step. Returns 'moved' | 'blocked' | 'warped' | 'battle' */
   async step(dx: number, dy: number): Promise<string> {
     const d = DIRS.find(v => v.dx === dx && v.dy === dy)!;
+    // wq#700: finish anyone else's in-flight transition BEFORE baselining
+    // `before`, or this step inherits it and reports a warp it did not cause.
+    await this.absorbPendingTransition();
     if (this.sync) await this.sync.settle();
     if (this.inBattle()) return "battle";
     if (this.sync?.textUp()) return "dialog";
@@ -131,14 +220,16 @@ export class Navigator {
         // the flags alone is not sufficient because of that gap; instead poll
         // POSITION across repeated settle+wait rounds until it stops moving,
         // which is true however many idle/busy phases the exit script has.
-        let last = this.pos();
-        for (let i = 0; i < 10; i++) {
-          if (this.sync) await this.sync.settle(); else await this.emu.framesAsync(90);
-          await this.emu.framesAsync(30);
-          const cur = this.pos();
-          if (cur.map === last.map && cur.x === last.x && cur.y === last.y) break;
-          last = cur;
-        }
+        //
+        // wq#699 SUPERSEDES that poll loop: position-stability ALONE cannot
+        // tell a transition that has FINISHED from one that has not STARTED.
+        // Both samples land inside the same idle gap, compare equal, and the
+        // loop breaks holding the DEPARTED map's coordinates under the
+        // ARRIVED map's id — reproduced deterministically from checkpoint
+        // auto-mt2f0ie1-map36: enterWarp returned map88 with Route 25's
+        // (45,3). awaitMapSettled() gates on the loaded map DATA first, which
+        // is an invariant and not a timing guess.
+        await this.awaitMapSettled();
         return "warped";
       }
       if (now.x !== before.x || now.y !== before.y) return "moved";
@@ -154,6 +245,7 @@ export class Navigator {
    *  a wall. Returns the same vocabulary as step(). */
   async hopStep(dx: number, dy: number): Promise<string> {
     const d = DIRS.find(v => v.dx === dx && v.dy === dy)!;
+    await this.absorbPendingTransition();          // wq#700, same rule as step()
     if (this.sync) await this.sync.settle();
     if (this.inBattle()) return "battle";
     if (this.sync?.textUp()) return "dialog";
@@ -164,7 +256,10 @@ export class Navigator {
       await this.emu.framesAsync(70);          // full jump arc, with margin
       if (this.sync) await this.sync.settle(300);
       const now = this.pos();
-      if (now.map !== before.map) { await this.emu.framesAsync(90); return "warped"; }
+      // wq#699: a blind 90-frame sleep is the same timing guess step() used to
+      // make; the destination map's data can arrive after it (or before it,
+      // leaving a torn read either way). Gate on the data instead.
+      if (now.map !== before.map) { await this.awaitMapSettled(); return "warped"; }
       if (now.x !== before.x || now.y !== before.y) return "moved";
       // first attempt may have only turned the player; retry
     }
@@ -197,6 +292,11 @@ export class Navigator {
    *  (wq#581 T12/T19/T21). */
   async goto(tx: number, ty: number): Promise<string> {
     this.bus.emit("tool_call", { tool: "goto", args: { tx, ty } });
+    // wq#700: a journey that starts mid-transition plans against the DEPARTED
+    // map's geometry and then reports the arriving map's flip as its own
+    // 'warped' — zero net movement, transit goal silently retired (live T6
+    // 2026-08-19). Land the pending transition first, on its own event.
+    await this.absorbPendingTransition();
     this.learnedBlocked.clear();   // learned walls are per-journey, never persistent
     let noPath = 0;
     for (let replans = 0; replans < 25; replans++) {
@@ -396,6 +496,9 @@ export class Navigator {
         await this.sync?.settle(300);
         const nowMap: number = this.pos().map ?? -1;
         if (nowMap !== startMap) {
+          // wq#699: this path declared the warp on a bare wCurMap compare with
+          // no settle at all — the shortest route to a torn read in the file.
+          await this.awaitMapSettled();
           this.bus.emit("tool_call", { tool: "enterWarp", push: `raw${dx},${dy}`, result: "warped" });
           return "warped";
         }
@@ -438,6 +541,10 @@ export class Navigator {
         const sr = await this.step(push[dir][0], push[dir][1]);
         if (sr === "battle") return "battle";
         if (sr === "warped" || this.pos().map !== startMap) {
+          // wq#699: step() settles its own warps, but the `pos().map !==
+          // startMap` arm fires on transitions step() never classified — an
+          // edge crossing counts as a map load like any other.
+          await this.awaitMapSettled();
           this.bus.emit("tool_call", { tool: "leaveMapEdge", dir, result: "left", via: c });
           return "warped";
         }

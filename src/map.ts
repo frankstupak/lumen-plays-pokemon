@@ -18,6 +18,39 @@ export interface TilePair { a: number; b: number }
  *  for 145h while the pack promised "hopping a ledge is progress". */
 export interface LedgeEntry { standing: number; ledge: number; dx: number; dy: number }
 
+/** wq#699: the ROM map header for a map id, as laid out by pokered's
+ *  map_header macro: `db TILESET` then `db HEIGHT, WIDTH` (in blocks). The
+ *  bank comes from MapHeaderBanks and the pointer from MapHeaderPointers, both
+ *  indexed by map id. Standalone (no emulator) so callers that only have a ROM
+ *  — checkpoint scoring, sidecar validation — can use it too. Returns null for
+ *  an id past the end of the table: an unknown id must read as UNKNOWN and not
+ *  as whatever bytes happen to follow the table. */
+export function romMapHeader(sym: SymbolTable, rom: Rom, id: number):
+    { tileset: number; height: number; width: number } | null {
+  try {
+    const p = sym.sym("MapHeaderPointers");
+    const b = sym.sym("MapHeaderBanks");
+    // Table length from the NEXT symbol, never a hardcoded map count: a ROM
+    // whose layout moved returns null instead of reading past the end.
+    const count = (sym.nextAddr(p.bank, p.addr) - p.addr) >> 1;
+    if (id < 0 || id >= count) return null;
+    const a = rom.byte(p.bank, p.addr + id * 2) | (rom.byte(p.bank, p.addr + id * 2 + 1) << 8);
+    const e = rom.bytes(rom.byte(b.bank, b.addr + id), a, 3);
+    return { tileset: e[0], height: e[1], width: e[2] };
+  } catch { return null; }
+}
+
+/** wq#699: is (x,y) a coordinate the named map could physically hold? The
+ *  torn-read signature is a position from the map being LEFT under the id of
+ *  the map being ENTERED — map88 (Bill's house, 8x8 walk cells) reported at
+ *  Route 25's (45,3). Unknown map ids answer true: this rejects impossibility,
+ *  it does not assert correctness. */
+export function coordsPlausible(sym: SymbolTable, rom: Rom, id: number, x: number, y: number): boolean {
+  const h = romMapHeader(sym, rom, id);
+  if (!h) return true;
+  return x >= 0 && y >= 0 && x < h.width * 2 && y < h.height * 2;
+}
+
 export class MapModel {
   width = 0; height = 0;          // in blocks
   gw = 0; gh = 0;                 // walk-unit grid dims (2x blocks)
@@ -185,6 +218,42 @@ export class MapModel {
       if (!out.some(o => o.x === lx && o.y === ly)) out.push({ x: lx, y: ly });
     }
     return out;
+  }
+
+  /** Cached per-instance view of romMapHeader() (pure ROM data). */
+  private hdrCache = new Map<number, { tileset: number; height: number; width: number } | null>();
+  romHeader(id: number): { tileset: number; height: number; width: number } | null {
+    if (this.hdrCache.has(id)) return this.hdrCache.get(id)!;
+    const h = romMapHeader(this.sym, this.rom, id);
+    this.hdrCache.set(id, h);
+    return h;
+  }
+
+  /** wq#699/#700: TRUE while wCurMap names a map whose DATA IS NOT LOADED YET.
+   *
+   *  Gen 1 sets wCurMap to the destination early in the warp handler and only
+   *  loads that map's header, blocks, warp table and player coordinates some
+   *  frames later. In between, RAM describes two different maps at once and
+   *  every (map,x,y) read is a lie — measured on this ROM (Route 25 -> Bill's
+   *  house, checkpoint auto-mt2f0ie1-map88): wCurMap flips at frame 0, the
+   *  header arrives at frame 15, the coordinates at frame 16, and for the
+   *  first 12 of those frames wJoyIgnore/wStatusFlags5/wWalkCounter are ALL
+   *  ZERO — so Sync.busy() reads "idle" and Sync.settle() returns inside the
+   *  window. Quiet is not the same as finished; that is why this test is on
+   *  the DATA and not on the flags or on a frame count.
+   *
+   *  The comparison is exact and ROM-derived: the loaded header must match the
+   *  header the ROM defines for wCurMap. It cannot false-positive (a matching
+   *  header is a loaded header) and it catches every transition between maps
+   *  of differing size or tileset. Same-shape pairs are covered by the
+   *  position-stability and bounds checks in Navigator.awaitMapSettled(). */
+  loadPending(): boolean {
+    const m = this.emu.mem(), s = this.sym;
+    const h = this.romHeader(m[s.addr("wCurMap")]);
+    if (!h) return false;                       // unknown id: nothing to assert
+    return m[s.addr("wCurMapWidth")] !== h.width ||
+           m[s.addr("wCurMapHeight")] !== h.height ||
+           m[s.addr("wCurMapTileset")] !== h.tileset;
   }
 
   /** Is (x,y) a warp tile? Pathfinding must not cross these as shortcuts. */
