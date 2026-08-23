@@ -1,42 +1,90 @@
 #!/usr/bin/env bash
-# wq#483 soak harness — the repeat-run rig my 03:36Z board NOTE said this needed
-# before anyone calls the rendezvous stable. Runs the happy-path scenario N
-# times and reports the pass rate plus a per-run failure mode, so an
-# intermittent race shows up as a rate rather than a lucky green.
+# wq#483 soak harness + wq#510 orchestrator-level retry.
+#
+# When EITHER side exits 4 (STRANDED), both processes are killed and re-launched
+# from their snapshots. Each process starts fresh (snapshot reload = clean ROM),
+# so there is no "navigate out of the room" problem. Bounded by MAX_RETRIES per
+# run so a genuinely broken pair still terminates.
+#
+# Exit codes from rdv_side.ts:  0=success  3=terminal-fail  4=stranded(retry)
 #
 # Usage: tools/rdv-soak [runs] [base_port]
 #   RDV_SOAK_DELAY=30000  also soak the late-join variant
+#   RDV_SOAK_MAX_RETRIES=3  max retries per run (default 3)
 set -uo pipefail
 [ "$(hostname)" = lumen ] || exit 9
-cd /home/lumen/pokemon || exit 1
+# Resolve to whichever tree (primary or worktree) we were launched from.
+# The old hardcoded /home/lumen/pokemon ran the primary tree's code even when
+# the soak was invoked from a worktree — that silently tested the wrong code.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_DIR" || exit 1
 
 RUNS=${1:-8}
 BASE=${2:-9500}
 DELAY=${RDV_SOAK_DELAY:-0}
+MAX_RETRIES=${RDV_SOAK_MAX_RETRIES:-3}
 OUT=/tmp/rdv-soak
 mkdir -p "$OUT"
-pass=0; fail=0
-echo "soak: $RUNS runs, base port $BASE, late-join delay ${DELAY}ms, load: $(cut -d' ' -f1-3 /proc/loadavg)"
+pass=0; fail=0; retries_total=0
+echo "soak: $RUNS runs, base port $BASE, delay ${DELAY}ms, max_retries $MAX_RETRIES, load: $(cut -d' ' -f1-3 /proc/loadavg)"
 
 for i in $(seq 1 "$RUNS"); do
   port=$((BASE + i))
-  RDV_ROLE=listen RDV_PORT=$port RDV_TAG=A timeout 240 npx tsx src/link/rdv_side.ts >"$OUT/a$i.log" 2>&1 &
-  apid=$!
-  [ "$DELAY" = 0 ] && sleep 3
-  RDV_ROLE=connect RDV_PORT=$port RDV_TAG=B RDV_DELAY_MS=$DELAY timeout 240 npx tsx src/link/rdv_side.ts >"$OUT/b$i.log" 2>&1 &
-  bpid=$!
-  wait $apid; ca=$?
-  wait $bpid; cb=$?
-  ma=$(grep -o '"map":[0-9]*' "$OUT/a$i.log" | tail -1 | cut -d: -f2)
-  mb=$(grep -o '"map":[0-9]*' "$OUT/b$i.log" | tail -1 | cut -d: -f2)
-  if [ "$ca" = 0 ] && [ "$cb" = 0 ] && [ "${ma:-0}" = 239 ] && [ "${mb:-0}" = 239 ]; then
-    pass=$((pass+1)); echo "run $i: PASS (maps $ma/$mb)"
+  attempt=0
+  run_ok=false
+
+  while [ "$attempt" -le "$MAX_RETRIES" ]; do
+    attempt=$((attempt + 1))
+    alog="$OUT/a${i}_${attempt}.log"
+    blog="$OUT/b${i}_${attempt}.log"
+
+    # bump port on retry so no EADDRINUSE from the prior attempt's TIME_WAIT
+    rport=$((port + (attempt - 1) * 100))
+
+    RDV_ROLE=listen RDV_PORT=$rport RDV_TAG=A \
+      timeout 240 npx tsx src/link/rdv_side.ts >"$alog" 2>&1 &
+    apid=$!
+    [ "$DELAY" = 0 ] && sleep 3
+    RDV_ROLE=connect RDV_PORT=$rport RDV_TAG=B RDV_DELAY_MS=$DELAY \
+      timeout 240 npx tsx src/link/rdv_side.ts >"$blog" 2>&1 &
+    bpid=$!
+    wait $apid; ca=$?
+    wait $bpid; cb=$?
+
+    ma=$(grep -o '"map":[0-9]*' "$alog" | tail -1 | cut -d: -f2)
+    mb=$(grep -o '"map":[0-9]*' "$blog" | tail -1 | cut -d: -f2)
+
+    # Both succeeded?
+    if [ "$ca" = 0 ] && [ "$cb" = 0 ] && [ "${ma:-0}" = 239 ] && [ "${mb:-0}" = 239 ]; then
+      run_ok=true
+      break
+    fi
+
+    # Either side exited 4 (stranded/retryable)?
+    if [ "$ca" = 4 ] || [ "$cb" = 4 ]; then
+      if [ "$attempt" -le "$MAX_RETRIES" ]; then
+        retries_total=$((retries_total + 1))
+        echo "  run $i attempt $attempt: STRANDED (exits=$ca/$cb), retrying..."
+        sleep 2
+        continue
+      fi
+    fi
+
+    # Terminal failure or retries exhausted
+    break
+  done
+
+  if $run_ok; then
+    retry_note=""
+    [ "$attempt" -gt 1 ] && retry_note=" (after $((attempt - 1)) retries)"
+    pass=$((pass + 1)); echo "run $i: PASS (maps $ma/$mb)$retry_note"
   else
-    fail=$((fail+1))
-    ra=$(grep -o '"reason":"[^"]*"' "$OUT/a$i.log" | tail -1)
-    rb=$(grep -o '"reason":"[^"]*"' "$OUT/b$i.log" | tail -1)
-    echo "run $i: FAIL exits=$ca/$cb maps=${ma:-?}/${mb:-?} A:${ra:-none} B:${rb:-none}"
+    fail=$((fail + 1))
+    ra=$(grep -o '"reason":"[^"]*"' "$alog" | tail -1)
+    rb=$(grep -o '"reason":"[^"]*"' "$blog" | tail -1)
+    echo "run $i: FAIL exits=$ca/$cb maps=${ma:-?}/${mb:-?} A:${ra:-none} B:${rb:-none} attempts=$attempt"
   fi
 done
-echo "SOAK RESULT: $pass pass / $fail fail out of $RUNS (load now: $(cut -d' ' -f1-3 /proc/loadavg))"
+echo "SOAK RESULT: $pass pass / $fail fail out of $RUNS (retries_total=$retries_total, load: $(cut -d' ' -f1-3 /proc/loadavg))"
 [ "$fail" = 0 ]

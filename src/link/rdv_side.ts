@@ -3,6 +3,16 @@
 // Driven by env: RDV_ROLE=listen|connect RDV_PORT=.. RDV_ROOM=TRADE_CENTER|COLOSSEUM
 //               RDV_DELAY_MS=.. (late join)  RDV_DROP_AFTER=<n bytes> (disconnect test)
 // Prints one JSON line ("RESULT ...") so the orchestrator can assert on it.
+//
+// wq#510: exit codes are now semantic:
+//   0 = success (both sides in the room)
+//   3 = terminal failure (genuinely dead peer, timeout with no socket, etc.)
+//   4 = STRANDED (retryable) — the slave could not progress because the master
+//       entered the room and stopped clocking. The ORCHESTRATOR (rdv-soak or
+//       production caller) should re-launch BOTH sides from their snapshots.
+//       Retry inside the process is impossible because the master has already
+//       exited — there is nobody to reconnect to. See rabbit15's analysis in
+//       reports/510_rendezvous_retry_BLOCKED.md.
 import { Emulator, loadSnapshotFile, KEYS } from "../emulator";
 import { SymbolTable } from "../symbols";
 import { Rom } from "../rom";
@@ -14,7 +24,7 @@ import { Sync } from "../sync";
 import { Dialog } from "../dialog";
 import { SerialBridge } from "./bridge";
 import { Rendezvous, CoreView, RoomName } from "./rendezvous";
-import { offsetsFromSymbols, verifyTradeBlock, viewBlock } from "./invariants";   // wq#483: M5b check on the received block
+import { offsetsFromSymbols, verifyTradeBlock, viewBlock } from "./invariants";
 import { readLinkState } from "./linkstate";
 import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
@@ -23,12 +33,7 @@ const MODE = process.env.RDV_ROLE ?? "listen";
 const ROOM = (process.env.RDV_ROOM ?? "TRADE_CENTER") as RoomName;
 const DELAY = Number(process.env.RDV_DELAY_MS ?? 0);
 const DROP_AFTER = Number(process.env.RDV_DROP_AFTER ?? 0);
-const LINGER_MAX = Number(process.env.RDV_LINGER_MS ?? 90000);   // hard cap
-// Silence window. Must exceed the longest legitimate GAP in selection traffic,
-// not just the mean: once the master warps into the room it stops clocking, so
-// a slave still finishing its own exchange produces no traffic for a while and
-// a short window reads that as "partner done" (soak: 6/8 with 6s, the two
-// failures both being the slave aborting after the master left).
+const LINGER_MAX = Number(process.env.RDV_LINGER_MS ?? 90000);
 const LINGER_IDLE = Number(process.env.RDV_LINGER_IDLE_MS ?? 25000);
 const TAG = process.env.RDV_TAG ?? MODE;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -58,7 +63,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     keyA: KEYS.A,
     step: async (n: number, key?: number) => {
       for (let i = 0; i < n; i++) {
-        if (bridge.closed) break;         // wq#483: dead link, stop stepping into it
+        if (bridge.closed) break;
         if (bridge.pending) { try { await bridge.settled(15000); } catch { break; } }
         if (key !== undefined) (emu as any).gb.pressKey(key);
         (emu as any).gb.doFrame();
@@ -96,12 +101,6 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   console.log("RESULT " + JSON.stringify({ tag: TAG, ...res, telemetry: bridge.telemetry }));
 
   // ---- CONTINUATION: party-block exchange, then M5b invariants ------------
-  // RDV_CONTINUE=block -> after landing in the room, walk to the trade table
-  // and run the ROM's 415-byte party exchange, then validate what the PEER
-  // sent using the wq#482 one-sided invariants. Seat is chosen from LOCAL RAM
-  // only (the role byte), the same deterministic principle as the yield rule:
-  // master takes the left seat, slave the right, so the two sides cannot
-  // collide or both wait for the other to move.
   if (res.ok && process.env.RDV_CONTINUE === "block") {
     const master = core.role() === 2;
     const seat = master ? { x: 3, y: 4, face: KEYS.RIGHT } : { x: 6, y: 4, face: KEYS.LEFT };
@@ -110,16 +109,13 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
       await nav.goto(seat.x, seat.y);
       await core.step(20, seat.face);
       await core.step(20);
-      for (let r = 0; r < 60 && !bridge.closed; r++) {   // ROM runs its own exchange; bridge carries it
+      for (let r = 0; r < 60 && !bridge.closed; r++) {
         await core.step(6, KEYS.A);
         await core.step(24);
       }
     } catch (e: any) {
       console.log(`[${TAG}] continuation error: ${String(e?.message ?? e).slice(0, 120)}`);
     }
-    // Reconstruct the 415-byte block the PEER sent, from our own RAM:
-    // wLinkEnemyTrainerName $D887 (11 bytes) then wSerialEnemyDataBlock $D893
-    // (404 = count + species list + 6 mons + OT names + nicknames).
     const mem = emu.mem();
     const rd = (a: number, n: number) => Array.from({ length: n }, (_, i) => mem[a + i] & 0xFF);
     const received = [...rd(0xD887, 11), ...rd(0xD893, 404)];
@@ -135,19 +131,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     }));
   }
 
-  // LINGER. Whoever lands in the room first must keep its core running and its
-  // socket open: the partner is still exchanging selection bytes and needs a
-  // live peer to answer. Exiting immediately drops the socket and aborts the
-  // other side — measured in vivo (A reached $EF, B then reported "peer
-  // disconnected during room select").
-  //
-  // wq#483 soak finding: a FIXED linger is the wrong shape. Under load the
-  // slower side took 29.5s to finish room-select while the winner's 20s timer
-  // expired, killing it (soak run 1/6). The correct signal is one-sided and
-  // traffic-driven: keep serving while the LINK IS BUSY, and stop only after
-  // it has been idle — once both sides are in the room the ROM stops clocking
-  // selection bytes, so silence IS the "partner is done" signal. A real
-  // session continues into the trade/battle here instead of exiting.
+  // LINGER — keep the core alive so the peer can finish its exchange.
   if (res.ok && LINGER_MAX > 0) {
     const hard = Date.now() + LINGER_MAX;
     let lastActivity = Date.now();
@@ -164,8 +148,10 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     }
   }
 
-  // leave the core in a sane state either way (never wedged mid-transfer)
+  // Clean exit with semantic exit code:
+  //   0 = success, 3 = terminal failure, 4 = stranded (retryable by orchestrator)
   bridge.uninstall();
   try { bridge.link.close("side done"); } catch {}
-  process.exit(res.ok ? 0 : 3);
+  if (res.ok) process.exit(0);
+  process.exit(res.retryable ? 4 : 3);
 })();

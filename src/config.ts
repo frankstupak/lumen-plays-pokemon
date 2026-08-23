@@ -100,6 +100,8 @@ export const CFG = {
     partnerTimeoutMs: envN("LPP_RDV_PARTNER_MS", 120_000),   // wait for the peer socket (late join)
     handshakeTimeoutMs: envN("LPP_RDV_HANDSHAKE_MS", 90_000),// ROM connection loop + attendant dialog
     roomTimeoutMs: envN("LPP_RDV_ROOM_MS", 60_000),          // room-select agreement
+    retryMax: envN("LPP_RDV_RETRY_MAX", 3),                  // wq#510: max rendezvous retry attempts on stranded-slave
+    retryBackoffMs: envN("LPP_RDV_RETRY_BACKOFF", 2_000),    // wq#510: base delay between retry attempts
   },
   historyKeepVerbatim: 30,    // recent turn summaries kept verbatim
   historyCompactAt: 80,       // fold-forward compaction threshold
