@@ -51,6 +51,8 @@ from datetime import datetime, timezone
 BASE = os.environ.get("LPP_BASE", "/home/lumen/pokemon")
 STATE = f"{BASE}/runtime/frontier.json"
 NAMES_FILE = f"{os.path.dirname(os.path.abspath(__file__))}/map_names.json"
+ROM_FILE = f"{BASE}/roms/pokeblue.gb"
+SYM_FILE = f"{BASE}/roms/pokeblue.sym"
 PROGRESS_URL = "http://127.0.0.1:8871/progress.json"
 
 # Default stall window. NOT the 6h the ticket suggested as a starting point:
@@ -107,6 +109,81 @@ RANK = {m: i for i, (m, _) in enumerate(CRITICAL_PATH)}
 LAST_RANK = len(CRITICAL_PATH) - 1
 
 
+# -------------------------------------------- ROM plausibility (wq#862 / wq#699)
+# Python port of src/map.ts coordsPlausible(). Reads the ROM map header
+# (tileset, height, width in blocks) from MapHeaderPointers/Banks and rejects
+# coordinates the claimed map cannot physically hold. The torn-read signature
+# is a position from the map being LEFT under the id of the map being ENTERED
+# — e.g. map88 (Bill's house, 8x8 walk cells) at Route 25's (45,3).
+# Unknown ids return True: this rejects impossibility, not asserts correctness.
+
+_ROM_DATA: bytes | None = None
+_SYM_MAP: dict[str, tuple[int, int]] | None = None
+_MAP_HEADER_CACHE: dict[int, tuple[int, int, int] | None] = {}
+
+
+def _load_rom():
+    global _ROM_DATA
+    if _ROM_DATA is None:
+        _ROM_DATA = open(ROM_FILE, "rb").read()
+    return _ROM_DATA
+
+
+def _load_syms():
+    global _SYM_MAP
+    if _SYM_MAP is None:
+        _SYM_MAP = {}
+        for line in open(SYM_FILE):
+            parts = line.strip().split()
+            if len(parts) >= 2 and ":" in parts[0]:
+                b_s, a_s = parts[0].split(":")
+                _SYM_MAP[parts[1]] = (int(b_s, 16), int(a_s, 16))
+    return _SYM_MAP
+
+
+def _rom_offset(bank: int, addr: int) -> int:
+    return addr if addr < 0x4000 else bank * 0x4000 + (addr - 0x4000)
+
+
+def rom_map_header(map_id: int) -> tuple[int, int, int] | None:
+    """(tileset, height_blocks, width_blocks) or None for unknown ids."""
+    if map_id in _MAP_HEADER_CACHE:
+        return _MAP_HEADER_CACHE[map_id]
+    try:
+        rom = _load_rom()
+        syms = _load_syms()
+        p_bank, p_addr = syms["MapHeaderPointers"]
+        b_bank, b_addr = syms["MapHeaderBanks"]
+        # Table length from the NEXT symbol, never a hardcoded map count.
+        bank_addrs = sorted({a for (sb, a) in syms.values() if sb == p_bank})
+        nxt = next(a for a in bank_addrs if a > p_addr)
+        count = (nxt - p_addr) >> 1
+        if map_id < 0 or map_id >= count:
+            _MAP_HEADER_CACHE[map_id] = None
+            return None
+        ptr = rom[_rom_offset(p_bank, p_addr + map_id * 2)] | (
+            rom[_rom_offset(p_bank, p_addr + map_id * 2 + 1)] << 8
+        )
+        hdr_bank = rom[_rom_offset(b_bank, b_addr + map_id)]
+        o = _rom_offset(hdr_bank, ptr)
+        result = (rom[o], rom[o + 1], rom[o + 2])
+        _MAP_HEADER_CACHE[map_id] = result
+        return result
+    except Exception:
+        _MAP_HEADER_CACHE[map_id] = None
+        return None
+
+
+def coords_plausible(map_id: int, x: int, y: int) -> bool:
+    """Is (x,y) a coordinate the named map could physically hold?
+    Walk-cell bounds are 2x the block dims. Unknown ids return True."""
+    h = rom_map_header(map_id)
+    if h is None:
+        return True
+    _, height, width = h
+    return 0 <= x < width * 2 and 0 <= y < height * 2
+
+
 def load_map_names():
     try:
         return {int(k): v for k, v in json.load(open(NAMES_FILE)).items()}
@@ -134,8 +211,17 @@ def _parse_iso(s):
 
 
 def load_sidecars(base=BASE):
-    """Checkpoint sidecars: exact-ts evidence that outlives the run that wrote it."""
+    """Checkpoint sidecars: exact-ts evidence that outlives the run that wrote it.
+
+    wq#862: sidecars whose (map, x, y) the claimed map cannot physically hold
+    are excluded. These are torn reads — the position was sampled mid-warp,
+    inheriting coordinates from the map being LEFT under the id of the map being
+    ENTERED. resume.readProgress() rejects them via coordsPlausible() (wq#699);
+    this is the Python-side equivalent so the frontier never ranks or displays
+    an impossible tuple.
+    """
     out = []
+    rejected = 0
     for p in glob.glob(f"{base}/checkpoints/**/*.json", recursive=True):
         try:
             j = json.load(open(p))
@@ -143,7 +229,14 @@ def load_sidecars(base=BASE):
             continue
         if not isinstance(j, dict) or "ts" not in j or "map" not in j:
             continue
+        m, x, y = j.get("map"), j.get("x"), j.get("y")
+        if isinstance(m, int) and isinstance(x, int) and isinstance(y, int):
+            if not coords_plausible(m, x, y):
+                rejected += 1
+                continue
         out.append(j)
+    if rejected:
+        print(f"  [wq#862] {rejected} sidecar(s) rejected by plausibility check", file=sys.stderr)
     return out
 
 
@@ -476,8 +569,14 @@ def _sidecar_map_index(base=BASE):
             j = json.load(open(p))
         except Exception:
             continue
-        if isinstance(j.get("map"), int):
-            idx[os.path.basename(p)[:-5]] = j["map"]
+        m = j.get("map")
+        if not isinstance(m, int):
+            continue
+        # wq#862: exclude torn-read sidecars from the map index too.
+        x, y = j.get("x"), j.get("y")
+        if isinstance(x, int) and isinstance(y, int) and not coords_plausible(m, x, y):
+            continue
+        idx[os.path.basename(p)[:-5]] = m
     _SIDECAR_MAPS[base] = idx
     return idx
 
