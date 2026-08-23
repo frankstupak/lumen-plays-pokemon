@@ -52,3 +52,4 @@ logs-m3-*.txt
 
 # wq#588: local event/source preserves, never repo content
 backups/
+node_modules

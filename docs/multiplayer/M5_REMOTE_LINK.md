@@ -168,8 +168,9 @@ Reference implementation: `src/link/rendezvous.ts` (state machine),
 
 ```
 IDLE -> WALK_TO_ATTENDANT -> AWAIT_PARTNER -> HANDSHAKE -> ROOM_SELECT
-     -> IN_ROOM   (success)
-     -> ABORTED   (with a reason, at any point)
+     -> IN_ROOM    (success)
+     -> ABORTED    (terminal failure, at any point)
+     -> STRANDED   (retryable — wq#510, see §STRANDED below)
 ```
 
 Every transition is driven by an observation of **your own** side — your RAM,
@@ -259,8 +260,54 @@ change, not a code change:
     LPP_RDV_PARTNER_MS    120000    wait for the peer socket
     LPP_RDV_HANDSHAKE_MS   90000    ROM connection loop + attendant dialog
     LPP_RDV_ROOM_MS        60000    room-select agreement
+    LPP_RDV_RETRY_MAX          3    max orchestrator-level retry attempts
+    LPP_RDV_RETRY_BACKOFF   2000    ms base delay between retries
 
-## Verified (wq#483)
+## STRANDED detection and retry (wq#510)
+
+The slave ROM never initiates clock transfers (`sent` is always 0 — it is
+purely passive). Once the master enters the room its ROM stops clocking, so a
+slave that has not yet warped can **never progress**: the only clock source is
+gone. No linger constant fixes this (tested at 6 s, 25 s, and 90 s — same
+failure mode; proven by rabbit2 and rabbit15). This is a state-machine gap,
+not a tuning problem.
+
+### Detection
+
+During `ROOM_SELECT`, two conditions signal STRANDED:
+
+1. **Peer drops the socket** while we have not reached any room map — the
+   master entered the room, lingered, and gave up.
+2. **Room timeout fires** (`LPP_RDV_ROOM_MS`) with the socket still alive and
+   us not in any room map — the master is in the room and idle but has not
+   disconnected yet.
+
+Both return `RendezvousResult` with `phase: "STRANDED"` and `retryable: true`.
+Exit code 4 distinguishes this from terminal failure (exit 3).
+
+### Retry lives at the orchestrator level
+
+The two processes cannot coordinate a reconnect between themselves: the master
+exits its linger before the slave can signal it, and silence-because-done and
+silence-because-stranded are indistinguishable from the master's perspective
+(rabbit15 finding, proven with 90 s linger). The orchestrator (`tools/rdv-soak`
+or the production caller) detects exit code 4 from EITHER side, kills the other
+if still running, and relaunches BOTH from their clean snapshot. Each fresh
+launch reloads the Cable Club checkpoint, so ROM state is always clean — no
+need to navigate out of the room or clean up link state.
+
+Bounded by `LPP_RDV_RETRY_MAX` (default 3) per run. A genuinely dead peer
+exhausts retries and terminates with exit 3.
+
+### Contract for the other side
+
+If your implementation detects STRANDED (room-select timeout with no progress),
+close the socket. Our orchestrator will relaunch both processes. There is no
+out-of-band retry message — the socket drop IS the signal, and the fresh TCP
+connection IS the retry. This preserves BGB interop: no custom control frames
+required.
+
+## Verified (wq#483 + wq#510)
 
 `npx tsx src/link/probe_rendezvous.ts` — **12/12**, three scenarios run as
 **separate OS processes** with no shared memory:
@@ -270,3 +317,8 @@ change, not a code change:
 2. **Late join (30 s)** — early side waits 35.9 s, both still reach the room.
 3. **Mid-handshake disconnect** — both sides `ABORTED` with a reason in
    under 7 s, cores left on map `$3A`, both processes exited cleanly.
+
+`tools/rdv-soak 8` — **8/8 under load** (load avg 3.69–3.12, live service
+running), with 5 orchestrator-level retries across the 8 runs. Every stranded
+pair recovered on the first or second retry. Without the retry mechanism, the
+same workload produced 4/8 (rabbit2) and 4/8 (rabbit15).

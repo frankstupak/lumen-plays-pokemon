@@ -41,7 +41,8 @@ export type RoomName = "TRADE_CENTER" | "COLOSSEUM";
 
 export type Phase =
   | "IDLE" | "AWAIT_PARTNER" | "HANDSHAKE"
-  | "ROOM_SELECT" | "IN_ROOM" | "ABORTED";
+  | "ROOM_SELECT" | "IN_ROOM" | "ABORTED"
+  | "STRANDED";  // wq#510: slave detected it cannot progress (master in room, no clock source)
 
 /**
  * YIELD RULE (deterministic, no negotiation round-trip):
@@ -78,6 +79,10 @@ export interface RendezvousResult {
   room?: number;
   yielded: boolean;
   reason?: string;
+  /** wq#510: true when the failure is a stranded-slave condition that a retry
+   *  can resolve (reconnect + re-run from snapshot). False for genuinely dead
+   *  peers, timeouts with no socket, or exhausted retries. */
+  retryable: boolean;
   role: number;
   map: number;
   linkState: number;
@@ -121,16 +126,16 @@ export class Rendezvous {
     this.opts.onPhase?.(p, note);
   }
 
-  private abort(reason: string): RendezvousResult {
+  private abort(reason: string, retryable = false): RendezvousResult {
     this.reason = reason;
-    this.to("ABORTED", reason);
-    return this.result(false);
+    this.to(retryable ? "STRANDED" : "ABORTED", reason);
+    return this.result(false, retryable);
   }
 
-  private result(ok: boolean): RendezvousResult {
+  private result(ok: boolean, retryable = false): RendezvousResult {
     return {
       ok, phase: this.phase, room: ok ? this.room : undefined, yielded: this.yielded,
-      reason: this.reason, role: this.core.role(), map: this.core.map(),
+      reason: this.reason, retryable, role: this.core.role(), map: this.core.map(),
       linkState: this.core.linkState(), elapsedMs: Date.now() - this.t0,
     };
   }
@@ -175,7 +180,10 @@ export class Rendezvous {
     const deadlineR = Date.now() + roomMs;
     const target = ROOM_MAP[this.room];
     while (this.core.map() !== target) {
-      if (this.closed) return this.abort("peer disconnected during room select");
+      // wq#510: if the peer drops during room-select and we are NOT in the room
+      // yet, this is always a stranded-slave situation — the master entered the
+      // room, lingered, and gave up. Retryable: reconnect and re-run.
+      if (this.closed) return this.abort("peer disconnected during room select", true);
       if (Date.now() > deadlineR) {
         // one legitimate ending: the peer chose the OTHER room and we are the
         // slave -> we are in THEIR room, which is success, not failure.
@@ -187,7 +195,16 @@ export class Rendezvous {
           this.to("IN_ROOM", `landed in the peer's room ($${theirRoom.toString(16)}), yielded=${r.yielded}`);
           return this.result(true);
         }
-        return this.abort(`room agreement timeout after ${roomMs}ms (map=$${other.toString(16)})`);
+        // wq#510: if the socket is STILL ALIVE and we are not in any room map,
+        // this is a stranded slave (rabbit2/rabbit15 root cause: master entered
+        // the room and stopped clocking; slave is passive with sent=0, so it
+        // can never progress). Return STRANDED so the caller can retry via
+        // reconnect rather than aborting terminally.
+        const socketAlive = !this.closed;
+        return this.abort(
+          `room select ${socketAlive ? "stranded" : "timeout"} after ${roomMs}ms (map=$${other.toString(16)}, socket=${socketAlive ? "alive" : "dead"})`,
+          socketAlive,  // retryable only when the peer is still there
+        );
       }
       // press A only while our own menu/dialog is up — never blind-tap
       if (this.core.onMenu() || this.core.hasDialog()) await this.core.step(6, this.core.keyA);
