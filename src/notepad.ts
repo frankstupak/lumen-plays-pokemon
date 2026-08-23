@@ -96,6 +96,28 @@ function normaliseSubject(s: string): string {
     .trim();
 }
 
+/** wq#698. Position-stamped nav goals go stale the moment the agent moves.
+ *  Pins are for DURABLE FACTS (Brock beaten, TM19 unreachable), never ephemeral
+ *  nav state. These patterns catch the live pollution class from the 2026-08-19
+ *  exhibit (T4/T7): "Cerulean reached, map3 pos 19,8. Goal: Exit North..." */
+const NAV_GOAL_PATTERNS: RegExp[] = [
+  // "reached ... pos X,Y" or "reached,mapN pos X,Y"
+  /\breached\b.*\bpos\s*\d+\s*[,/]\s*\d+/i,
+  // "Goal: Exit/Head/Go/Leave" (imperative nav)
+  /\bGoal:\s*(?:Exit|Head|Go|Leave|Navigate|Walk|Move|Enter|Return)\b/i,
+  // bare position stamp in a goal-shaped line: "mapN pos X,Y" or "POS X,Y"
+  /\b(?:map\s*\d+\s+)?(?:pos|position)\s+\d+\s*[,/]\s*\d+\b/i,
+  // "at (X,Y" coordinate embed in a goal line
+  /\bGoal\b.*\bat\s*\(\s*\d+\s*[,/]\s*\d+/i,
+];
+
+/** True if the text is a position-stamped nav goal that will go stale on move. */
+export function isPositionStampedNavGoal(text: string): boolean {
+  const t = String(text ?? "").trim();
+  if (!t) return false;
+  return NAV_GOAL_PATTERNS.some(re => re.test(t));
+}
+
 /** Whitespace/punctuation/case-insensitive form, for exact-duplicate detection. */
 function normaliseLine(s: string): string {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -205,6 +227,17 @@ export class Notepad {
     const t = String(text ?? "").trim().slice(0, 300);
     if (!t) return "pin: empty, ignored";
 
+    // wq#698 NAV-GOAL DOWNGRADE. Position-stamped goals go stale the moment
+    // the agent moves. Pins are for durable facts (Brock beaten, TM19
+    // unreachable), never ephemeral nav state. Downgrade to a rolling note
+    // and tell the brain why, so it learns the distinction from the refusal.
+    if (isPositionStampedNavGoal(t)) {
+      this.rolling.push(t.slice(0, 400));
+      const evicted = this.compact();
+      this.save();
+      return `pin DOWNGRADED to note: position-stamped goals go stale when you move — pin durable facts only (badges, items, unreachable spots). ${evicted ? `(${evicted} old note(s) folded into summary)` : ""}`.trim();
+    }
+
     // wq#519 DUPLICATE GUARD. Between 05:47Z and 06:09Z on 2026-08-13 the live
     // agent pinned the same false fossil claim SEVEN times, and its own think
     // text at T41 and T48 was "the notepad is cluttered with redundant fossil
@@ -283,6 +316,29 @@ export class Notepad {
     const removed = before.filter(p => !this.pinned.includes(p));
     if (removed.length) this.save();
     return removed;
+  }
+
+  /** wq#698: one-shot sweep of existing pinned region. Moves every
+   *  position-stamped nav goal from pinned to rolling, leaving a correction
+   *  note for each. Returns the demoted lines. Idempotent (a second call
+   *  finds nothing to sweep). */
+  sweepStalePositionPins(): string[] {
+    const demoted: string[] = [];
+    const survivors: string[] = [];
+    for (const p of this.pinned) {
+      if (isPositionStampedNavGoal(p)) {
+        demoted.push(p);
+        this.pushCorrection(`DEMOTED stale pin "${p.slice(0, 80)}": position-stamped nav goals go stale when the agent moves. Pin durable facts only.`);
+      } else {
+        survivors.push(p);
+      }
+    }
+    if (demoted.length) {
+      this.pinned = survivors;
+      this.compact();
+      this.save();
+    }
+    return demoted;
   }
 
   /** wq#584: pins that ban movement ("stuck loop detected - stop trying to
