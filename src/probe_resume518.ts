@@ -151,6 +151,36 @@ console.log("\n=== B. rank order ===");
       new Set(STORY_ORDER.filter(m => !twoPos.has(m))).size);
 }
 
+// ---------- B2. Cerulean area rank order (wq#701) ----------
+// Same principle as section B but past Cerulean City: strategic interiors (PC,
+// Bill's, Gym) must rank in walk order, optional interiors (Trade House, Mart)
+// must be unranked, and Bill's house must rank ABOVE its access route (Route 25).
+console.log("\n=== B2. Cerulean area rank order (wq#701) ===");
+{
+  const cerCity = progressRank(3);
+  const cerPC = progressRank(64);
+  const r24 = progressRank(35);
+  const r25 = progressRank(36);
+  const bill = progressRank(88, 2, 7);  // Bill's house interior
+  const cerGym = progressRank(65);
+  const r5 = progressRank(16);
+  const tradeHouse = progressRank(63);
+  const mart = progressRank(67);
+
+  console.log(`   CeruleanCity=${cerCity} CeruleanPC=${cerPC} Route24=${r24} Route25=${r25} BillsHouse=${bill} CeruleanGym=${cerGym} Route5=${r5}`);
+  console.log(`   optional: TradeHouse=${tradeHouse} Mart=${mart}`);
+
+  chk("walk order: Cerulean < PC < Route24 < Route25 < Bill's < Gym < Route5",
+    cerCity < cerPC && cerPC < r24 && r24 < r25 && r25 < bill && bill < cerGym && cerGym < r5,
+    `${cerCity} < ${cerPC} < ${r24} < ${r25} < ${bill} < ${cerGym} < ${r5}`);
+  chk("optional interiors are unranked (rank -1): Trade House", tradeHouse === -1);
+  chk("optional interiors are unranked (rank -1): Mart", mart === -1);
+  chk("Bill's house beats Route 25 (Bill is mandatory, further along)",
+    bill > r25, `bill=${bill} r25=${r25}`);
+  chk("Cerulean PC ranks below outdoor routes (heal stop, not progress)",
+    cerPC < r24 && cerPC < r25, `PC=${cerPC} R24=${r24} R25=${r25}`);
+}
+
 // ---------- C. the real corpus on disk ----------
 // This is the acceptance test the ticket asks for, and it runs against the LIVE
 // saves/ + checkpoints/ directories, not a fixture. It is written as an
