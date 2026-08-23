@@ -446,7 +446,37 @@ ok("real repo is readable", real_d.get("ok") is True)
 ok("real running sha resolves from the reflog",
    real_d.get("runningFrom") == "reflog@process-start", str(real_d.get("runningFrom")))
 
+# ---- wq#862: plausibility filter ----
+ok("coords_plausible rejects map88 at (45,3) (torn read)",
+   not F.coords_plausible(88, 45, 3))
+ok("coords_plausible accepts map88 at (2,7) (inside 8x8)",
+   F.coords_plausible(88, 2, 7))
+ok("coords_plausible accepts map36 at (45,3) (Route 25, 60x18)",
+   F.coords_plausible(36, 45, 3))
+ok("coords_plausible accepts unknown map id",
+   F.coords_plausible(999, 0, 0))
+h88 = F.rom_map_header(88)
+ok("rom_map_header(88) reads Bill's house dims",
+   h88 is not None and h88[1] == 4 and h88[2] == 4,
+   str(h88))
+ok("rom_map_header(999) returns None for out-of-range",
+   F.rom_map_header(999) is None)
+
+# synthetic sidecar with implausible coords should be excluded
+pdir = tempfile.mkdtemp()
+os.makedirs(f"{pdir}/checkpoints", exist_ok=True)
+os.makedirs(f"{pdir}/events", exist_ok=True)
+now_p = int(F.datetime.now(F.timezone.utc).timestamp() * 1000)
+json.dump({"ts": now_p - 3600_000, "map": 88, "x": 45, "y": 3, "badges": 1},
+          open(f"{pdir}/checkpoints/torn.json", "w"))
+json.dump({"ts": now_p - 7200_000, "map": 36, "x": 45, "y": 3, "badges": 1},
+          open(f"{pdir}/checkpoints/good.json", "w"))
+sides = F.load_sidecars(pdir)
+ok("load_sidecars excludes implausible sidecar",
+   len(sides) == 1 and sides[0]["map"] == 36,
+   f"got {len(sides)} sidecar(s)")
+
 print(f"\n{PASS} passed, {FAIL} failed")
-for d in (pd,):
+for d in (pd, pdir):
     shutil.rmtree(d, ignore_errors=True)
 sys.exit(1 if FAIL else 0)
