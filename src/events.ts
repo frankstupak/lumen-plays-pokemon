@@ -94,15 +94,27 @@ export interface RetentionResult {
  *  both errors and the deletions themselves. Every unlink is logged and
  *  returned; failures are collected and returned rather than swallowed, so a
  *  caller can emit a countable `retention` event (live_agent.ts does). */
+// wq#861: TRIVIAL_BYTES threshold. A crash-loop boot writes ~1057 bytes
+// (retention + supervisor_ban_loaded + corridor + boot + state_read). A real
+// run with even ONE gameplay turn writes several KB of tool_call + think_chunk
+// + turn_summary events. Logs below this threshold are "trivial" — crash-boot
+// empties that must NEVER evict a real run log. The value is set at 2× the
+// measured crash-loop size (1057 * 2 ≈ 2114, rounded to 2048) so it survives
+// minor format changes without drifting into real-run territory.
+const TRIVIAL_BYTES = 2048;
+// Hard cap on trivial files kept, because a sustained crash loop at 8s/boot
+// writes ~450 files/hour and the directory gets sluggish past a few thousand.
+const TRIVIAL_CAP = 100;
+
 export function retainEventLogs(dir: string, keep: number = KEEP_FILES): RetentionResult {
   const res: RetentionResult = { dir, keep, scanned: 0, kept: 0, deleted: [], failed: [] };
-  let logs: { f: string; m: number }[] = [];
+  let logs: { f: string; m: number; sz: number }[] = [];
   try {
     logs = readdirSync(dir).filter(f => f.endsWith(".jsonl"))
       .map(f => {
-        let m = 0;
-        try { m = statSync(`${dir}/${f}`).mtimeMs; } catch { /* raced away */ }
-        return { f, m };
+        let m = 0, sz = 0;
+        try { const s = statSync(`${dir}/${f}`); m = s.mtimeMs; sz = s.size; } catch { /* raced away */ }
+        return { f, m, sz };
       })
       .sort((a, b) => b.m - a.m);
   } catch (e: any) {
@@ -111,7 +123,22 @@ export function retainEventLogs(dir: string, keep: number = KEEP_FILES): Retenti
     return res;
   }
   res.scanned = logs.length;
-  const doomed = logs.slice(keep);
+  // wq#861: split into substantial (real runs) and trivial (crash-loop boots).
+  // Substantial files compete for `keep` slots. Trivial files have their own
+  // budget (TRIVIAL_CAP) and NEVER consume a slot that would evict a real run.
+  // This is the fix for 712 crash-loop boots evicting hundreds of runs of
+  // real gameplay history.
+  const substantial: typeof logs = [];
+  const trivial: typeof logs = [];
+  for (const entry of logs) {
+    if (entry.sz < TRIVIAL_BYTES) trivial.push(entry);
+    else substantial.push(entry);
+  }
+  // Keep newest `keep` substantial files
+  const doomedSubstantial = substantial.slice(keep);
+  // Keep newest TRIVIAL_CAP trivial files
+  const doomedTrivial = trivial.slice(TRIVIAL_CAP);
+  const doomed = [...doomedSubstantial, ...doomedTrivial];
   res.kept = res.scanned - doomed.length;
   for (const { f } of doomed) {
     try {
@@ -124,7 +151,9 @@ export function retainEventLogs(dir: string, keep: number = KEEP_FILES): Retenti
     }
   }
   if (doomed.length === 0) {
-    console.log(`[retention] nothing to delete (${res.scanned} logs, keep=${keep})`);
+    console.log(`[retention] nothing to delete (${res.scanned} logs, substantial=${substantial.length}, trivial=${trivial.length}, keep=${keep})`);
+  } else {
+    console.log(`[retention] deleted ${doomed.length} (substantial: ${doomedSubstantial.length} of ${substantial.length}, trivial: ${doomedTrivial.length} of ${trivial.length})`);
   }
   return res;
 }

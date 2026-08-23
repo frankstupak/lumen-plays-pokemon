@@ -36,14 +36,18 @@ function tmp(tag: string): string {
 }
 
 /** A directory of `n` .jsonl logs with strictly increasing mtimes, oldest
- *  first, plus the non-.jsonl companions retention must never touch. */
+ *  first, plus the non-.jsonl companions retention must never touch.
+ *  wq#861: files are padded above TRIVIAL_BYTES (2048) so they classify as
+ *  substantial. The retention split now matters for every test that counts
+ *  kept/deleted against the `keep` budget. */
 function seed(n: number): { dir: string; names: string[] } {
   const dir = tmp("seed");
   const names: string[] = [];
   const base = Date.now() - n * 60_000;
+  const pad = "x".repeat(2100);   // >2048 → classifies as substantial
   for (let i = 0; i < n; i++) {
     const f = `live-agent-${base + i * 60_000}.jsonl`;
-    writeFileSync(join(dir, f), `{"t":"seed","i":${i}}\n`);
+    writeFileSync(join(dir, f), `{"t":"seed","i":${i},"pad":"${pad}"}\n`);
     const s = (base + i * 60_000) / 1000;
     utimesSync(join(dir, f), s, s);
     names.push(f);
@@ -250,9 +254,16 @@ console.log("\n=== E. what the old constructor would do to events/ RIGHT NOW ===
     // reason that is not a regression is the wq#553 shape. Reported, not graded.
     console.log(`     live-agent logs that were one construction away: ${liveAgent.length}` +
                 (liveAgent.length ? ` (${liveAgent.join(" ")})` : " — budget not currently exceeded"));
-    chk("E2 the counterfactual arithmetic is faithful: the old sweep drops everything past the newest 30",
-      r.deleted.length === Math.max(0, entries.length - 30) && r.kept === Math.min(30, entries.length),
-      `scanned=${r.scanned} deleted=${r.deleted.length} kept=${r.kept}`);
+    // wq#861: retention now splits substantial (>=2048B) from trivial (<2048B).
+    // Zero-byte stand-ins are all trivial, so they compete for TRIVIAL_CAP
+    // (100) not for keep (30). The arithmetic changed intentionally — the old
+    // assertion ("everything past newest 30") described the exact bug where
+    // 712 crash-loop empties evicted real run history.
+    const trivialCap = 100;  // TRIVIAL_CAP in events.ts
+    const expectedDeleted = Math.max(0, entries.length - trivialCap);
+    chk("E2 the counterfactual arithmetic: trivial files capped, substantial files use keep budget",
+      r.deleted.length === expectedDeleted && r.kept === Math.min(trivialCap, entries.length),
+      `scanned=${r.scanned} deleted=${r.deleted.length} kept=${r.kept} expected_deleted=${expectedDeleted}`);
   }
 }
 
