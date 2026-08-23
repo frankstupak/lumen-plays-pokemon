@@ -19,7 +19,7 @@ import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
 import { Notepad } from "./notepad";   // wq#486
 import { makeBorrowGuard } from "./borrow_guard";   // wq#488
-import { ceruleanGuidance } from "./guidance";   // wq#478
+import { ceruleanGuidance, hasTypeCounter } from "./guidance";   // wq#478, wq#696
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
@@ -589,7 +589,17 @@ function ceruleanApproachPack(map: number): string {
     // wq#478/486: dynamic Cerulean/Misty stage guidance — now its OWN guidance
     // section, refreshed every turn (money/potions/level move constantly). No
     // more marker-splice inside the notepad; the brain's notes are untouchable.
-    const refreshStageGuidance = () => pad.setGuidance("CERULEAN", ceruleanGuidance(emu, sym, reader));
+    const refreshStageGuidance = () => {
+      pad.setGuidance("CERULEAN", ceruleanGuidance(emu, sym, reader));
+      // wq#696: activate catch-sticky transit when the misty gate needs a type
+      // counter and the agent is on R24/R25 (the grass maps where WANTED
+      // species spawn). Deactivate once a counter is caught or the agent
+      // leaves the catch region.
+      const st = reader.read();
+      const needsCounter = !hasTypeCounter(st.party) && st.party.length < 6;
+      const onCatchMap = st.map === 35 || st.map === 36;  // ROUTE_24 / ROUTE_25
+      agent.transit.catchSticky = needsCounter && onCatchMap;
+    };
     bus.emit("boot", { mode: "live-agent", resumedFrom: snap.split("/").pop() });
     let failStreak = 0;
     for (;;) {
