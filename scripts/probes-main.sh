@@ -43,6 +43,7 @@ PROBES=(
   probe_vision658
   probe_gymdoor674
   probe_mistygate674
+  probe_warprace699
 )
 
 failed=()

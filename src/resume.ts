@@ -7,7 +7,7 @@ import { Emulator, loadSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { StateReader } from "./state";
 import { Rom } from "./rom";
-import { MapModel } from "./map";
+import { MapModel, coordsPlausible } from "./map";
 import { mtMoonLeg } from "./mtmoon_route";
 
 // Story progress order for Kanto maps on the critical path.
@@ -181,12 +181,38 @@ export const CRITICAL_HP_PCT = 0.25;
 export const criticalCondition = (p: { hpPct: number; ppOk: boolean }): boolean =>
   p.hpPct < CRITICAL_HP_PCT || !p.ppOk;
 
+/** wq#699: a checkpoint can be SAVED mid-map-load — wCurMap already names the
+ *  destination while the header, warp table and coordinates still describe the
+ *  map being left. Four such states are on disk right now (every
+ *  `auto-*-map88` reads map88 with Route 25's 60x18 geometry and its (45,3)
+ *  door coords), and scoring one of them ranks a position that does not exist:
+ *  `onWarp` is computed against the DEPARTED map's warp list, and the boot
+ *  state_read hands the brain an impossible tile. Running frames here lets the
+ *  engine finish the load it was already committed to, so the state is scored
+ *  as what it actually resumes into. Bounded and fail-open: a state that never
+ *  settles is scored exactly as before. */
+export function settleMapLoad(e: Emulator, sym: SymbolTable, romPath: string, maxFrames = 240): void {
+  try {
+    const mm = new MapModel(e, sym, new Rom(romPath));
+    for (let i = 0; i < maxFrames && mm.loadPending(); i += 4) e.frames(4);
+  } catch { /* scoring must never throw on a bad state */ }
+}
+
 export function readProgress(file: string, sym: SymbolTable, romPath: string): Progress {
   const mtime = (() => { try { return statSync(file).mtimeMs; } catch { return 0; } })();
   const sc = file.replace(/\.state\.gz$/, ".json");
   if (existsSync(sc)) {
     try {
       const j: Sidecar = JSON.parse(readFileSync(sc, "utf8"));
+      // wq#699: a sidecar written from a torn read carries a coordinate the
+      // claimed map cannot hold, and everything derived from it is fiction —
+      // `onWarp` was computed against the DEPARTED map's warp table, and
+      // progressRank() ranks a tile that does not exist. Every `auto-*-map88`
+      // on disk today is this shape (map88 at Route 25's (45,3), onWarp=true).
+      // Fall through to the slow path, which settles the load and reads what
+      // the state actually resumes into.
+      if (!coordsPlausible(sym, new Rom(romPath), j.map, j.x, j.y))
+        throw new Error("torn sidecar");
       return { rank: progressRank(j.map, j.x, j.y), badges: j.badges, events: j.events,
         story: typeof j.storyScore === "number" ? j.storyScore : -1,  // v1 -> unknown
         fine: LEG_FINE[j.leg ?? ""] ?? 0, onWarp: !!j.onWarp,        // v2 -> unknown
@@ -199,6 +225,7 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
   try {
     const e = new Emulator(romPath);
     loadSnapshotFile(e, file);
+    settleMapLoad(e, sym, romPath);
     const rd = new StateReader(e, sym);
     const s = rd.read();
     const lead = s.party[0];

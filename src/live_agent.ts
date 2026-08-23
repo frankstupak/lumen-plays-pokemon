@@ -526,6 +526,12 @@ function ceruleanApproachPack(map: number): string {
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
+    // wq#699: a snapshot can be saved mid-map-load, and the reads immediately
+    // below (milestones, storyScore, and the boot state_read the brain sees)
+    // would then describe a position that does not exist — the live boots on
+    // 2026-08-23 reported map88 at Route 25's (45,3) every single restart.
+    // Let the engine finish the load it is already committed to first.
+    await nav.awaitMapSettled();
     // wq#531: the save may have just rolled BACKWARD, and this loop runs on
     // every gameplay continue, not only at process boot. The Notepad is one
     // instance for the whole process, so without this its pins stay "verified"
