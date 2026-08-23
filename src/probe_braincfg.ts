@@ -16,9 +16,9 @@ const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "
   chk("primary effort overridden", CFG.profiles.primary.reasoningEffort === "high", String(CFG.profiles.primary.reasoningEffort));
   chk("primary maxtok default kept", CFG.profiles.primary.maxTokensOut === 3200, String(CFG.profiles.primary.maxTokensOut));
   chk("actRetry maxtok overridden", CFG.profiles.actRetry.maxTokensOut === 999, String(CFG.profiles.actRetry.maxTokensOut));
-  chk("actRetry model default", CFG.profiles.actRetry.model === "deepseek-v4-flash", CFG.profiles.actRetry.model);
+  chk("actRetry model default", CFG.profiles.actRetry.model === "cerebras-oss-120b", CFG.profiles.actRetry.model);
   chk("invalid number -> default", CFG.profiles.escalate.maxTokensOut === 3200, String(CFG.profiles.escalate.maxTokensOut));
-  chk("escalate model default", CFG.profiles.escalate.model === "deepseek-v4-pro", CFG.profiles.escalate.model);
+  chk("escalate model default", CFG.profiles.escalate.model === "cerebras-oss-120b", CFG.profiles.escalate.model);
   chk("SHARP EDGE: empty-string env wins over default (never set Environment= to empty)",
     CFG.profiles.summarize.model === "", `'${CFG.profiles.summarize.model}'`);
   console.log(`\n${pass} PASS / ${fail} FAIL`);

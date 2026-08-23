@@ -35,7 +35,7 @@ export const CFG = {
     } as BrainProfile,
     // hard spots (stalls, gyms, puzzles) - full effort wanted here
     escalate: {
-      model: envS("LPP_BRAIN_ESCALATE", "deepseek-v4-pro"),
+      model: envS("LPP_BRAIN_ESCALATE", "cerebras-oss-120b"),
       maxTokensOut: envN("LPP_BRAIN_ESCALATE_MAXTOK", 3200),
     } as BrainProfile,
     // no-ACT rescue: a DIFFERENT (cheap, content-reliable) model retries the
@@ -45,13 +45,13 @@ export const CFG = {
     // wasted AUTO turn. thinking:"disabled" is set for the day the gateway
     // passes it (see BrainProfile note).
     actRetry: {
-      model: envS("LPP_BRAIN_ACTRETRY", "deepseek-v4-flash"),
+      model: envS("LPP_BRAIN_ACTRETRY", "cerebras-oss-120b"),
       maxTokensOut: envN("LPP_BRAIN_ACTRETRY_MAXTOK", 6000),
       thinking: "disabled",
     } as BrainProfile,
     // compaction helper, off the main loop
     summarize: {
-      model: envS("LPP_BRAIN_SUMMARIZE", "deepseek-v4-flash"),
+      model: envS("LPP_BRAIN_SUMMARIZE", "cerebras-oss-120b"),
       maxTokensOut: 3200,
     } as BrainProfile,
     // wq#621: escalation-only valve, not the text loop's per-turn brain.
