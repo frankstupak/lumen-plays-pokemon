@@ -106,8 +106,10 @@ console.log("\n-- wiring: vision output lands in notepad GUIDANCE, never overrid
 console.log("\n-- token accounting: vision calls route through Brain.complete, which already tags think_chunk --");
 {
   const brainSrc = readFileSync(`${__dirname}/brain.ts`, "utf8");
+  // wq#907 renamed the locals when complete() grew a rung ladder; the invariant
+  // being asserted is the emit shape, so match that rather than one spelling.
   ok("Brain.complete emits think_chunk with {model, tokens} on every call (vision included, no separate wiring needed)",
-     brainSrc.includes('this.bus.emit("think_chunk", { model, tokens: usage })'));
+     /this\.bus\.emit\("think_chunk", \{ model: [\w.]+, tokens: [\w.]+ \}\)/.test(brainSrc));
   const visionSrc = readFileSync(`${__dirname}/vision.ts`, "utf8");
   ok("consultVision calls brain.complete with CFG.profiles.vision (model=lumen-vision)",
      /brain\.complete\(messages, CFG\.profiles\.vision\)/.test(visionSrc));

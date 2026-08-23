@@ -20,9 +20,18 @@ const envEffort = (k: string, d?: "low" | "medium" | "high") => {
   if (v === "none") return undefined;            // explicit provider-default
   return (v === "low" || v === "medium" || v === "high") ? v : d;
 };
+// comma-separated list; empty string is a meaningful value (no rungs) so it is
+// honoured rather than falling back to the default, same rule as envN0.
+const envList = (k: string, d: string[]) => {
+  const v = process.env[k];
+  if (v === undefined) return d;
+  return v.split(",").map(s => s.trim()).filter(Boolean);
+};
 
 export const CFG = {
-  gateway: "http://localhost:4000/v1/chat/completions",
+  // wq#907: env-overridable so a test can point the brain at a stub gateway
+  // without touching the running proxy.
+  gateway: envS("LPP_GATEWAY", "http://localhost:4000/v1/chat/completions"),
   profiles: {
     // default turn brain. reasoning_effort=low caps the hidden-reasoning burn
     // that was eating the whole completion budget before the ACT line
@@ -107,6 +116,42 @@ export const CFG = {
   historyCompactAt: 80,       // fold-forward compaction threshold
   escalateAfterStallTurns: 12,
   escalateForTurns: 6,
-  retries: 3,
+  // wq#907 BRAIN LIVENESS. The 12h stand-still of 2026-08-23 was not a crash:
+  // every rung of the chain was individually "reasonable" and the product was
+  // unbounded. Primary is qwen36-local (Isis, ONE decode slot — wq#898); the
+  // gateway gives that model `timeout: 600` and, since wq#589, NO fallback
+  // group, so an exhausted call is a terminal dead end. LiteLLM retried 3x600s,
+  // the harness retried that 3x, and `fetch` had no deadline at all, so the
+  // process sat at 0.0% CPU on an open socket to 127.0.0.1:4000.
+  //
+  // The fix is here rather than only in the gateway config because this is the
+  // one layer that cannot itself dead-end: whatever the proxy does, a turn
+  // returns text or throws inside a known bound, and live_agent.ts already
+  // survives a throw (failStreak -> checkpoint -> reboot).
+  brain: {
+    // Hard client deadline for the profile's own model (the "primary" path).
+    // A healthy qwen36-local turn is ~10 tok/s; anything past this is the
+    // single slot being held by someone else, not a turn worth waiting for.
+    timeoutMs: envN("LPP_BRAIN_TIMEOUT_MS", 120_000),
+    // Fallback rungs are cloud and fast. Seconds, per the ticket: a fallback
+    // that can take minutes is just the original bug one rung down.
+    fallbackTimeoutMs: envN("LPP_BRAIN_FALLBACK_TIMEOUT_MS", 30_000),
+    // TERMINAL FALLBACK: ordered rungs tried after the profile's own model,
+    // deliberately on two DIFFERENT cloud providers so the ladder cannot end
+    // on a single failure domain. The last rung is never skipped (see the
+    // breaker below), so every turn makes at least one real attempt.
+    fallbackModels: envList("LPP_BRAIN_FALLBACK_MODELS", ["cerebras-oss-120b", "mistral-small"]),
+    // Attempts on the terminal rung only. Non-terminal rungs get one shot —
+    // the ladder IS the retry, and retrying a hung rung is what cost 12h.
+    terminalAttempts: envN("LPP_BRAIN_TERMINAL_ATTEMPTS", 2),
+    // SINGLE-SLOT SATURATION (wq#898): LPP cannot see Isis's decode slot, and
+    // an aborted request does not free it — the gateway keeps generating for
+    // the rest of its own 600s timeout. So a rung that just cost us a deadline
+    // is presumed busy and is skipped outright for a cooldown, which turns a
+    // saturated Isis from "120s wasted every turn" into "120s wasted twice per
+    // cooldown window". Cheapest-first resumes by itself when it expires.
+    breakerFails: envN("LPP_BRAIN_BREAKER_FAILS", 2),
+    breakerCooldownMs: envN("LPP_BRAIN_BREAKER_COOLDOWN_MS", 600_000),
+  },
   runTokenBudget: 3_000_000,  // hard stop per run
 };

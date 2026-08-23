@@ -44,6 +44,8 @@ PROBES=(
   probe_gymdoor674
   probe_mistygate674
   probe_warprace699
+  probe_braincfg
+  probe_brain907
 )
 
 failed=()
