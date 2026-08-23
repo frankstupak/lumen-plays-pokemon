@@ -1,7 +1,8 @@
 // The agent loop: state -> prompt -> brain -> tool dispatch -> repeat.
 // Every capability the harness owns is exposed as one tool the brain can call.
 
-import { writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, existsSync } from "fs";
+import { join } from "path";
 import { Emulator, KEYS, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
@@ -19,7 +20,7 @@ import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
-import { moveLabel, MOVES, pickBestMove, pickWeakestMove } from "./moves";
+import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
@@ -59,6 +60,41 @@ export function mtMoonReentryRefusal(onMap15: boolean, phase: string,
   return `refused - (${warp.x},${warp.y}) warps back into Mt Moon (map${warp.destMap}) ` +
          `and you are PAST the cave. Cerulean is EAST on foot; hopping DOWN a ledge ` +
          `is one-way progress, never re-enter the cave (wq#601)`;
+}
+
+// wq#724: load the supervisor directive and extract map bans. The supervisor
+// (tools/lpp_stuck_intervene.py) writes runtime/supervisor_directive.json
+// with a gotoBan list of map IDs when it detects a NAV_LOOP or WARP_OSC.
+// The agent reads this at boot and refuses enter_warp to any banned map
+// until the story advances (storyScore/badges/eventFlags rise).
+interface SupervisorDirective {
+  gotoBan: number[];
+  mode: string;
+  summary: string;
+  notepadPin: string;
+  baselineScore?: number;
+  baselineBadges?: number;
+  baselineEvents?: number;
+}
+
+export function loadSupervisorDirective(base: string): SupervisorDirective | null {
+  const p = join(base, "runtime", "supervisor_directive.json");
+  try {
+    if (!existsSync(p)) return null;
+    const d = JSON.parse(readFileSync(p, "utf8"));
+    if (!d || !Array.isArray(d.gotoBan) || d.gotoBan.length === 0) return null;
+    // Only enforce bans for loop/oscillation modes
+    if (d.mode !== "NAV_LOOP" && d.mode !== "WARP_OSC") return null;
+    return {
+      gotoBan: d.gotoBan.filter((m: any) => typeof m === "number"),
+      mode: d.mode,
+      summary: d.summary ?? "",
+      notepadPin: d.notepadPin ?? "",
+      baselineScore: d.baselineScore,
+      baselineBadges: d.baselineBadges,
+      baselineEvents: d.baselineEvents,
+    };
+  } catch { return null; }
 }
 
 export class Agent {
@@ -120,6 +156,12 @@ export class Agent {
   // take the agent down, so a failure degrades to "mapN" and is never retried.
   private names: GameNames | null = null;
   private namesTried = false;
+  // wq#724: supervisor map bans — loaded from runtime/supervisor_directive.json
+  // at boot. The stuck supervisor writes gotoBan with real map IDs when it
+  // detects a NAV_LOOP/WARP_OSC. enter_warp refuses targets in this set.
+  // Cleared when story advances past the directive's baseline.
+  private supervisorBans: Set<number> = new Set();
+  private supervisorBaseline: { score: number; badges: number; events: number } | null = null;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -128,7 +170,51 @@ export class Agent {
     public bat: Battle, public reader: StateReader, public brain: Brain,
     public bus: EventBus, public checkpointDir: string,
     public items: Items = new Items(emu, sym, scr, sync, dlg, nav, map, bat),
-    public heal: Heal = new Heal(emu, sym, scr, sync, dlg, nav, reader, bat, bus)) {}
+    public heal: Heal = new Heal(emu, sym, scr, sync, dlg, nav, reader, bat, bus)) {
+    this.loadSupervisorBans();
+  }
+
+  /** wq#724: read the supervisor directive at boot and enforce map bans. */
+  private loadSupervisorBans(): void {
+    try {
+      // checkpointDir is <base>/checkpoints; directive is at <base>/runtime/
+      const base = join(this.checkpointDir, "..");
+      const dir = loadSupervisorDirective(base);
+      if (!dir || dir.gotoBan.length === 0) return;
+      for (const m of dir.gotoBan) this.supervisorBans.add(m);
+      // Snapshot current game state as the baseline for auto-lift
+      const st = this.reader.read();
+      this.supervisorBaseline = {
+        score: st.storyScore ?? 0,
+        badges: st.badges ?? 0,
+        events: st.events ?? 0,
+      };
+      this.bus.emit("tool_call", {
+        tool: "supervisor_ban_loaded", src: "harness",
+        maps: dir.gotoBan, mode: dir.mode, summary: dir.summary,
+      });
+    } catch { /* a bookkeeping failure must never break boot */ }
+  }
+
+  /** wq#724: if story advanced past the baseline, the ban is stale — clear it.
+   *  Called at the top of each dispatch. */
+  private checkSupervisorLift(): void {
+    if (this.supervisorBans.size === 0 || !this.supervisorBaseline) return;
+    try {
+      const st = this.reader.read();
+      const b = this.supervisorBaseline;
+      if ((st.storyScore ?? 0) > b.score ||
+          (st.badges ?? 0) > b.badges ||
+          (st.events ?? 0) > b.events) {
+        this.bus.emit("tool_call", {
+          tool: "supervisor_ban_lifted", src: "harness",
+          reason: "story advanced past supervisor baseline",
+        });
+        this.supervisorBans.clear();
+        this.supervisorBaseline = null;
+      }
+    } catch { /* never crash on a bookkeeping read */ }
+  }
 
   private mapLabel(id: number): string | null {
     if (!this.namesTried) {
@@ -371,6 +457,7 @@ export class Agent {
    *  being replayed forever. The 04:00-04:26Z live burn was 12 identical
    *  failing buy_item calls; the ceiling ends that class at 3. */
   async dispatch(actLine: string): Promise<string> {
+    this.checkSupervisorLift();  // wq#724: auto-clear bans on story advance
     const m = actLine.match(/(\w+)\s*\(([^)]*)\)/);
     if (!m) return "parse_error: no tool call found";
     const tool = m[1].toLowerCase();
@@ -521,6 +608,18 @@ export class Agent {
           }
           const w = this.map.warps[Number(args[0])];
           if (!w) return "enter_warp: bad index";
+          // wq#724: supervisor map ban — the stuck supervisor detected a
+          // NAV_LOOP/WARP_OSC and banned the loop maps. Hard refusal, same
+          // principle as mtMoonReentryRefusal and the gym gate: a rule that
+          // exists only as prose is not a rule (wq#532 lesson).
+          if (w.destMap !== undefined && this.supervisorBans.has(w.destMap)) {
+            const label = this.mapLabel(w.destMap) ?? `map${w.destMap}`;
+            this.bus.emit("tool_call", { tool: "supervisor_ban_refused", src: "harness",
+              destMap: w.destMap, label });
+            return `enter_warp: refused — ${label} (map${w.destMap}) is BANNED by the ` +
+              `stuck supervisor (navigation loop detected). Pick a different destination ` +
+              `or pursue a different objective. The ban lifts when story progress advances.`;
+          }
           // wq#674: the door tile you just warped IN on is ALSO the warp back
           // out (true of every gym/building entrance) - firing enter_warp on
           // it again with zero steps taken since arrival just replays your
@@ -832,10 +931,6 @@ export class Agent {
         hasUsableMove: usable.length > 0,
         wanted: wild && balls > 0 && st.party.length < 6 && !!WANTED[b.foeSpecies],
         grind: CFG.xpGrind,
-        // wq#696: catch-sticky fields
-        catchSticky: this.transit.catchSticky,
-        noWeaken: WANTED[b.foeSpecies]?.noWeaken,
-        foeHpFrac: b.foeMaxHp > 0 ? b.foeHp / b.foeMaxHp : 1,
       });
       if (d.action === "brain") return null;
       if (d.action === "flee") {
@@ -846,30 +941,10 @@ export class Agent {
           ? `flee transit -> fled; resuming goto(${goal.x},${goal.y})`
           : `flee transit -> ${r} (fail ${goal.fleeFails}/2, then fight)` };
       }
-      // wq#696: catch action — throw a ball at a WANTED species. Bounded at
-      // 5 attempts per encounter; detect success via wPartyCount growth.
-      if (d.action === "catch") {
-        const ballId = this.items.count(ITEM.POKE_BALL) > 0 ? ITEM.POKE_BALL
-          : this.items.count(ITEM.GREAT_BALL) > 0 ? ITEM.GREAT_BALL : ITEM.ULTRA_BALL;
-        this.bus.emit("tool_call", { tool: "use_item", args: [ITEM_NAME[ballId]], src: "transit_catch" });
-        this.transit.noteCatchAttempt();
-        const partyBefore = st.party.length;
-        const r = await this.items.useInBattle(ballId);
-        const partyAfter = this.reader.read().partyCount;
-        if (partyAfter > partyBefore) {
-          this.transit.noteCatchSuccess();
-          this.bus.emit("tool_call", { tool: "catch_success", species: b.foeSpecies,
-            name: WANTED[b.foeSpecies]?.name ?? `#${b.foeSpecies}`, src: "transit_catch" });
-          return { kind: "catch", result: `catch transit -> CAUGHT ${WANTED[b.foeSpecies]?.name ?? "?"} (${r})` };
-        }
-        return { kind: "catch_attempt", result: `catch transit -> ${r}` };
-      }
-      // fight: wq#696 catch-sticky uses weakest move to weaken without KO;
-      // normal transit uses wq#587 strongest-move picker.
-      const best = (d.action === "fight" && this.transit.catchSticky)
-        ? pickWeakestMove(b.moves, b.pp) : pickBestMove(b.moves, b.pp);
-      this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)],
-        src: this.transit.catchSticky ? "transit_catch_weaken" : "transit" });
+      // fight: shared wq#587 picker - identical selection to plannedAuto,
+      // and lock-in moves (RAGE) only as the last damage standing.
+      const best = pickBestMove(b.moves, b.pp);
+      this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)], src: "transit" });
       await this.bat.useMove(best);
       this.transit.noteFight();
       const b2 = this.bat.state();
@@ -1029,6 +1104,7 @@ export class Agent {
             streak: this.noiseStreak, src: "harness" });
         }
         if (this.noiseStreak >= Agent.NOISE_K * 2) {
+          // Escalate: vision valve + stuck_dump, same as oscillation path
           const p = this.nav.pos();
           if (!this.bat.active()) {
             try {
