@@ -77,7 +77,7 @@ the frontier cache, this one is fully recomputed every call, no history to
 preserve across restarts other than what the source files already durably
 hold).
 """
-import glob, json, os, sys
+import glob, json, os, re, sys
 from datetime import datetime, timezone
 
 BASE = os.environ.get("LPP_BASE", "/home/lumen/pokemon")
@@ -96,8 +96,12 @@ WARP_WINDOW = 64          # matches oscillation.ts's own KEEP=64 cap on warp_his
                            # The full persisted cap is itself already a bounded recent window
                            # (wq#517), so no further truncation is needed to keep this cheap.
 NAV_LOOP_MAX_DISTINCT = 3  # <=N distinct maps across WARP_WINDOW warps => a loop, not travel
+WARP_OSC_MIN_ALT = 4      # wq#697: minimum A<->B alternations to flag WARP_OSC
+WARP_OSC_WINDOW = 16      # wq#697: recent warp window for oscillation detection
+NOISE_STORM_K = 5          # wq#697: consecutive noise turns to flag NOISE_STORM
+NOISE_RE = re.compile(r"unknown tool|parse_error|tool error|no tool call", re.I)
 
-MODES = ("FIGHT_LOSS_LOOP", "NAV_LOOP", "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
+MODES = ("FIGHT_LOSS_LOOP", "WARP_OSC", "NOISE_STORM", "NAV_LOOP", "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
 
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -187,7 +191,75 @@ def advances(sidecars):
 
 
 # ---------------------------------------------------------------- MODE classification
-def classify_mode(warps, resume_picks, names, path_exhausted=False):
+
+def detect_warp_osc(warps, window=WARP_OSC_WINDOW, min_alt=WARP_OSC_MIN_ALT):
+    """wq#697: detect A<->B two-map warp oscillation."""
+    recent = (warps or [])[-window:]
+    if len(recent) < min_alt:
+        return False, None, None, 0
+    a, b = recent[-1], recent[-2] if len(recent) >= 2 else recent[-1]
+    if a == b and len(recent) >= 3:
+        for m in reversed(recent[:-1]):
+            if m != a:
+                b = m
+                break
+    alt = 0
+    expected = a
+    for m in reversed(recent):
+        if m == expected:
+            alt += 1
+            expected = b if expected == a else a
+        elif m == (b if expected == a else a):
+            alt += 1
+            expected = a if m == b else b
+        else:
+            break
+    if alt >= min_alt:
+        return True, a, b, alt
+    return False, None, None, 0
+
+
+def detect_noise_storm(turn_summaries, k=NOISE_STORM_K):
+    """wq#697: detect K consecutive noise turns."""
+    if not turn_summaries:
+        return False, 0
+    streak = 0
+    for line in reversed(turn_summaries):
+        if NOISE_RE.search(line):
+            streak += 1
+        else:
+            break
+    return (streak >= k, streak)
+
+
+def load_recent_turn_summaries(base=BASE, n=50):
+    """Load recent turn_summary lines from newest event file."""
+    events_dir = os.path.join(base, "events")
+    try:
+        fs = [os.path.join(events_dir, f) for f in os.listdir(events_dir)
+              if f.startswith("live-agent-") and f.endswith(".jsonl")]
+    except FileNotFoundError:
+        return []
+    if not fs:
+        return []
+    fs.sort(key=os.path.getmtime, reverse=True)
+    lines = []
+    for fpath in fs[:2]:
+        try:
+            with open(fpath, errors="replace") as fh:
+                for ln in fh:
+                    try:
+                        ev = json.loads(ln)
+                        if ev.get("k") == "turn_summary":
+                            lines.append(ev.get("d", {}).get("line", ""))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            continue
+    return lines[-n:]
+
+
+def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summaries=None):
     """Returns (mode, evidence_str, location_id). `warps` newest-last, same
     shape as runtime/warp_history.json's "warps" list. `resume_picks`
     newest-last list of resumedFrom checkpoint filenames, same shape as
@@ -219,6 +291,24 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False):
             f"last {len(window)} warps bounce {map_label(gym_id, names)} "
             f"({fighting_gym[gym_id]}x) <-> {map_label(heal_id, names)} "
             f"({heal_hits[heal_id]}x) — healing-cycle pattern, not travel"), gym_id
+
+    # wq#697: WARP_OSC
+    osc_hit, osc_a, osc_b, osc_alt = detect_warp_osc(window)
+    if osc_hit:
+        pair = (f"{map_label(osc_a, names)} <-> {map_label(osc_b, names)}"
+                if osc_a != osc_b
+                else f"{map_label(osc_a, names)} (self-bounce)")
+        return "WARP_OSC", (
+            f"warp oscillation: {osc_alt} alternations between {pair} "
+            f"in last {min(len(window), WARP_OSC_WINDOW)} warps"), osc_a
+
+    # wq#697: NOISE_STORM
+    noise_hit, noise_streak = detect_noise_storm(turn_summaries, NOISE_STORM_K)
+    if noise_hit:
+        return "NOISE_STORM", (
+            f"{noise_streak} consecutive noise turns (unknown tool/parse_error/tool error) "
+            f"— append-only history poisoning, brain pattern-completing failures"), \
+            window[-1] if window else None
 
     if path_exhausted:
         return "OBJECTIVE_UNREACHABLE", (
@@ -288,7 +378,9 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
                 path_exhausted = bool(fr.get("pathExhausted"))
             except Exception:
                 path_exhausted = False
-        mode, evidence, location_id = classify_mode(warps, resume_picks, names, path_exhausted)
+        mode, evidence, location_id = classify_mode(
+            warps, resume_picks, names, path_exhausted,
+            turn_summaries=load_recent_turn_summaries(base))
         st["mode"] = mode
         st["modeEvidence"] = evidence
         st["modeLocation"] = location_id

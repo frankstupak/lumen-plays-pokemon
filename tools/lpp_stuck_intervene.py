@@ -117,12 +117,12 @@ PRESCRIPTIONS = {
         "action": "checkpoint_restore_then_goto_ban",
         "summary": "Looping a small set of maps with no gym involved — ban the loop edge, fall back a checkpoint.",
         "notepadPin": (
-            "PIN: SUPERVISOR ({attempt}/{k}): navigation loop detected around {location}. "
-            "The last several warps repeat the same 2-3 maps. Do not goto the same target "
-            "that produced this loop again this session; if still stuck, resume from an "
-            "earlier checkpoint outside the loop instead of continuing to retry it."
+            "PIN: SUPERVISOR ({attempt}/{k}): navigation loop detected — warps stuck on "
+            "{loop_labels}. Maps {loop_maps} are BANNED by the harness until story advances. "
+            "Do not enter_warp to any of them. Resume from an earlier checkpoint outside "
+            "the loop or pursue a different objective."
         ),
-        "gotoBan": ["last_loop_target"],
+        "gotoBan": "__RESOLVE_FROM_WARPS__",
     },
     "OBJECTIVE_UNREACHABLE": {
         "action": "replan_verify_map_data",
@@ -148,7 +148,68 @@ PRESCRIPTIONS = {
     "IDLE": None,  # no prescribed action: the spec defines no IDLE intervention,
                    # and prescribing a guess for "nothing matched" would be exactly
                    # the kind of unfounded action this module exists to avoid.
+    # wq#697: new signatures
+    "WARP_OSC": {
+        "action": "checkpoint_restore_then_goto_ban",
+        "summary": "Two-map warp oscillation detected — ban the bounce edge, try a different warp.",
+        "notepadPin": (
+            "PIN: SUPERVISOR ({attempt}/{k}): warp oscillation at {location}. "
+            "The last several warps alternate between exactly two maps. Do NOT "
+            "enter_warp the same index again this session; pick a different warp "
+            "or goto a non-warp tile first. If no other warp exists, resume from "
+            "an earlier checkpoint."
+        ),
+        "gotoBan": "__RESOLVE_FROM_WARPS__",
+    },
+    "NOISE_STORM": {
+        "action": "history_clear_restart",
+        "summary": "Consecutive hallucinated/failed tool calls — history poisoned, restart needed.",
+        "notepadPin": (
+            "PIN: SUPERVISOR ({attempt}/{k}): noise storm at {location}. "
+            "The brain has emitted {attempt} consecutive invalid tool calls "
+            "(unknown tool/parse_error). The conversation history is poisoned "
+            "with failure patterns. A restart clears the history and breaks "
+            "the pattern-completion loop."
+        ),
+        "gotoBan": [],
+    },
 }
+
+
+WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
+NAMES_FILE = f"{os.path.join(HERE, 'map_names.json')}"
+
+
+def _resolve_loop_maps():
+    """Extract the distinct map IDs from the recent warp history — these are
+    the maps the agent is looping between. Returns a sorted list of ints."""
+    try:
+        with open(WARP_HISTORY) as f:
+            warps = json.load(f).get("warps", [])
+    except Exception:
+        return []
+    # Use the same window the classifier does (last 64 warps)
+    window = warps[-64:]
+    if not window:
+        return []
+    distinct = sorted(set(window))
+    # Only resolve if the window genuinely collapses onto a small set
+    if len(distinct) <= 3:
+        return distinct
+    # Fallback: take the top-2 most frequent maps in the window
+    from collections import Counter
+    counts = Counter(window)
+    return sorted(m for m, _ in counts.most_common(2))
+
+
+def _map_label(mid):
+    """Best-effort human label for a map id."""
+    try:
+        with open(NAMES_FILE) as f:
+            names = json.load(f)
+        return names.get(str(mid), f"map{mid}")
+    except Exception:
+        return f"map{mid}"
 
 
 def _iso(ms):
@@ -258,6 +319,18 @@ def decide(state=None, log=None, now_ms=None):
                 "reason": f"{prior} attempts already logged for {location_key} — "
                           f"handing off to the wq#673 feedback loop"}
 
+    # wq#724: resolve gotoBan — the old symbolic "last_loop_target" was never
+    # consumed because it never named actual map IDs. Now we read the warp
+    # history and extract the maps the agent is genuinely looping between.
+    goto_ban = template["gotoBan"]
+    fmt_extras = {}
+    if goto_ban == "__RESOLVE_FROM_WARPS__":
+        loop_maps = _resolve_loop_maps()
+        goto_ban = loop_maps if loop_maps else []
+        fmt_extras["loop_maps"] = ",".join(f"map{m}" for m in loop_maps) if loop_maps else "unknown"
+        fmt_extras["loop_labels"] = ", ".join(
+            f"{_map_label(m)} (map{m})" for m in loop_maps) if loop_maps else "unknown maps"
+
     directive = {
         "v": 1,
         "generatedAt": _iso(now_ms),
@@ -268,8 +341,9 @@ def decide(state=None, log=None, now_ms=None):
         "k": K,
         "action": template["action"],
         "summary": template["summary"],
-        "notepadPin": template["notepadPin"].format(attempt=attempt, k=K, location=location_id),
-        "gotoBan": template["gotoBan"],
+        "notepadPin": template["notepadPin"].format(
+            attempt=attempt, k=K, location=location_id, **fmt_extras),
+        "gotoBan": goto_ban,
     }
 
     entry = {

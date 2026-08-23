@@ -104,6 +104,12 @@ export class Agent {
   // see the enter_warp refusal below for why this exists.
   private movedSinceWarp = true;
   private unwedgeDirs = ["N", "S", "E", "W"];
+  // wq#697: consecutive noise turns (unknown tool/parse_error/tool error).
+  // After NOISE_K consecutive, inject a '!' urgent directive. After 2*NOISE_K,
+  // escalate via the vision valve + brain escalation, same path as NAV_LOOP.
+  private noiseStreak = 0;
+  private static readonly NOISE_K = 5;
+  private static readonly NOISE_RE = /unknown tool|parse_error|tool error|no tool call/i;
   // wq#423 battle soft-lock tracking (per battle, reset when it ends)
   private btTurns = 0;
   private btStall = 0;                 // consecutive turns with no HP change either side
@@ -148,7 +154,7 @@ export class Agent {
    *  RAM-overriding. `trigger` is board-visible so a reader can tell which
    *  detector fired the consult apart from another. */
   private async escalateVision(pos: { map: number; x: number; y: number },
-                               grid: string, trigger: "stuck" | "oscillation"): Promise<void> {
+                               grid: string, trigger: "stuck" | "oscillation" | "noise_storm"): Promise<void> {
     if (!this.visionValve.tryConsumeBudget()) {
       this.bus.emit("tool_call", { tool: "vision_refused", trigger,
         line: `vision valve budget cap (${CFG.visionValve.maxPerHour}/hour) reached — ` +
@@ -1006,6 +1012,39 @@ export class Agent {
         act = `AUTO:${result.split(" ")[0]}`;
       }
       if (act && !act.startsWith("AUTO:")) this.noActStreak = 0;
+      // wq#697: noise-storm tracking. A result matching the NOISE regex
+      // increments the streak; any clean result resets it. At NOISE_K, inject
+      // an urgent directive naming the valid tools. At 2*NOISE_K, escalate
+      // via the vision valve (same path as warp oscillation).
+      if (Agent.NOISE_RE.test(result)) {
+        this.noiseStreak++;
+        if (this.noiseStreak === Agent.NOISE_K) {
+          const validTools = "goto(x,y), enter_warp(idx), leave_edge(N|S|E|W), talk(), " +
+            "battle_move(slot), flee(), use_item(name), buy_item(name,qty), " +
+            "heal_at_center(), note(text), interact(x,y), choose(yes|no|idx), press(btn)";
+          result += `\n! NOISE STORM (${this.noiseStreak} consecutive invalid calls): ` +
+            `you are pattern-completing failures. VALID TOOLS: ${validTools}. ` +
+            `Read the MAPGRID and WARPS above and pick a REAL target.`;
+          this.bus.emit("tool_call", { tool: "noise_storm_breaker",
+            streak: this.noiseStreak, src: "harness" });
+        }
+        if (this.noiseStreak >= Agent.NOISE_K * 2) {
+          const p = this.nav.pos();
+          if (!this.bat.active()) {
+            try {
+              this.map.build();
+              const grid = this.map.ascii(p.x, p.y);
+              this.bus.emit("tool_call", { tool: "stuck_dump", pos: p,
+                sprites: this.map.sprites, grid, trigger: "noise_storm" });
+              await this.escalateVision(p, grid, "stuck");
+            } catch { /* geometry failure must not kill the turn */ }
+          }
+          this.bus.emit("tool_call", { tool: "noise_storm_escalation",
+            streak: this.noiseStreak, src: "harness" });
+        }
+      } else {
+        this.noiseStreak = 0;
+      }
       // wq#472: a brain-driven turn just happened - refill the planned-auto
       // budget. ratio=0 keeps this at 0 -> plannedAuto never gates in.
       this.autoBudget = CFG.autoTurnRatio;
