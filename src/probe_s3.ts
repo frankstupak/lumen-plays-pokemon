@@ -78,8 +78,16 @@ const items = new Items(emu, sym, scr, sync, dlg, nav, map, bat);
   chk("back in Viridian", st.map === 1, `map=${st.map}`);
   await nav.goto(19, 35).catch(() => {});
   let rr: any = await nav.leaveMapEdge("S" as any);
+  // wq#554: a battle during the transition is NOT a map assertion — the same
+  // defect class as steptrace542 G2/G3 (battle greens a check that never
+  // verified the condition). Resolve the battle, then verify honestly.
+  if (rr === "battle") {
+    if (bat.active()) await bat.run(() => 0, 30);
+    st = reader.read();
+    if (st.map !== 12) rr = await nav.leaveMapEdge("S" as any).catch(() => "stuck");
+  }
   st = reader.read();
-  chk("on Route 1", st.map === 12 || rr === "battle", `map=${st.map} r=${rr}`);
+  chk("on Route 1", st.map === 12, `map=${st.map} r=${rr}`);
 
   // pace until a wild battle bites (grass rows run down the route)
   let battled = false;
