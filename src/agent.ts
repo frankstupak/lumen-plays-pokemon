@@ -85,8 +85,10 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
     if (!d || !Array.isArray(d.gotoBan) || d.gotoBan.length === 0) return null;
     // Only enforce bans for loop/oscillation modes
     if (d.mode !== "NAV_LOOP" && d.mode !== "WARP_OSC") return null;
+    const bans = d.gotoBan.filter((m: any) => typeof m === "number");
+    if (bans.length === 0) return null;   // e.g. old symbolic ["last_loop_target"]
     return {
-      gotoBan: d.gotoBan.filter((m: any) => typeof m === "number"),
+      gotoBan: bans,
       mode: d.mode,
       summary: d.summary ?? "",
       notepadPin: d.notepadPin ?? "",
@@ -185,9 +187,9 @@ export class Agent {
       // Snapshot current game state as the baseline for auto-lift
       const st = this.reader.read();
       this.supervisorBaseline = {
-        score: st.storyScore ?? 0,
-        badges: st.badges ?? 0,
-        events: st.events ?? 0,
+        score: st.storyScore,
+        badges: st.badgeCount,
+        events: this.reader.eventCount(),
       };
       this.bus.emit("tool_call", {
         tool: "supervisor_ban_loaded", src: "harness",
@@ -203,9 +205,9 @@ export class Agent {
     try {
       const st = this.reader.read();
       const b = this.supervisorBaseline;
-      if ((st.storyScore ?? 0) > b.score ||
-          (st.badges ?? 0) > b.badges ||
-          (st.events ?? 0) > b.events) {
+      if (st.storyScore > b.score ||
+          st.badgeCount > b.badges ||
+          this.reader.eventCount() > b.events) {
         this.bus.emit("tool_call", {
           tool: "supervisor_ban_lifted", src: "harness",
           reason: "story advanced past supervisor baseline",
