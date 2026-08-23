@@ -42,8 +42,8 @@ export interface TransitGoal {
   fleeFails: number;   // failed RUN attempts in the CURRENT battle
 }
 
-export type TransitAction = "flee" | "fight" | "resume" | "brain";
-export interface TransitDecision { action: TransitAction; why: string; }
+export type TransitAction = "flee" | "fight" | "catch" | "resume" | "brain";
+export interface TransitDecision { action: TransitAction; why: string; noWeaken?: boolean; }
 
 export const HP_FLOOR = 0.25;                 // same gate as wq#472 plannedAuto
 export const FLEE_FAILS_BEFORE_FIGHT = 2;     // ticket: "fight only if flee fails twice"
@@ -58,6 +58,9 @@ export interface BattleCtx {
   hasUsableMove: boolean; // at least one move with PP > 0
   wanted: boolean;        // catch policy wants this foe AND a catch is possible
   grind: boolean;         // XP grind explicitly requested (CFG.xpGrind)
+  noWeaken?: boolean;     // wq#696: catch policy says throw immediately (e.g. ABRA)
+  catchSticky?: boolean;  // wq#696: harness owns catch encounters, not the brain
+  foeHpFrac?: number;     // wq#696: foe HP fraction for weaken-before-throw gating
 }
 
 /** What to do about the battle currently on screen. */
@@ -66,6 +69,16 @@ export function decideBattle(goal: TransitGoal | null, c: BattleCtx): TransitDec
   if (!c.wild) return { action: "brain", why: "trainer battle - no escape, brain owns it" };
   if (c.hpFrac <= HP_FLOOR) return { action: "brain", why: "HP critical - healing/items are a judgment call" };
   if (c.grind) return { action: "brain", why: "XP grind requested - encounters are the point" };
+  // wq#696: catch-sticky mode — when the harness owns the catch objective, a
+  // WANTED encounter is caught deterministically instead of handing back to the
+  // brain (which, absent an explicit catch objective, flees or ignores it).
+  // The noWeaken flag (ABRA: throw immediately) skips the weaken phase.
+  if (c.wanted && c.catchSticky) {
+    if (c.noWeaken) return { action: "catch", noWeaken: true, why: "catch-sticky: WANTED species (noWeaken - throw immediately)" };
+    if (c.foeHpFrac !== undefined && c.foeHpFrac <= 0.5) return { action: "catch", why: "catch-sticky: WANTED species, HP low enough - throw ball" };
+    if (c.hasUsableMove) return { action: "fight", why: "catch-sticky: WANTED species, weaken first (do not KO)" };
+    return { action: "catch", why: "catch-sticky: WANTED species, no usable move - throw ball as-is" };
+  }
   if (c.wanted) return { action: "brain", why: "catch policy wants this species" };
   if (goal.fleeFails >= FLEE_FAILS_BEFORE_FIGHT)
     return c.hasUsableMove
@@ -97,8 +110,12 @@ export function decideOverworld(goal: TransitGoal | null, p: Pos,
  */
 export class TransitTracker {
   goal: TransitGoal | null = null;
-  readonly stats = { flees: 0, fleeFailures: 0, fights: 0, resumes: 0, arrivals: 0, capped: 0 };
+  readonly stats = { flees: 0, fleeFailures: 0, fights: 0, catches: 0, catchAttempts: 0, resumes: 0, arrivals: 0, capped: 0 };
   private handback: string | null = null;
+  /** wq#696: when true, WANTED encounters are caught deterministically by the
+   *  harness instead of handing back to the brain. Set by the catch leg in
+   *  guidance/cerulean when the active objective is a catch. */
+  catchSticky = false;
 
   /** Record the outcome of every goto (brain-issued OR resume-issued).
    *  "battle" is the only result that puts a target under harness ownership:
@@ -156,6 +173,9 @@ export class TransitTracker {
     if (this.goal) this.goal.fleeFails++;
   }
   noteFight(): void { this.stats.fights++; }
+  /** wq#696: catch attempt bookkeeping. */
+  noteCatchAttempt(): void { this.stats.catchAttempts++; }
+  noteCatchSuccess(): void { this.stats.catches++; }
   /** Called whenever we observe the overworld: the next battle starts fresh. */
   battleEnded(): void { if (this.goal) this.goal.fleeFails = 0; }
 

@@ -19,7 +19,7 @@ import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
-import { moveLabel, MOVES, pickBestMove } from "./moves";
+import { moveLabel, MOVES, pickBestMove, pickWeakestMove } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
@@ -826,6 +826,10 @@ export class Agent {
         hasUsableMove: usable.length > 0,
         wanted: wild && balls > 0 && st.party.length < 6 && !!WANTED[b.foeSpecies],
         grind: CFG.xpGrind,
+        // wq#696: catch-sticky fields
+        catchSticky: this.transit.catchSticky,
+        noWeaken: WANTED[b.foeSpecies]?.noWeaken,
+        foeHpFrac: b.foeMaxHp > 0 ? b.foeHp / b.foeMaxHp : 1,
       });
       if (d.action === "brain") return null;
       if (d.action === "flee") {
@@ -836,10 +840,30 @@ export class Agent {
           ? `flee transit -> fled; resuming goto(${goal.x},${goal.y})`
           : `flee transit -> ${r} (fail ${goal.fleeFails}/2, then fight)` };
       }
-      // fight: shared wq#587 picker - identical selection to plannedAuto,
-      // and lock-in moves (RAGE) only as the last damage standing.
-      const best = pickBestMove(b.moves, b.pp);
-      this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)], src: "transit" });
+      // wq#696: catch action — throw a ball at a WANTED species. Bounded at
+      // 5 attempts per encounter; detect success via wPartyCount growth.
+      if (d.action === "catch") {
+        const ballId = this.items.count(ITEM.POKE_BALL) > 0 ? ITEM.POKE_BALL
+          : this.items.count(ITEM.GREAT_BALL) > 0 ? ITEM.GREAT_BALL : ITEM.ULTRA_BALL;
+        this.bus.emit("tool_call", { tool: "use_item", args: [ITEM_NAME[ballId]], src: "transit_catch" });
+        this.transit.noteCatchAttempt();
+        const partyBefore = st.party.length;
+        const r = await this.items.useInBattle(ballId);
+        const partyAfter = this.reader.read().partyCount;
+        if (partyAfter > partyBefore) {
+          this.transit.noteCatchSuccess();
+          this.bus.emit("tool_call", { tool: "catch_success", species: b.foeSpecies,
+            name: WANTED[b.foeSpecies]?.name ?? `#${b.foeSpecies}`, src: "transit_catch" });
+          return { kind: "catch", result: `catch transit -> CAUGHT ${WANTED[b.foeSpecies]?.name ?? "?"} (${r})` };
+        }
+        return { kind: "catch_attempt", result: `catch transit -> ${r}` };
+      }
+      // fight: wq#696 catch-sticky uses weakest move to weaken without KO;
+      // normal transit uses wq#587 strongest-move picker.
+      const best = (d.action === "fight" && this.transit.catchSticky)
+        ? pickWeakestMove(b.moves, b.pp) : pickBestMove(b.moves, b.pp);
+      this.bus.emit("tool_call", { tool: "battle_move", args: [String(best)],
+        src: this.transit.catchSticky ? "transit_catch_weaken" : "transit" });
       await this.bat.useMove(best);
       this.transit.noteFight();
       const b2 = this.bat.state();

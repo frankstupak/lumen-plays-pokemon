@@ -62,6 +62,25 @@ export function pickBestMove(moves: number[], pp: number[]): number {
   return any >= 0 ? any : 0;
 }
 
+/** wq#696: weakest non-lock damaging move — for catch weakening without KO.
+ *  Falls back to a status move (0 power, never KOs) then any move, same
+ *  priority chain as pickBestMove but ascending power. */
+export function pickWeakestMove(moves: number[], pp: number[]): number {
+  let atk = -1, atkPow = Infinity, status = -1;
+  moves.forEach((mid, i) => {
+    if (!mid || (pp[i] & 0x3f) <= 0) return;
+    const meta = MOVES[mid];
+    if (meta?.lockIn) return;           // never lock in during a catch
+    const pow = meta?.power ?? 30;
+    if (pow > 0) { if (pow < atkPow) { atkPow = pow; atk = i; } }
+    else if (status < 0) status = i;
+  });
+  if (status >= 0) return status;       // prefer status: zero KO risk
+  if (atk >= 0) return atk;
+  const any = moves.findIndex(m => !!m);
+  return any >= 0 ? any : 0;
+}
+
 export function moveLabel(id: number): string {
   const m = MOVES[id];
   return m ? `${m.name}[${m.type}${m.power ? " " + m.power : " status"}]` : `MOVE${id}`;
