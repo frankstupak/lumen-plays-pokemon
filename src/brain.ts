@@ -7,12 +7,13 @@ import { EventBus } from "./events";
 import { readFileSync, appendFileSync } from "fs";
 
 function apiKey(): string {
-  for (const f of ["/home/lumen/agent/.env"]) {
-    try {
-      const m = readFileSync(f, "utf8").match(/LITELLM_(?:MASTER_)?KEY=(\S+)/);
-      if (m) return m[1];
-    } catch {}
-  }
+  // wq#903/wq#949: env first (scoped lpp key), then the lpp key file only.
+  // Never /home/lumen/agent/.env — that silently misattributes spend to the
+  // shared ops-emergency key. A missing key fails loudly (401 on sk-local).
+  if (process.env.LITELLM_MASTER_KEY) return process.env.LITELLM_MASTER_KEY;
+  try {
+    return readFileSync("/home/lumen/.secrets/litellm-service-keys/lpp.key", "utf8").trim();
+  } catch {}
   return "sk-local";
 }
 
