@@ -82,16 +82,22 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
   try {
     if (!existsSync(p)) return null;
     const d = JSON.parse(readFileSync(p, "utf8"));
-    if (!d || !Array.isArray(d.gotoBan) || d.gotoBan.length === 0) return null;
-    // Only enforce bans for loop/oscillation modes
-    if (d.mode !== "NAV_LOOP" && d.mode !== "WARP_OSC") return null;
-    const bans = d.gotoBan.filter((m: any) => typeof m === "number");
-    if (bans.length === 0) return null;   // e.g. old symbolic ["last_loop_target"]
+    if (!d) return null;
+    // Bans are honoured ONLY for loop/oscillation modes; every other directive
+    // (e.g. FIGHT_LOSS_LOOP) carries GUIDANCE via notepadPin but never a ban.
+    // wq#1081/#1084: previously this returned null unless gotoBan was non-empty,
+    // so a guidance-only directive never loaded and its pin was silently dropped.
+    const banMode = d.mode === "NAV_LOOP" || d.mode === "WARP_OSC";
+    const bans = banMode && Array.isArray(d.gotoBan)
+      ? d.gotoBan.filter((m: any) => typeof m === "number")
+      : [];
+    const pin = typeof d.notepadPin === "string" ? d.notepadPin : "";
+    if (bans.length === 0 && !pin) return null;   // nothing actionable
     return {
       gotoBan: bans,
-      mode: d.mode,
+      mode: d.mode ?? "",
       summary: d.summary ?? "",
-      notepadPin: d.notepadPin ?? "",
+      notepadPin: pin,
       baselineScore: d.baselineScore,
       baselineBadges: d.baselineBadges,
       baselineEvents: d.baselineEvents,
@@ -141,6 +147,15 @@ export class Agent {
   // player since the last warp arrival. False right after any warp lands —
   // see the enter_warp refusal below for why this exists.
   private movedSinceWarp = true;
+  // wq#1086: identity of the door we just arrived through, valid only while
+  // movedSinceWarp is false. wq#674's guard compared PLAYER POSITION to the
+  // target warp's tile (p.x===w.x && p.y===w.y), which only catches re-entry
+  // from the exact landing tile. Some edge/door warps land the player
+  // ADJACENT to the door instead of on it (observed live at the Bills
+  // House(88)<->Route25(36) boundary), so that comparison silently misses
+  // the bounce. Tracking the fired warp's OWN identity (map + index) instead
+  // of a coordinate catches re-entry regardless of where the landing tile is.
+  private justWarpedBack: { map: number; index: number } | undefined;
   private unwedgeDirs = ["N", "S", "E", "W"];
   // wq#697: consecutive noise turns (unknown tool/parse_error/tool error).
   // After NOISE_K consecutive, inject a '!' urgent directive. After 2*NOISE_K,
@@ -164,6 +179,10 @@ export class Agent {
   // Cleared when story advances past the directive's baseline.
   private supervisorBans: Set<number> = new Set();
   private supervisorBaseline: { score: number; badges: number; events: number } | null = null;
+  // wq#1081/#1084: the directive's textual guidance, rendered every turn in
+  // observe(). wq#724 wired ban consumption but never rendered this, so the
+  // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
+  private supervisorPin = "";
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -182,9 +201,12 @@ export class Agent {
       // checkpointDir is <base>/checkpoints; directive is at <base>/runtime/
       const base = join(this.checkpointDir, "..");
       const dir = loadSupervisorDirective(base);
-      if (!dir || dir.gotoBan.length === 0) return;
+      if (!dir) return;
       for (const m of dir.gotoBan) this.supervisorBans.add(m);
-      // Snapshot current game state as the baseline for auto-lift
+      this.supervisorPin = dir.notepadPin || "";
+      // wq#1081/#1084: load the baseline whenever EITHER a ban or a pin is
+      // present, so a guidance-only directive still auto-lifts on advance.
+      if (this.supervisorBans.size === 0 && !this.supervisorPin) return;
       const st = this.reader.read();
       this.supervisorBaseline = {
         score: st.storyScore,
@@ -192,8 +214,8 @@ export class Agent {
         events: this.reader.eventCount(),
       };
       this.bus.emit("tool_call", {
-        tool: "supervisor_ban_loaded", src: "harness",
-        maps: dir.gotoBan, mode: dir.mode, summary: dir.summary,
+        tool: "supervisor_directive_loaded", src: "harness",
+        maps: dir.gotoBan, mode: dir.mode, summary: dir.summary, pin: !!this.supervisorPin,
       });
     } catch { /* a bookkeeping failure must never break boot */ }
   }
@@ -201,7 +223,9 @@ export class Agent {
   /** wq#724: if story advanced past the baseline, the ban is stale — clear it.
    *  Called at the top of each dispatch. */
   private checkSupervisorLift(): void {
-    if (this.supervisorBans.size === 0 || !this.supervisorBaseline) return;
+    // wq#1081/#1084: baseline is set whenever a ban OR a pin loaded, so gate on
+    // it alone — a guidance-only directive must lift its pin on advance too.
+    if (!this.supervisorBaseline) return;
     try {
       const st = this.reader.read();
       const b = this.supervisorBaseline;
@@ -209,10 +233,11 @@ export class Agent {
           st.badgeCount > b.badges ||
           this.reader.eventCount() > b.events) {
         this.bus.emit("tool_call", {
-          tool: "supervisor_ban_lifted", src: "harness",
+          tool: "supervisor_directive_lifted", src: "harness",
           reason: "story advanced past supervisor baseline",
         });
         this.supervisorBans.clear();
+        this.supervisorPin = "";
         this.supervisorBaseline = null;
       }
     } catch { /* never crash on a bookkeeping read */ }
@@ -319,6 +344,12 @@ export class Agent {
       block += `\nBAG ${this.items.bagLine()}`;
       return block;
     }
+
+    // wq#1081/#1084: surface the stuck supervisor's guidance to the brain every
+    // turn. Without this the entire FIGHT_LOSS_LOOP grind remedy was inert —
+    // written to runtime/supervisor_directive.json and never read (wq#724 wired
+    // ban enforcement but not this). Prefixed "!!" so it reads as high-priority.
+    if (this.supervisorPin) block += `\n!! ${this.supervisorPin}`;
 
     const inCenter = this.emu.mem()[this.sym.addr("wCurMapTileset")] === 6;  // POKECENTER tileset
     const lead = st.party[0];
@@ -580,6 +611,26 @@ export class Agent {
           // wq#674: "warped" lands on the new map's arrival tile with zero
           // steps taken there yet; anything else that actually got the player
           // moving (arrived/moved) clears the just-arrived state.
+          // wq#1086: goto() doesn't report which warp fired, only that one
+          // did — so identify it after the fact: on the map we just landed
+          // on, the door that leads back to where we came from. Only trust
+          // this when it's UNAMBIGUOUS (exactly one such warp); a route with
+          // several ways back to the departure map is exactly the case where
+          // guessing wrong would refuse a legitimate re-entry, so leave
+          // justWarpedBack unset and let the tile-equality check alone cover
+          // it, same as before this fix.
+          if (r === "warped") {
+            this.map.build();
+            const dst = this.nav.posChecked().map;
+            const backDoors = this.map.warps
+              .map((cw, ci) => ({ cw, ci }))
+              .filter(({ cw }) => cw.destMap === st0.map);
+            this.justWarpedBack = backDoors.length === 1
+              ? { map: dst, index: backDoors[0].ci }
+              : undefined;
+          } else {
+            this.justWarpedBack = undefined;
+          }
           this.movedSinceWarp = r !== "warped";
           return `goto -> ${r} now ${JSON.stringify(this.nav.posChecked())}`;
         }
@@ -636,10 +687,22 @@ export class Agent {
           // (wq#532 lesson, same as mtMoonReentryRefusal above).
           if (!this.movedSinceWarp) {
             const p = this.nav.posChecked();
-            if (p.x === w.x && p.y === w.y) {
-              return `enter_warp: refused - (${w.x},${w.y}) is the tile you just warped IN on and you ` +
-                `have not moved since. Firing this warp again replays your OWN arrival and sends you ` +
-                `right back out. goto() a DIFFERENT tile first to actually enter the room (wq#674).`;
+            const onTile = p.x === w.x && p.y === w.y;
+            // wq#1086: the tile-equality check above only catches re-entry
+            // from the EXACT landing tile. Some door warps (Bills House(88)
+            // <->Route25(36) confirmed live) land the player ADJACENT to the
+            // door instead of on it, so p!==w even though this is still the
+            // same doorway fired straight back — compare the WARP'S IDENTITY
+            // (map + index), not the player's coordinate, to catch that case
+            // too. this.justWarpedBack is only set while movedSinceWarp is
+            // false, so this can't misfire once a real step has been taken.
+            const sameDoor = this.justWarpedBack !== undefined &&
+              this.justWarpedBack.map === p.map &&
+              this.justWarpedBack.index === Number(args[0]);
+            if (onTile || sameDoor) {
+              return `enter_warp: refused - this is the door you just arrived through and you ` +
+                `have not moved since. Firing it again replays your OWN arrival and sends you ` +
+                `right back out. goto() a DIFFERENT tile first to actually go somewhere (wq#674, wq#1086).`;
             }
           }
           const r = await this.nav.enterWarp(w);
@@ -648,7 +711,14 @@ export class Agent {
           this.transit.onWarp(w, r, this.nav.posChecked().map);
           if (r === "battle") return "enter_warp interrupted by a wild battle - the harness will flee it and resume this warp automatically";
           if (r === "dialog") return "enter_warp blocked: a dialog or sign text is open - use talk() to clear it first";
-          if (r === "warped") this.movedSinceWarp = false;
+          if (r === "warped") {
+            this.movedSinceWarp = false;
+            // wq#1086: unlike goto's implicit warp, an explicit enter_warp(w)
+            // tells us EXACTLY which door fired — w.destWarp is the index of
+            // its partner on the map we just landed on. No ambiguity to guess
+            // around, unlike the goto branch above.
+            this.justWarpedBack = { map: this.nav.posChecked().map, index: w.destWarp };
+          }
           // wq#517: record an arrival ONLY when the warp actually happened.
           // This call used to be unconditional, so an enter_warp that returned
           // "stuck" pushed the CURRENT map into the warp-arrival history as
@@ -686,6 +756,7 @@ export class Agent {
           // trigger the door-bounce refusal above - but they DO count as
           // having moved, same as a successful goto.
           this.movedSinceWarp = true;
+          this.justWarpedBack = undefined; // wq#1086: stale identity, no longer relevant once truly moved
           return `leave_edge -> ${r} now ${JSON.stringify(this.nav.posChecked())}`;
         }
         case "interact": {
