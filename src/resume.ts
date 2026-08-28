@@ -359,16 +359,24 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
   // events are exactly what mis-ranked the fossil pocket against the sealed
   // east pocket (wq#581 A3.2; 18 rewind boots). Legless old sidecars carry
   // fine=0 and sort earlier at equal rank — progress unproved is progress
-  // unclaimed (wq#518/534). `onWarp` is the last quality tiebreak before
-  // mtime: at otherwise-equal progress prefer the save NOT standing on a
-  // ladder tile (the wq#579 boot shape), without ever outvoting real
-  // progress signals.
+  // unclaimed (wq#518/534).
+  // wq#1066: `onWarp` now sits DIRECTLY UNDER badges/story and ABOVE rank — it
+  // was the last tiebreak, which is the bug this ticket fixes. A checkpoint
+  // standing ON a warp tile does not hold the map-rank it appears to: the next
+  // step re-fires the warp and the agent is elsewhere, so ranking it by that
+  // map is a lie. The live trap was auto-*-t10 (map88 Bill's-warp, rank 25,
+  // onWarp) out-ranking every non-warp Cerulean/Route state (rank<=24), the
+  // picker restoring onto the warp every ~57s -> Cerulean bounce, 180h frozen.
+  // onWarp still never outvotes badges or story (real permanent progress); it
+  // only stops a warp-tile save from claiming positional rank it cannot keep.
+  // At equal onWarp, rank/fine/events order exactly as before.
   scored.sort((a, b) =>
     (Number(criticalCondition(a)) - Number(criticalCondition(b))) || (b.badges - a.badges) ||
     ((a.story >= 0 && b.story >= 0) ? (b.story - a.story) : 0) ||
+    (Number(a.onWarp) - Number(b.onWarp)) ||
     (b.rank - a.rank) || (b.fine - a.fine) ||
     (b.events - a.events) ||
-    (Number(a.onWarp) - Number(b.onWarp)) || (b.mtime - a.mtime));
+    (b.mtime - a.mtime));
   let winner = scored[0];
   if (!winner) return cands[0];
 
@@ -395,7 +403,14 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
     // Only step aside if the last run actually produced something newer to step
     // aside TO. Without that, the repeat is not evidence of a trap — it is just
     // the only state there is. Never trade a viable state for a non-viable one.
-    const alt = scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable));
+    // wq#1066: prefer a NEWER NON-WARP alternative so the escape hatch can
+    // never step aside onto a warp-tile save (which would re-fire the warp and
+    // resume the very A<->B bounce this guard exists to break). Fall back to the
+    // original "any newer viable" pick when no non-warp newer state exists,
+    // preserving the anti-wedge guarantee (mtime > winner.mtime proves the last
+    // run produced something newer to move to).
+    const alt = scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable) && !c.onWarp)
+             ?? scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable));
     if (alt) {
       log(`resume: REPEAT GUARD — ${short(winner.f)} picked ${RESUME_REPEAT_LIMIT}x running while newer states exist; ` +
         `demoting it for this selection and taking ${short(alt.f)} ` +
