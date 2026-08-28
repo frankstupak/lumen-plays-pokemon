@@ -26,6 +26,7 @@ import { SerialBridge } from "./bridge";
 import { Rendezvous, CoreView, RoomName } from "./rendezvous";
 import { offsetsFromSymbols, verifyTradeBlock, viewBlock } from "./invariants";
 import { readLinkState } from "./linkstate";
+import { runCycles, TRANSFER_CYCLES } from "./lockstep";   // wq#511: fine-slice block driver
 import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
 const PORT = Number(process.env.RDV_PORT ?? 9351);
@@ -100,22 +101,72 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   const res = await rdv.run();
   console.log("RESULT " + JSON.stringify({ tag: TAG, ...res, telemetry: bridge.telemetry }));
 
-  // ---- CONTINUATION: party-block exchange, then M5b invariants ------------
+  // ---- CONTINUATION: party-block exchange, then M5b invariants (wq#511) ----
+  // The 415-byte party block needs FINE-GRAINED stepping + follower catch-up —
+  // the cross-process port of trade.ts exchangeParties (fine-slice + peer
+  // catch-up). Coarse doFrame() lets the master clock many transfers per frame
+  // while the follower serves a stale byte => corrupt block. So: step in
+  // ~TRANSFER_CYCLES (512) increments, settle each pending transfer before the
+  // next clock, and arm bridge follower catch-up so every inbound sync1 is
+  // answered with a freshly-staged byte. Drive by wLinkState exactly like
+  // trade.ts: seat -> >=2 (session started) -> ==50 (trade menu = block done).
   if (res.ok && process.env.RDV_CONTINUE === "block") {
+    const LINK_STATE_TRADE_MENU = 50;
+    const ls = () => readLinkState(emu.mem()).linkState;
+    const ex = () => bridge.telemetry.sent + bridge.telemetry.slaveServed;
+    const pos = () => `(${emu.mem()[0xD362] & 0xFF},${emu.mem()[0xD361] & 0xFF})`;   // wXCoord,wYCoord
+    // Seat by ROLE — matches the ROM's own spawn (verified 2026-08-28 run c2:
+    // master/connect spawns at the LEFT seat (3,4), slave/listen at the RIGHT
+    // seat (6,4); the table sits between at row 4, players face across). Keying
+    // on mode navigates each player AWAY from its spawn to row 5 (wrong facing).
     const master = core.role() === 2;
     const seat = master ? { x: 3, y: 4, face: KEYS.RIGHT } : { x: 6, y: 4, face: KEYS.LEFT };
-    console.log(`[${TAG}] continuation: ${master ? "MASTER->left" : "SLAVE->right"} seat (${seat.x},${seat.y})`);
-    try {
-      await nav.goto(seat.x, seat.y);
-      await core.step(20, seat.face);
-      await core.step(20);
-      for (let r = 0; r < 60 && !bridge.closed; r++) {
-        await core.step(6, KEYS.A);
-        await core.step(24);
+    console.log(`[${TAG}] continuation: mode=${MODE} role=${core.role()} seat(${seat.x},${seat.y}) player=${pos()} map=${core.map()} ls=${ls()}`);
+
+    // Arm follower catch-up: run OUR core until it stages a fresh SB byte before
+    // answering a peer sync1. $FFAC != $FE is the ROM main-loop-staged signal.
+    bridge.enableFollowerCatchUp({
+      run: (cyc: number) => runCycles((emu as any).core, cyc),
+      ready: () => ((emu.mem()[0xFFAC] & 0xFF) !== 0xFE),
+      cycles: 64, maxSteps: 8,
+    });
+
+    // Fine step: ~512 cyc/slice, settle pending transfers, yield often so inbound
+    // sync1s + our catch-up interleave. Key pressed once per `pressEvery` slices
+    // (0 = only on slice 0) to nudge dialog without disturbing the nybble sync.
+    const fine = async (slices: number, key?: number, pressEvery = 0) => {
+      for (let s = 0; s < slices; s++) {
+        if (bridge.closed) break;
+        if (bridge.pending) { try { await bridge.settled(15000); } catch { break; } }
+        if (key !== undefined && (pressEvery === 0 ? s === 0 : s % pressEvery === 0)) (emu as any).gb.pressKey(key);
+        runCycles((emu as any).core, TRANSFER_CYCLES);
+        bridge.advance(TRANSFER_CYCLES);
+        if (s % 8 === 0) await sleep(0);
       }
+    };
+
+    try {
+      await nav.goto(seat.x, seat.y);          // coarse nav — no serial traffic yet
+      console.log(`[${TAG}] seat-nav: after goto player=${pos()} map=${core.map()} ls=${ls()}`);
+      await fine(40, seat.face);               // face the table across the seat
+      await fine(40);
+      let reached2 = false, reached50 = false;
+      let lastEx = ex(), stall = 0;
+      const BUDGET = 2500;                      // block-phase burst ceiling
+      for (let r = 0; r < BUDGET && !bridge.closed; r++) {
+        await fine(8, KEYS.A, 8);               // one A per burst for "Just a moment"/"PLEASE WAIT!"
+        await fine(24);                         // then let the block run undisturbed
+        const l = ls(), e = ex();
+        if (e !== lastEx) { lastEx = e; stall = 0; } else stall++;
+        if (!reached2 && l >= 2) { reached2 = true; console.log(`[${TAG}] seat-nav OK: wLinkState>=2 (session started) burst~${r} player=${pos()} ex=${e}`); }
+        if (l === LINK_STATE_TRADE_MENU) { reached50 = true; console.log(`[${TAG}] seat-nav OK: wLinkState==50 (TRADE MENU — block exchanged) burst~${r} ex=${e}`); break; }
+        if (stall >= 300) { console.log(`[${TAG}] drive bail: no serial progress in 300 bursts (ex=${e} ls=${l} player=${pos()})`); break; }
+      }
+      console.log(`[${TAG}] continuation drive done: reached2=${reached2} reached50=${reached50} ls=${ls()} map=${core.map()} player=${pos()} ex=${ex()}`);
     } catch (e: any) {
-      console.log(`[${TAG}] continuation error: ${String(e?.message ?? e).slice(0, 120)}`);
+      console.log(`[${TAG}] continuation error: ${String(e?.message ?? e).slice(0, 160)}`);
     }
+    bridge.disableFollowerCatchUp();
     const mem = emu.mem();
     const rd = (a: number, n: number) => Array.from({ length: n }, (_, i) => mem[a + i] & 0xFF);
     const received = [...rd(0xD887, 11), ...rd(0xD893, 404)];
@@ -128,6 +179,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
       peerSlot0: { species: view.mons[0].species, level: view.mons[0].level,
         hp: view.mons[0].hp, maxHp: view.mons[0].maxHp, moves: view.mons[0].moves },
       exchanges: bridge.telemetry.sent + bridge.telemetry.slaveServed,
+      catchUpSteps: bridge.telemetry.catchUpSteps, catchUpTimeouts: bridge.telemetry.catchUpTimeouts,
     }));
   }
 
