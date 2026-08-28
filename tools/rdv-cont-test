@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# wq#511 continuation e2e — rendezvous (with #510 retry-on-4) then drive the
+# 415-byte party exchange and check M5b invariants on BOTH sides.
+# Usage: tools/rdv-cont-test [basePort] [maxAttempts]
+set -uo pipefail
+[ "$(hostname)" = lumen ] || { echo "run on lumen"; exit 9; }
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT" || exit 1
+
+PORT=${1:-9980}
+MAX=${2:-4}
+OUT=${RDV_CONT_OUT:-/tmp/claude-web-511-155878/rdv-cont-test}
+mkdir -p "$OUT"
+
+for attempt in $(seq 1 "$MAX"); do
+  p=$((PORT + attempt))
+  [ "$attempt" -gt 1 ] && { echo "retry $attempt/$MAX (backoff 3s)"; sleep 3; }
+
+  RDV_ROLE=listen  RDV_PORT=$p RDV_TAG=A RDV_CONTINUE=block RDV_LINGER_MS=45000 \
+    timeout 400 npx tsx src/link/rdv_side.ts >"$OUT/a.log" 2>&1 &
+  apid=$!
+  sleep 3
+  RDV_ROLE=connect RDV_PORT=$p RDV_TAG=B RDV_CONTINUE=block RDV_LINGER_MS=45000 \
+    timeout 400 npx tsx src/link/rdv_side.ts >"$OUT/b.log" 2>&1 &
+  bpid=$!
+  wait $apid; ca=$?
+  wait $bpid; cb=$?
+
+  echo "attempt $attempt: exits=$ca/$cb (port $p)"
+  if [ "$ca" = 4 ] || [ "$cb" = 4 ]; then
+    echo "  stranded, retrying"
+    continue
+  fi
+
+  echo "=== A (continuation + BLOCKCHECK) ==="
+  grep -E 'seat-nav|continuation|BLOCKCHECK|error' "$OUT/a.log" || echo "(none)"
+  echo "=== B (continuation + BLOCKCHECK) ==="
+  grep -E 'seat-nav|continuation|BLOCKCHECK|error' "$OUT/b.log" || echo "(none)"
+
+  # green if BOTH BLOCKCHECK lines report ok:true
+  aok=$(grep -o 'BLOCKCHECK {"[^}]*"ok":true' "$OUT/a.log" | head -1)
+  bok=$(grep -o 'BLOCKCHECK {"[^}]*"ok":true' "$OUT/b.log" | head -1)
+  if grep -q '"ok":true' <<<"$aok" && grep -q '"ok":true' <<<"$bok"; then
+    echo "RESULT: GREEN — M5b accepted the received party on BOTH sides"
+    exit 0
+  fi
+  echo "RESULT: NOT GREEN — see logs in $OUT (a.log/b.log)"
+  exit 2
+done
+echo "EXHAUSTED: $MAX attempts, all stranded"
+exit 1

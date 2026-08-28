@@ -39,6 +39,7 @@ interface Core {
 export interface BridgeStats {
   sent: number; received: number; resends: number;
   slaveServed: number; forcedSbWrites: number; suppressedDupIrq: number;
+  catchUpSteps: number; catchUpTimeouts: number;
 }
 
 export class SerialBridge {
@@ -47,8 +48,14 @@ export class SerialBridge {
   private waiters: (() => void)[] = [];
   /** byte log for probes/evidence: what we sent as master, what came back */
   log: { out: number; in: number }[] = [];
-  private stats: BridgeStats = { sent: 0, received: 0, resends: 0, slaveServed: 0, forcedSbWrites: 0, suppressedDupIrq: 0 };
+  private stats: BridgeStats = { sent: 0, received: 0, resends: 0, slaveServed: 0, forcedSbWrites: 0, suppressedDupIrq: 0, catchUpSteps: 0, catchUpTimeouts: 0 };
   private uninstallers: (() => void)[] = [];
+  /** wq#511: follower catch-up — the cross-process port of serialbus.catchUp.
+   *  When armed, before we answer a peer's sync1 AS SLAVE we run OUR OWN core
+   *  in bounded bursts until it commits a FRESH SB byte, so we never serve a
+   *  stale/$FE reply and the 415-byte block assembles intact on the master. */
+  private stagedFresh = false;
+  private cu: { run: (cycles: number) => void; ready: () => boolean; cycles: number; maxSteps: number; cycleCap: number } | null = null;
   /** The bridge OWNS its link end (handlers must be ours); callers use
    *  bridge.link.listen(...) or bridge.link.connect(...). */
   readonly link: BgbLink;
@@ -65,7 +72,7 @@ export class SerialBridge {
       // Peer answered our sync1: THIS is the remote byte the core was waiting on.
       onSlaveByte: (data: number) => this.deliver(data),
       // Peer is master: serve our staged byte back, deliver theirs to the core.
-      onMasterByte: (data: number) => { this.stats.slaveServed++; const out = this.stagedOut; this.deliver(data); return out; },
+      onMasterByte: (data: number) => this.serveMaster(data),
       onClose: (why: string) => this.onLinkClosed(why),
     });
     this.installSbWrap();
@@ -80,6 +87,46 @@ export class SerialBridge {
     this.inflight = false;
     const ws = this.waiters; this.waiters = [];
     for (const w of ws) w();          // resolve; callers check .closed
+  }
+
+  /** Arm follower catch-up for the block phase (wq#511). run() advances OUR
+   *  core; ready() is the ROM's main-loop-staged signal ($FFAC != $FE). Off by
+   *  default so the handshake path is byte-for-byte unchanged. */
+  enableFollowerCatchUp(cfg: { run: (cycles: number) => void; ready: () => boolean; cycles?: number; maxSteps?: number; cycleCap?: number }): void {
+    this.cu = { run: cfg.run, ready: cfg.ready, cycles: cfg.cycles ?? 64, maxSteps: cfg.maxSteps ?? 8, cycleCap: cfg.cycleCap ?? 200000 };
+  }
+  disableFollowerCatchUp(): void { this.cu = null; }
+
+  /** SLAVE reply to a peer's sync1. Order mirrors serialbus.masterExchange:
+   *  catch up (so our staged byte is FRESH) -> capture it -> deliver the peer's
+   *  byte to our core (its ISR stages the next) -> return ours as the sync2. */
+  private serveMaster(data: number): number {
+    this.stats.slaveServed++;
+    if (this.cu && !this.closed) this.followerCatchUp();
+    const out = this.stagedOut & 0xFF;
+    this.deliver(data);
+    return out;
+  }
+
+  /** Advance OUR core until it commits a fresh SB byte since this sync1,
+   *  bounded. Direct port of serialbus.catchUp — here the follower is us, and
+   *  the "peer runner" is our own core. stagedFresh is set by the SB wrap on a
+   *  real ROM write (the analogue of serialbus.markStaged). */
+  private followerCatchUp(): void {
+    const cu = this.cu!;
+    this.stagedFresh = false;
+    let spent = 0;
+    for (let i = 0; i < cu.maxSteps; i++) {
+      if (this.stagedFresh) return;
+      if (spent >= cu.cycleCap) break;
+      cu.run(cu.cycles); spent += cu.cycles; this.stats.catchUpSteps++;
+    }
+    // Secondary $FFAC gate: main loop has real data queued but the SB write
+    // hasn't landed yet -> one more short burst. Else give up — a genuine
+    // no-data follower resends its last staged byte, the hardware-correct
+    // fallback (R2), and this.stagedOut already holds it.
+    if (!this.stagedFresh && cu.ready() && spent < cu.cycleCap) { cu.run(cu.cycles); this.stats.catchUpSteps++; }
+    if (!this.stagedFresh) this.stats.catchUpTimeouts++;
   }
 
   /** True while a master transfer awaits its remote reply. Do not step the
@@ -132,9 +179,11 @@ export class SerialBridge {
       if (!took && (sc & 0x01) === 0) {
         parentObj.memory[SB] = data & 0xFF;
         self.stagedOut = data & 0xFF;
+        self.stagedFresh = true;               // wq#511: fresh SB write (markStaged analogue)
         self.stats.forcedSbWrites++;
       } else if (took) {
         self.stagedOut = data & 0xFF;
+        self.stagedFresh = true;               // wq#511: fresh SB write (markStaged analogue)
       }
       return r;
     };
