@@ -100,7 +100,11 @@ Two changes, both in `tools/lpp_stuck_intervene.py`:
    gate actually enforces. A parse failure degrades to `GATE_FALLBACK` (the
    values as of today) rather than to no pin. The type counter is now stated
    as a requirement — wq#677 made it one, and per `probe_gymdoor674` it is the
-   real wall; level alone never was.
+   real wall; level alone never was. The pin also absorbs the live hot-patch
+   applied to the primary tree during this same incident — walk into grass
+   with `goto()`, do not `enter_warp` into a building looking for it, do not
+   heal at full HP — which names the three turn-sinks the run was observed
+   burning on instead of grinding.
 2. **`exhausted` now refreshes the directive on disk** (`_terminal_directive`),
    labelled `SUPERVISOR (EXHAUSTED after 3/3)` with an empty `gotoBan`.
    Previously `main()` wrote only on the intervening path, so a spent key
@@ -111,7 +115,7 @@ Two changes, both in `tools/lpp_stuck_intervene.py`:
 
 ## Verification
 
-`python3 tools/verify_672.py` — **60/60**. Every call passes an explicit
+`python3 tools/verify_672.py` — **62/62**. Every call passes an explicit
 `log` dict (never touches the live `runtime/intervention_log.json`), mirroring
 `verify_489.py`'s own pattern of exercising `emit()` directly against a
 throwaway state rather than real persisted state. Covers: no intervention

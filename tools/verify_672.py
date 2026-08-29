@@ -162,6 +162,10 @@ ok("pin states the type counter as required, not preferred",
    "Grass or Rock" in pin and "Prefer" not in pin, pin)
 ok("pin names the location instead of a bare id next to the level numbers",
    "Cerulean City (map3)" in pin, pin)
+ok("pin keeps the live hot-patch's grind mechanics (grass via goto, no warp-in)",
+   "tall grass" in pin and "goto()" in pin and "enter_warp" in pin, pin)
+ok("pin keeps the live hot-patch's no-heal-at-full-HP instruction",
+   "full HP" in pin, pin)
 ok("an unknown map id still renders, and still carries the raw id",
    I._located(60001) == "map60001", I._located(60001))
 

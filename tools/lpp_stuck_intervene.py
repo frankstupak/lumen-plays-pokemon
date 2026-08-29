@@ -148,14 +148,25 @@ PRESCRIPTIONS = {
         # The type counter is stated as a REQUIREMENT, not a preference: wq#677
         # made it one, and it is the actual wall (a solo L30 Charmeleon still
         # loses an all-Water gym, per src/probe_gymdoor674.ts).
+        #
+        # The "how to actually grind" half (walk into grass with goto, stop
+        # re-healing at full HP, stop warping into buildings) is the live
+        # hot-patch that was applied to the primary tree during this same
+        # incident: those are the three turn-sinks the run was observed
+        # burning on instead of grinding. Kept verbatim in substance.
         "notepadPin": (
             "PIN: SUPERVISOR ({attempt}/{k}): stuck losing the gym fight at {location}. "
-            "Stop re-entering — the harness REFUSES gym entry until all four hold: "
+            "STOP re-entering the gym — the harness REFUSES entry until all four hold: "
             "lead level >= {min_level}, >= {min_potions} potions, >= {min_roster} party "
             "members, and at least one Grass or Rock party member (the gym is Water; a "
-            "Fire lead is resisted, so level alone will never win it). Grind Route 24/25 "
-            "and catch an Oddish/Bellsprout/Paras/Geodude to clear the counter condition. "
-            "Do not re-enter the gym until every one of the four is satisfied."
+            "Fire lead is resisted, so more levels on the same mon will never win it — "
+            "the type counter is what unblocks the badge). Go to Route 24/25 and CATCH "
+            "an Oddish/Bellsprout/Paras/Geodude, then level it. Once you are ON a route, "
+            "use goto() to WALK into the tall grass to trigger wild battles. Do NOT "
+            "enter_warp into a house or building to look for grass, do not walk back "
+            "into the doorway you just came out of, and do not warp to the Pokecenter "
+            "to heal when already at full HP. Do not re-enter the gym until every one "
+            "of the four conditions is satisfied."
         ),
         "gotoBan": [],
     },
