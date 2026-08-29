@@ -52,7 +52,7 @@ already-firing valve, not a repair to the valve itself.
 
 | Mode | Action | Notes |
 |---|---|---|
-| `FIGHT_LOSS_LOOP` | `grind_sub_objective` | pins a grind target (Route 24/25, level range, type-counter hint) keyed to the gym location |
+| `FIGHT_LOSS_LOOP` | `grind_sub_objective` | pins the harness's own gym-entry gate — level, potions, roster, type counter — read from `src/guidance.ts` (wq#1091) |
 | `NAV_LOOP` | `checkpoint_restore_then_goto_ban` | pins a goto-ban + fallback-checkpoint instruction |
 | `OBJECTIVE_UNREACHABLE` | `replan_verify_map_data` | pins a re-verify instruction against the frontier's `pathExhausted` milestone |
 | `RESUME_DEADEND` | `alternate_checkpoint` | pins an instruction to resume from a different checkpoint next boot |
@@ -73,28 +73,45 @@ the same way "is the game stuck" is. An attempt resolves as `"superseded"`
 location changes before an advance — drifting into a different stuck shape
 is not evidence the intervention worked.
 
-## What this does not do yet
+## A pin the agent obeys must agree with the gate that refuses it (wq#1091)
 
-Prescribing "grind Route 24/25" only helps if the live agent process reads
-it. The natural channel is the same one `src/recovery.ts`'s `CORRIDOR`
-already uses — a boot-time goal injected into the notepad's pinned region —
-but wiring that consumption point is a change to `src/agent.ts`, and at the
-time this ticket was worked `src/agent.ts` had a live, uncommitted diff from
-a concurrent session (wq#674, attacking the same incident from the opposite
-end: breaking the live stall directly, right now). Editing the same file
-underneath an in-flight concurrent change is exactly the "collide in a
-shared tree" failure wq#520's own history warns against. This module
-therefore **prescribes and persists** the directive
-(`runtime/supervisor_directive.json`) and **logs** every attempt with
-before/after state (`runtime/intervention_log.json`), fully bounded and
-fully tested — but *consumption*, the live agent actually reading and acting
-on the directive file, is not wired. That is a small, well-scoped follow-up
-(a single boot-time read, mirroring `CORRIDOR` exactly) once `src/agent.ts`
-is free, not silently claimed as done here.
+Consumption is wired now — bans since wq#724, and the textual `notepadPin`
+since wq#1081/#1084, rendered as a `!!` line every turn in `observe()`. That
+promoted the pin's *content* from documentation to control input, and
+exposed the bug this section exists for.
+
+`FIGHT_LOSS_LOOP@3` (Cerulean, `MAP.CERULEAN = 3`) burned all three K
+attempts over 33 hours with `storyScore` frozen at 10. The prescription was
+read, and following it could not possibly help: it said **"grind Route 24/25
+to roughly L18-21 before re-attempting"**, but L18/L21 are *Misty's own team
+levels* (Staryu L18, Starmie L21 — quoted two sections up, and in
+`src/probe_gymdoor674.ts`), not a grind target. `guidance.ts`'s
+`misty_ready()` — enforced as a hard refusal at two `src/agent.ts` call
+sites — requires **L30 + 3 potions + 2 party members + a Grass/Rock
+counter**. An agent that obeyed the pin exactly ground to L21, walked back to
+the gym and was refused; or read "do not re-enter below that level range" as
+permission to re-enter at L21 and lost again. Either way: `grind_sub_objective`
+three times, `storyScore` unchanged, escalation ticket.
+
+Two changes, both in `tools/lpp_stuck_intervene.py`:
+
+1. **`_misty_gate()` parses the thresholds out of `src/guidance.ts`** and the
+   pin interpolates them, so a prescription can only ever name the number the
+   gate actually enforces. A parse failure degrades to `GATE_FALLBACK` (the
+   values as of today) rather than to no pin. The type counter is now stated
+   as a requirement — wq#677 made it one, and per `probe_gymdoor674` it is the
+   real wall; level alone never was.
+2. **`exhausted` now refreshes the directive on disk** (`_terminal_directive`),
+   labelled `SUPERVISOR (EXHAUSTED after 3/3)` with an empty `gotoBan`.
+   Previously `main()` wrote only on the intervening path, so a spent key
+   froze its pin at the attempt-3 text permanently — the key can never
+   intervene again, so no corrected prescription could ever reach the live
+   agent. The log invariant wq#673 keys on is untouched: `exhausted` still
+   appends nothing.
 
 ## Verification
 
-`python3 tools/verify_672.py` — **32/32**. Every call passes an explicit
+`python3 tools/verify_672.py` — **60/60**. Every call passes an explicit
 `log` dict (never touches the live `runtime/intervention_log.json`), mirroring
 `verify_489.py`'s own pattern of exercising `emit()` directly against a
 throwaway state rather than real persisted state. Covers: no intervention
@@ -105,7 +122,15 @@ advance (closes prior attempts as `"advanced"`, K resets for a fresh stall
 at the same location); independent K counters per distinct location (a
 second gym doesn't share the first gym's count); a mode/location drift
 without an advance marks the prior entry `"superseded"` without resetting K;
-and every non-`IDLE` mode produces a JSON-serialisable directive.
+and every non-`IDLE` mode produces a JSON-serialisable directive. wq#1091
+adds: the gate parses out of `src/guidance.ts` and matches it; a missing
+`guidance.ts` degrades to `GATE_FALLBACK` instead of raising; the pin names
+the gate's level and no longer mentions L18-21; `exhausted` carries a
+directive marked `exhausted` while still appending no log entry; and every
+mode's template survives the terminal-directive `format()` call (the
+`NAV_LOOP`/`WARP_OSC` pins reference `{loop_maps}`/`{loop_labels}`); plus
+`{location}` rendering as `Cerulean City (map3)` rather than a bare `3`
+sitting among the level numbers, falling back to `map<id>` for an unknown id.
 
 ## Rollback
 

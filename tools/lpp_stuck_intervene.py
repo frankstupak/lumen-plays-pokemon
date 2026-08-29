@@ -50,24 +50,22 @@ ROOT-CAUSE: wq#621 vision valve "0 fires in 43h" — this premise is FALSE.
   sub-objective, pinned into the notepad) layered on top of the
   already-firing valve, not a repair to the valve itself.
 
-WHAT THIS DOES NOT DO YET (read before assuming full automation)
+CONSUMPTION (was "not wired yet"; it is wired now)
   Prescribing "grind Route 24/25" or "ban this goto target" only helps if the
-  live agent process actually reads the prescription. The natural channel is
-  the SAME one src/recovery.ts's CORRIDOR already uses — a boot-time goal
-  injected into the notepad's pinned region — but wiring that consumption
-  point is a change to src/agent.ts, and src/agent.ts has a live, uncommitted
-  diff from another concurrent session (wq#674, working the SAME incident
-  from the opposite end: breaking the live stall directly right now) at the
-  time this ticket was worked. Editing the same file underneath a concurrent
-  in-flight change is exactly the "collide in a shared tree" failure the
-  wq#520 ticket history warns against explicitly. This module therefore
-  PRESCRIBES and PERSISTS the directive (runtime/supervisor_directive.json)
-  and LOGS every attempt with before/after game-state
-  (runtime/intervention_log.json), fully bounded and fully tested, but
-  CONSUMPTION — the live agent actually reading and acting on the directive
-  file — is not wired. That is a small, well-scoped follow-up once
-  src/agent.ts is free (a single boot-time read, mirroring CORRIDOR exactly),
-  tracked for wq#673 or a fast-follow ticket, not silently claimed as done.
+  live agent process actually reads the prescription. It does, on both halves:
+  wq#724 wired ban enforcement (src/agent.ts loadSupervisorBans/enter_warp)
+  and wq#1081/#1084 wired the textual half (loadSupervisorDirective now
+  returns guidance-only directives, and observe() renders notepadPin as a "!!"
+  line every turn). Both lift automatically once story_score/badges/events
+  rise past the boot-time baseline.
+
+  wq#1091 is the lesson that followed: once a pin is genuinely read every
+  turn, its CONTENT becomes load-bearing, and a pin that contradicts a hard
+  harness gate is worse than no pin. See the FIGHT_LOSS_LOOP note on
+  GATE_FALLBACK below — the pin prescribed a grind target 9 levels under the
+  gate that refuses gym entry, so the agent could obey it perfectly and stay
+  stuck. Any number a prescription states must be READ FROM the code that
+  enforces it, never retyped alongside it.
 
 BOUNDING (K=3)
   Each (mode, locationId) pair — wq#671's own dedup key — gets up to K=3
@@ -97,6 +95,47 @@ DIRECTIVE_PATH = f"{BASE}/runtime/supervisor_directive.json"
 
 K = 3  # spec wq#672: "INTERVENE (K=3)"
 
+# wq#1091: the gym-readiness bar the HARNESS enforces, read from its single
+# source of truth (src/guidance.ts) instead of retyped here. The original
+# FIGHT_LOSS_LOOP pin told the agent to "grind to roughly L18-21" — those are
+# MISTY'S OWN team levels (Staryu L18 / Starmie L21, quoted in this module's
+# header), not a grind target. guidance.ts's misty_ready() refuses gym entry
+# below L30 + 3 potions + 2 party members + a Grass/Rock counter, so an agent
+# that followed the pin exactly ground to L21, walked back to the gym, and was
+# refused (or re-entered and lost again) — which is precisely why all three
+# K attempts on FIGHT_LOSS_LOOP@3 resolved to nothing across 33h. Any pin that
+# names a number the gate disagrees with is a pin that cannot break the loop.
+GUIDANCE_TS = os.path.join(os.path.dirname(HERE), "src", "guidance.ts")
+
+# Fallbacks are the values guidance.ts holds today. They exist so a parse
+# failure degrades to a still-correct pin rather than to no pin at all; if the
+# TS constants move, the parse below picks the new ones up automatically.
+GATE_FALLBACK = {"min_level": 30, "min_potions": 3, "min_roster": 2}
+
+
+def _misty_gate(path=None):
+    """Read MISTY_MIN_LEVEL/POTIONS/ROSTER out of src/guidance.ts.
+
+    A regex over the `export const NAME = <int>;` lines, not a TS parse: the
+    three constants are plain integer literals and have been since wq#674, and
+    a grep that fails closed onto GATE_FALLBACK is worth more here than a
+    dependency on a TypeScript toolchain inside a read-mostly Python tool.
+    """
+    import re
+    gate = dict(GATE_FALLBACK)
+    try:
+        with open(path or GUIDANCE_TS) as f:
+            src = f.read()
+    except Exception:
+        return gate
+    for key, const in (("min_level", "MISTY_MIN_LEVEL"),
+                       ("min_potions", "MISTY_MIN_POTIONS"),
+                       ("min_roster", "MISTY_MIN_ROSTER")):
+        m = re.search(r"export const %s\s*=\s*(\d+)\s*;" % const, src)
+        if m:
+            gate[key] = int(m.group(1))
+    return gate
+
 # Per-MODE prescription. Each is a template; decide() fills in the live
 # state (badges/story/location) at call time so the directive always carries
 # what the agent SHOULD see, not just what to do in the abstract.
@@ -104,12 +143,19 @@ PRESCRIPTIONS = {
     "FIGHT_LOSS_LOOP": {
         "action": "grind_sub_objective",
         "summary": "Underleveled for the gym fight — stop re-attempting, grind first.",
+        # wq#1091: every number here comes from _misty_gate() so the pin can
+        # never again prescribe a target the harness's own entry gate rejects.
+        # The type counter is stated as a REQUIREMENT, not a preference: wq#677
+        # made it one, and it is the actual wall (a solo L30 Charmeleon still
+        # loses an all-Water gym, per src/probe_gymdoor674.ts).
         "notepadPin": (
             "PIN: SUPERVISOR ({attempt}/{k}): stuck losing the gym fight at {location}. "
-            "Grind Route 24/25 to roughly L18-21 before re-attempting — the opposing gym "
-            "leader's team out-levels the current roster. Prefer a type counter to the "
-            "leader's primary type if the roster lacks one. Do not re-enter the gym below "
-            "that level range."
+            "Stop re-entering — the harness REFUSES gym entry until all four hold: "
+            "lead level >= {min_level}, >= {min_potions} potions, >= {min_roster} party "
+            "members, and at least one Grass or Rock party member (the gym is Water; a "
+            "Fire lead is resisted, so level alone will never win it). Grind Route 24/25 "
+            "and catch an Oddish/Bellsprout/Paras/Geodude to clear the counter condition. "
+            "Do not re-enter the gym until every one of the four is satisfied."
         ),
         "gotoBan": [],
     },
@@ -212,6 +258,14 @@ def _map_label(mid):
         return f"map{mid}"
 
 
+def _located(mid):
+    """wq#1091: how a location id is spelled inside a pin — "Cerulean City
+    (map3)", falling back to "map3". Always contains the raw id, so anything
+    matching on the number still matches."""
+    label = _map_label(mid)
+    return label if label == f"map{mid}" else f"{label} (map{mid})"
+
+
 def _iso(ms):
     return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -284,6 +338,35 @@ def open_attempt_count(log, location_key):
                if e["locationKey"] == location_key and e.get("outcome") != "advanced")
 
 
+def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
+    """wq#1091: the directive written once the K budget is spent.
+
+    Carries the same standing requirement as the attempts did, but labelled
+    EXHAUSTED rather than "attempt 3/3" so the pin the agent reads stops
+    claiming an intervention is in flight when none can be. gotoBan is
+    deliberately empty: a ban is an active intervention, and the supervisor has
+    stopped intervening on this key — only the guidance stands.
+    """
+    pin = template["notepadPin"].format(
+        attempt=prior, k=K, location=_located(location_id),
+        loop_maps="unknown", loop_labels="unknown maps", **_misty_gate())
+    return {
+        "v": 1,
+        "generatedAt": _iso(now_ms),
+        "mode": mode,
+        "location": location_id,
+        "locationKey": location_key,
+        "attempt": prior,
+        "k": K,
+        "exhausted": True,
+        "action": template["action"],
+        "summary": template["summary"],
+        "notepadPin": pin.replace(f"SUPERVISOR ({prior}/{K})",
+                                  f"SUPERVISOR (EXHAUSTED after {prior}/{K})"),
+        "gotoBan": [],
+    }
+
+
 def decide(state=None, log=None, now_ms=None):
     """Returns a dict: {intervened, mode, locationKey, attempt, k, directive,
     exhausted}. Persists the directive and appends to the log as a side
@@ -314,8 +397,17 @@ def decide(state=None, log=None, now_ms=None):
                 "mode": mode, "locationKey": location_key, "attempt": attempt, "k": K}
 
     if attempt > K:
+        # wq#1091: exhausted still REFRESHES the directive on disk. It appends
+        # nothing to the log — that invariant is what wq#673 keys its one
+        # ticket off, and it is untouched — but leaving the file frozen at the
+        # attempt-3 text meant the live agent read a stale "SUPERVISOR (3/3)"
+        # pin indefinitely (33h on FIGHT_LOSS_LOOP@3) with no way for a
+        # corrected prescription to ever reach it, since the key can never
+        # intervene again. The requirement outlives the attempt budget.
         return {"intervened": False, "exhausted": True, "mode": mode,
                 "locationKey": location_key, "attempts": prior, "k": K,
+                "directive": _terminal_directive(template, mode, location_id,
+                                                 location_key, prior, now_ms),
                 "reason": f"{prior} attempts already logged for {location_key} — "
                           f"handing off to the wq#673 feedback loop"}
 
@@ -323,7 +415,13 @@ def decide(state=None, log=None, now_ms=None):
     # consumed because it never named actual map IDs. Now we read the warp
     # history and extract the maps the agent is genuinely looping between.
     goto_ban = template["gotoBan"]
-    fmt_extras = {}
+    # wq#1091: the harness's own gym-entry thresholds, so a pin that names a
+    # level can only ever name the level the gate actually enforces. Templates
+    # that reference none of these keys simply ignore them.
+    fmt_extras = dict(_misty_gate())
+    # wq#1091: "the gym fight at 3" is a bare map id sitting next to several
+    # level numbers in the same sentence. Name it.
+    fmt_extras["location"] = _located(location_id)
     if goto_ban == "__RESOLVE_FROM_WARPS__":
         loop_maps = _resolve_loop_maps()
         goto_ban = loop_maps if loop_maps else []
@@ -341,8 +439,7 @@ def decide(state=None, log=None, now_ms=None):
         "k": K,
         "action": template["action"],
         "summary": template["summary"],
-        "notepadPin": template["notepadPin"].format(
-            attempt=attempt, k=K, location=location_id, **fmt_extras),
+        "notepadPin": template["notepadPin"].format(attempt=attempt, k=K, **fmt_extras),
         "gotoBan": goto_ban,
     }
 
@@ -369,7 +466,10 @@ def main(argv=None):
 
     if not args.dry_run:
         save_log(log)
-        if result.get("intervened"):
+        # wq#1091: persist whenever decide() produced a directive at all — that
+        # is now the intervening path AND the exhausted path, which must be
+        # able to correct a stale pin it can no longer replace via an attempt.
+        if result.get("directive"):
             tmp = DIRECTIVE_PATH + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(result["directive"], f, indent=1)
