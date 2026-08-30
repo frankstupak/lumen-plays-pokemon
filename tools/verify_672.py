@@ -131,5 +131,79 @@ for mode in M.MODES:
         json.dumps(r["directive"])  # raises if not serialisable
         ok(f"{mode} directive round-trips through json", True)
 
+
+# ── 8. wq#1091: the FIGHT_LOSS_LOOP pin must agree with the harness gate ───
+#      The original pin said "grind to roughly L18-21" — Misty's OWN team
+#      levels — while src/guidance.ts refuses gym entry below L30 + potions +
+#      roster + a Grass/Rock counter. An agent obeying that pin exactly could
+#      never clear the gate, which is how three K attempts on
+#      FIGHT_LOSS_LOOP@3 burned 33h without moving story_score.
+print("\n-- wq#1091: pin agrees with guidance.ts's entry gate --")
+gate = I._misty_gate()
+ok("gate parsed from src/guidance.ts, not the fallback",
+   os.path.exists(I.GUIDANCE_TS), I.GUIDANCE_TS)
+ok("parsed min level matches guidance.ts MISTY_MIN_LEVEL",
+   gate["min_level"] == 30, gate)
+ok("parsed potions/roster match guidance.ts",
+   gate["min_potions"] == 3 and gate["min_roster"] == 2, gate)
+ok("a missing guidance.ts degrades to the fallback instead of raising",
+   I._misty_gate(path="/nonexistent/guidance.ts") == I.GATE_FALLBACK,
+   I._misty_gate(path="/nonexistent/guidance.ts"))
+
+log = {"v": 1, "attempts": []}
+pin = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3), log=log)["directive"]["notepadPin"]
+ok("pin names the gate's level, not the opposing team's levels",
+   f">= {gate['min_level']}" in pin, pin)
+ok("pin no longer prescribes the L18-21 target the gate rejects",
+   "18-21" not in pin and "L18" not in pin, pin)
+ok("pin states the potion and roster conditions the gate also enforces",
+   f">= {gate['min_potions']} potions" in pin and f">= {gate['min_roster']} party" in pin, pin)
+ok("pin states the type counter as required, not preferred",
+   "Grass or Rock" in pin and "Prefer" not in pin, pin)
+ok("pin names the location instead of a bare id next to the level numbers",
+   "Cerulean City (map3)" in pin, pin)
+ok("pin keeps the live hot-patch's grind mechanics (grass via goto, no warp-in)",
+   "tall grass" in pin and "goto()" in pin and "enter_warp" in pin, pin)
+ok("pin keeps the live hot-patch's no-heal-at-full-HP instruction",
+   "full HP" in pin, pin)
+ok("an unknown map id still renders, and still carries the raw id",
+   I._located(60001) == "map60001", I._located(60001))
+
+# ── 9. wq#1091: exhausted refreshes the directive but still logs nothing ───
+#      Without this the pin on disk stays frozen at the attempt-3 text
+#      forever: the key can never intervene again, so no corrected
+#      prescription could ever reach the live agent.
+print("\n-- wq#1091: exhausted still refreshes the directive --")
+log = {"v": 1, "attempts": []}
+for _ in range(3):
+    I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3), log=log)
+r = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3), log=log)
+ok("4th call is still exhausted and still not an intervention",
+   r.get("exhausted") is True and r["intervened"] is False, r)
+ok("exhausted STILL appends no log entry (wq#673's ticket signal is intact)",
+   len(log["attempts"]) == 3, len(log["attempts"]))
+ok("exhausted now carries a directive to persist", bool(r.get("directive")), r)
+ok("exhausted directive is marked exhausted, not a 4th attempt",
+   r["directive"]["exhausted"] is True and r["directive"]["attempt"] == 3, r["directive"])
+ok("exhausted pin says EXHAUSTED instead of claiming an attempt is in flight",
+   "EXHAUSTED after 3/3" in r["directive"]["notepadPin"], r["directive"]["notepadPin"])
+ok("exhausted pin still carries the standing gate requirement",
+   f">= {gate['min_level']}" in r["directive"]["notepadPin"], r["directive"]["notepadPin"])
+ok("exhausted directive drops any ban — the supervisor stopped intervening",
+   r["directive"]["gotoBan"] == [], r["directive"])
+json.dumps(r["directive"])  # raises if not serialisable
+ok("exhausted directive round-trips through json", True)
+
+# every mode's template must survive the terminal-directive format() call,
+# including the NAV_LOOP/WARP_OSC pins that reference {loop_maps}/{loop_labels}
+for mode in M.MODES:
+    if mode == "IDLE":
+        continue
+    log = {"v": 1, "attempts": []}
+    for _ in range(4):
+        r = I.decide(state=stalled_state(mode, 3), log=log)
+    ok(f"{mode} exhausted directive formats without KeyError",
+       bool(r.get("directive", {}).get("notepadPin")), r)
+
 print(f"\n{PASS}/{PASS + FAIL} passed")
 sys.exit(1 if FAIL else 0)

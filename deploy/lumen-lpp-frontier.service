@@ -1,0 +1,15 @@
+[Unit]
+Description=LPP frontier — regenerate runtime/frontier.json cross-run progress state (wq#1066)
+Documentation=file:///home/lumen/pokemon/reports/1066_lpp_oscillation.md
+
+[Service]
+Type=oneshot
+User=lumen
+WorkingDirectory=/home/lumen/pokemon
+# lpp_frontier.py is read-only over evidence on disk and persists runtime/frontier.json
+# itself (main() -> persist()). compute() alone (what lpp_stuck_mode imports) never
+# writes the file, and nothing on the agent path runs the script, so emission needs
+# its own timer rather than riding the stuck-supervisor (which can be disabled).
+ExecStart=/usr/bin/python3 /home/lumen/pokemon/tools/lpp_frontier.py
+TimeoutStartSec=60
+Nice=10
