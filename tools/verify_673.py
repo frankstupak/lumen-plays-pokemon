@@ -56,10 +56,15 @@ class FakeWQ:
             self.tickets[tid] = {"title": title, "detail": detail, "status": "open"}
             return f"added task {tid} [pokemon]"
         if cmd == "list":
+            # The real CLI filters on --status and truncates the title column;
+            # both matter here (wq#1097 turned on a multi-status scan, and the
+            # marker has to survive the truncation for dedup to see it).
+            want = args[args.index("--status") + 1] if "--status" in args else None
             lines = []
             for tid, t in self.tickets.items():
-                if t["status"] == "open":
-                    lines.append(f"[{tid:>3}] pokemon p1 open     {t['title'][:66]}")
+                if want is not None and t["status"] != want:
+                    continue
+                lines.append(f"[{tid:>3}] pokemon p1 {t['status']:<8} {t['title'][:66]}")
             return "\n".join(lines) if lines else "(empty)"
         if cmd == "show":
             tid = int(args[1])
@@ -136,14 +141,98 @@ ok("incident is now tracked", "FIGHT_LOSS_LOOP@65" in escal["incidents"], escal[
 # repeat exhaustion (K refills after resolve_pending marks the old 3 attempts
 # 'superseded' via a fresh decide() cycle is out of scope here — this tests
 # the DEDUP path directly: calling maybe_file_or_append again for a location
-# already tracked must APPEND, never add a second ticket.
-before_calls = len(wq.calls)
+# already tracked must never add a second ticket. wq#1097: an UNCHANGED repeat
+# inside the heartbeat window is suppressed outright rather than appended.
 r2 = F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
                              stalled("FIGHT_LOSS_LOOP", 65), log, wq, T0 + 5 * H_MS)
-ok("repeat exhaustion appends, does not add a new ticket", r2["action"] == "appended" and r2["ticketId"] == ticket_id, r2)
+ok("unchanged repeat is suppressed, not appended", r2["action"] == "unchanged" and r2["ticketId"] == ticket_id, r2)
 ok("still exactly one ticket after the repeat", len(wq.tickets) == 1, wq.tickets)
+ok("suppressed repeat writes nothing at all", not any(c[0] == "edit" for c in wq.calls), wq.calls)
+
+# a MATERIALLY changed report (event flag moved) appends immediately, and
+# carries the suppressed-poll count so the ticket stays honest about the gap
+r3 = F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
+                             stalled("FIGHT_LOSS_LOOP", 65, events=38), log, wq, T0 + 6 * H_MS)
+ok("a materially changed report appends", r3["action"] == "appended", r3)
 ok("appended detail contains a REPEAT marker", "REPEAT" in wq.tickets[ticket_id]["detail"],
    wq.tickets[ticket_id]["detail"])
+ok("the suppressed poll is counted in the block that lands",
+   "+1 identical poll(s) suppressed" in wq.tickets[ticket_id]["detail"], wq.tickets[ticket_id]["detail"])
+ok("suppression counter resets after an append",
+   escal["incidents"]["FIGHT_LOSS_LOOP@65"]["suppressedRepeats"] == 0, escal["incidents"])
+
+# ...and an unchanged report still lands one heartbeat block past the interval
+edits_before = len([c for c in wq.calls if c[0] == "edit"])
+F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
+                       stalled("FIGHT_LOSS_LOOP", 65, events=38), log, wq,
+                       T0 + 6 * H_MS + int(F.REPEAT_MIN_INTERVAL_H * H_MS) - 1)
+ok("no heartbeat block just inside REPEAT_MIN_INTERVAL_H",
+   len([c for c in wq.calls if c[0] == "edit"]) == edits_before, wq.calls)
+r4 = F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
+                            stalled("FIGHT_LOSS_LOOP", 65, events=38), log, wq,
+                            T0 + 6 * H_MS + int(F.REPEAT_MIN_INTERVAL_H * H_MS))
+ok("an unchanged report still heartbeats once past REPEAT_MIN_INTERVAL_H",
+   r4["action"] == "appended", r4)
+
+# ── 2b. a CLAIMED ticket is still the incident's ticket (wq#1097) ──────────
+print("\n-- dedup spans every live status, not just open --")
+for status in F.LIVE_STATUSES:
+    wq_s = FakeWQ()
+    title_s = "[lpp][stuck] FIGHT_LOSS_LOOP@3 — FIGHT_LOSS_LOOP unresolved after K interventions"
+    wq_s.tickets[910] = {"title": title_s, "detail": "first observation", "status": status}
+    escal_s = {"v": 1, "incidents": {}}
+    r = F.maybe_file_or_append(escal_s, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@3", 3,
+                               stalled("FIGHT_LOSS_LOOP", 3), {"v": 1, "attempts": []}, wq_s, T0)
+    ok(f"a {status} ticket is appended to, not duplicated",
+       r["action"] == "appended" and r["ticketId"] == 910 and len(wq_s.tickets) == 1, (status, r, wq_s.tickets))
+
+# a CLOSED ticket does not block a fresh filing, but is named in the new one —
+# this is the wq#1091 -> wq#1097 recurrence, which filed a verbatim duplicate
+# carrying no pointer back to the PR the first ticket had already landed.
+wq_c = FakeWQ()
+title_c = "[lpp][stuck] FIGHT_LOSS_LOOP@3 — FIGHT_LOSS_LOOP unresolved after K interventions"
+wq_c.tickets[1091] = {"title": title_c, "detail": "first round", "status": "done"}
+escal_c = {"v": 1, "incidents": {}}
+r5 = F.maybe_file_or_append(escal_c, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@3", 3,
+                            stalled("FIGHT_LOSS_LOOP", 3), {"v": 1, "attempts": []}, wq_c, T0)
+ok("a recurrence after a close files a new ticket", r5["action"] == "filed" and r5["ticketId"] != 1091, r5)
+ok("the new ticket names the closed prior ticket",
+   "prior-tickets: wq#1091" in wq_c.tickets[r5["ticketId"]]["detail"],
+   wq_c.tickets[r5["ticketId"]]["detail"])
+
+# ── 2c. the stored detail is capped however long the incident runs ─────────
+print("\n-- detail stays bounded --")
+wq_b = FakeWQ()
+escal_b = {"v": 1, "incidents": {}}
+r6 = F.maybe_file_or_append(escal_b, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@3", 3,
+                            stalled("FIGHT_LOSS_LOOP", 3), {"v": 1, "attempts": []}, wq_b, T0)
+bounded_id = r6["ticketId"]
+# 200 polls a day apart: every one is materially different (the event flag
+# moves) so every one appends — the worst case the cap exists for.
+for i in range(1, 201):
+    F.maybe_file_or_append(escal_b, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@3", 3,
+                           stalled("FIGHT_LOSS_LOOP", 3, events=37 + i), {"v": 1, "attempts": []},
+                           wq_b, T0 + i * 24 * H_MS)
+grown = wq_b.tickets[bounded_id]["detail"]
+ok("detail stays under the cap after 200 appends", len(grown) <= F.MAX_DETAIL_CHARS + 600, len(grown))
+ok("the first observation survives the elision", grown.startswith("mode=FIGHT_LOSS_LOOP"), grown[:80])
+ok("the elision says how many blocks it dropped", "earlier REPEAT block(s) elided" in grown, grown[:400])
+ok("the newest block survives the elision", "eventFlags=237" in grown, grown[-300:])
+# elide_detail itself, at the moment it fires: head + exactly KEEP_TAIL_BLOCKS.
+# (The integration figure above is larger on purpose — the detail is allowed to
+# refill to MAX_DETAIL_CHARS between elisions; only the ceiling is guaranteed.)
+long_detail = "FIRST OBSERVATION" + "".join(f"{F.REPEAT_SEP}block {i} " + "x" * 400 for i in range(30))
+elided = F.elide_detail(long_detail)
+ok("elide_detail keeps exactly KEEP_TAIL_BLOCKS blocks",
+   elided.count(F.REPEAT_SEP) == F.KEEP_TAIL_BLOCKS, elided.count(F.REPEAT_SEP))
+ok("elide_detail keeps the head block", elided.startswith("FIRST OBSERVATION"), elided[:60])
+ok("elide_detail counts what it dropped", f"[{30 - F.KEEP_TAIL_BLOCKS} earlier REPEAT" in elided, elided[:300])
+# re-eliding an already-elided detail rewrites the note instead of stacking one
+twice = F.elide_detail(elided + "".join(f"{F.REPEAT_SEP}more {i} " + "x" * 400 for i in range(30)))
+ok("re-elision rewrites the note rather than stacking notes",
+   twice.count("earlier REPEAT block(s) elided") == 1, twice[:400])
+ok("re-elision accumulates the dropped count",
+   f"[{30 - F.KEEP_TAIL_BLOCKS + 30} earlier REPEAT" in twice, twice[:300])
 
 # ── 3. race backstop: wq add's OWN duplicate guard is honoured too ─────────
 print("\n-- wq add's own duplicate guard as a backstop --")

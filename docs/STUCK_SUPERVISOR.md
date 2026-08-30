@@ -38,12 +38,39 @@ than any prescribed action could plausibly play out in-game.
 **Dedup / append, never duplicate.** The ticket title carries a stable
 marker, `[lpp][stuck] MODE@LOCATION`, deterministic from wq#671's own
 `(mode, modeLocation)` pair — no timestamp in the title. Before filing,
-`wq list --status open` is scanned for that marker; a hit means **append** (a
-dated block gets concatenated onto the existing `detail`) instead of a new
+`wq list --status <s>` is scanned for that marker across every **live**
+status (`open`, `claimed`, `blocked`, `frank_gated`); a hit means **append**
+(a dated block gets concatenated onto the existing `detail`) instead of a new
 ticket. As a race-safe backstop, `wq add` itself refuses an exact-title
 duplicate (`DUPLICATE — task <id> ...`) — that response is parsed the same
 way and also treated as an append, so a filing race between two supervisor
 ticks still can't produce two tickets for one incident.
+
+wq#1097: the scan originally asked for `--status open` alone, so a ticket a
+worker had **claimed** was invisible to it and the next 30-minute tick filed
+a second one for the same live incident. `wq add`'s backstop does not cover
+this either — it skips `done` tickets by design. A key whose only prior
+tickets are terminal may still file a fresh one (the incident genuinely
+recurred after someone closed it), but that ticket now opens with a
+`prior-tickets: wq#N` line so the next worker starts from the last attempt
+instead of re-deriving it. FIGHT_LOSS_LOOP@3 produced wq#1091 and then
+wq#1097 this way — identical titles, no pointer between them.
+
+**Repeat suppression and a detail cap.** An unresolved stall reports
+`exhausted` on *every* tick, and each one used to append a full block that
+differed from the last only in its timestamp and its `frozen=NN.Nh` counter.
+At a 30-minute period that is 48 blocks a day: wq#1097's detail reached
+26,925 characters, wq#676's 12,732, all of it re-read by every worker the
+ticket is handed to. Two bounds now apply. A block is appended only when the
+report's **material** content changed — mode, location, storyScore, badges,
+eventFlags, the freeze window's start, and the per-attempt outcomes; frozen
+*hours* are excluded, being the one field that always differs — or once every
+`REPEAT_MIN_INTERVAL_H` (6h) as a heartbeat, whichever comes first.
+Suppressed polls are counted and folded into the next block that lands, so
+the ticket still records how long it sat unchanged. Independently, the stored
+detail is capped at `MAX_DETAIL_CHARS` (4000) by eliding the middle: the
+first observation and the newest `KEEP_TAIL_BLOCKS` (3) survive, the rest
+collapses to a running count.
 
 **Ticket content** (from `build_report()`): mode, the frozen axis
 (story_score primary, plus badges/eventFlags), how many hours frozen and
@@ -78,14 +105,22 @@ the service, or touches the emulator.
 
 ## Verification
 
-`python3 tools/verify_673.py` — **29/29**. A `FakeWQ` emulates the real
+`python3 tools/verify_673.py` — **50/50**. A `FakeWQ` emulates the real
 `wq` CLI's `add`/`list`/`show`/`edit`/`done` text output (confirmed against
-`/home/lumen/bin/wq`'s own source, including its exact-title duplicate
-guard) so the dedup/append parsing is proven against the real format without
-touching the real database. Covers: no ticket before K exhausts; exactly one
-ticket filed on exhaustion, carrying mode/proposed-resolution; a repeat
-exhaustion appends rather than duplicating; `wq add`'s own duplicate-guard
-response is handled as a race-safe append path; ntfy fires exactly once, only
+`/home/lumen/bin/wq`'s own source, including its `--status` filter, its title
+truncation, and its exact-title duplicate guard) so the dedup/append parsing
+is proven against the real format without touching the real database.
+Covers: no ticket before K exhausts; exactly one ticket filed on exhaustion,
+carrying mode/proposed-resolution; an unchanged repeat is suppressed and
+writes nothing, a materially changed one appends and folds in the suppressed
+count, an unchanged one still heartbeats once past `REPEAT_MIN_INTERVAL_H`; a
+ticket in *any* live status (including `claimed`) is appended to rather than
+duplicated, while a closed one lets a recurrence file fresh with a
+`prior-tickets:` pointer; the detail stays under its cap across 200 appends
+with the first observation, the newest blocks, and a running dropped-count
+all intact, and re-elision rewrites that count rather than stacking notes;
+`wq add`'s own duplicate-guard response is handled as a race-safe append
+path; ntfy fires exactly once, only
 at/after the 3h mark measured from the incident's true start (not from
 ticket-filing time — this scenario is spaced tightly enough in the test to
 separate "ticket exists, still under 3h" from "past 3h" as two distinct,
@@ -98,9 +133,11 @@ mode/location.
 
 Deleting `runtime/stuck_escalation.json` forgets all tracked incidents —
 the next stalled tick re-derives `firstStalledAt` from wq#671's own
-`lastAdvanceAt` and either finds the existing open ticket via the marker
+`lastAdvanceAt` and either finds the existing live ticket via the marker
 scan or, worst case, refiles one that `wq add`'s duplicate guard immediately
 catches. No history is lost from the work queue itself, only from this
-module's own "have I already paged for this" memory. Stopping/disabling the
+module's own "have I already paged for this" memory — and, since wq#1097,
+its per-incident repeat-suppression counters, which cost at most one extra
+appended block on the next tick. Stopping/disabling the
 timer costs nothing — every component script is safe to run standalone or
 not at all.
