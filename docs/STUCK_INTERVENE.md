@@ -65,13 +65,46 @@ gets up to **K=3** logged attempts. A 4th `decide()` call for the same open
 key returns `exhausted: true` and appends **nothing** to the log; that is the
 signal wq#673 uses to file (or append to) its one ticket and stop trying
 locally. An attempt resolves as `"advanced"` (closing the counter, K resets)
-the moment a later read shows `storyScore`, `badges` or the event-flag count
-higher than the attempt's own `beforeState` — matching wq#671's own
-story_score-primary axis exactly, so "did the intervention work" is answered
-the same way "is the game stuck" is. An attempt resolves as `"superseded"`
-(closes the entry, but does **not** reset K) if the incident's mode or
-location changes before an advance — drifting into a different stuck shape
-is not evidence the intervention worked.
+the moment a later read shows `storyScore` or `badges` higher than the
+attempt's own `beforeState`. An attempt resolves as `"superseded"` (closes the
+entry, but does **not** reset K) if the incident's mode or location changes
+before an advance — drifting into a different stuck shape is not evidence the
+intervention worked.
+
+### K must be spendable (wq#1097)
+
+The resolution test used to accept a rise on the **event-flag** count too, on
+the reasoning that it should match wq#671's stall axis exactly. It should not,
+and that single difference made K unbounded in practice.
+
+`FIGHT_LOSS_LOOP@3` ran for two days at `storyScore=10, badges=1` while its
+logged outcomes read `1(superseded), 2(advanced), 3(advanced), 2(advanced),
+3(advanced), 2, 3` — a ladder oscillating between attempt 2 and attempt 3,
+never reaching 1 again and never staying exhausted. Every `advanced` there was
+one event flag ticking. Each tick closed the open attempts, dropped the count
+back to the single permanently-superseded attempt 1, and let `decide()`
+re-prescribe the identical grind pin. The supervisor spent 47 ticks
+re-issuing advice it had already issued.
+
+Two rules now hold the budget:
+
+- **An event-flag-only rise leaves the attempt open.** It keeps counting
+  against K and stays eligible to close as `"advanced"` if the story really
+  does move later. An intervention is prescribed to unstick story progress, so
+  only story progress closes it out.
+- **`open_attempt_count` counts attempts *since the key's last resolution*** —
+  what this module's header always claimed. It previously summed every
+  non-advanced attempt ever logged for the key, with no notion of "since", so
+  one superseded attempt from a long-finished incident occupied a slot
+  forever. An attempt and everything before it retire either when it closes as
+  `"advanced"` or when the story axis has risen at all since it was
+  prescribed; the second case catches attempts already closed as
+  `"superseded"` before the advance landed, which `resolve_pending` never
+  revisits.
+
+Net effect: an incident that is genuinely stuck reaches `exhausted` and
+*stays* there, handing off to wq#673 once instead of looping, and an incident
+that genuinely advances gets a real, full budget reset.
 
 ## A pin the agent obeys must agree with the gate that refuses it (wq#1091)
 

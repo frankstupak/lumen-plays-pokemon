@@ -73,6 +73,15 @@ WQ = os.environ.get("LPP_WQ_BIN", "/home/lumen/bin/wq")
 NTFY = os.environ.get("LPP_NTFY_BIN", "/home/lumen/bin/ntfy-send")
 NTFY_TOPIC = "lumen-fleet"
 ESCALATE_AFTER_H = 3.0
+# wq#1097: minimum gap between two REPEAT appends that say the same thing.
+# The dedup rule below already forbids a second ticket per incident, but
+# nothing bounded how often the SAME report was appended to it: `run()` calls
+# maybe_file_or_append on every tick where the decision is `exhausted`, and
+# exhausted is a steady state, not an edge. FIGHT_LOSS_LOOP@3 collected 47
+# byte-identical REPEAT blocks over 25h at one per supervisor tick, each
+# costing a `wq show` + `wq edit` and burying the original report. A changed
+# report still appends immediately; only an unchanged one waits.
+APPEND_COOLDOWN_H = 6.0
 MARKER_RE = re.compile(r"\[lpp\]\[stuck\]\s+(\S+)\s+—")
 
 
@@ -136,21 +145,51 @@ def get_detail(ticket_id, wq_call):
     return ""
 
 
-def build_report(mode, location_key, location, state, intervention_log, now_ms):
+def _attempt_outcomes(location_key, intervention_log):
     attempts = [e for e in intervention_log.get("attempts", []) if e.get("locationKey") == location_key]
-    frozen = state.get("frozenHours", 0.0)
-    outcomes = "; ".join(
+    return "; ".join(
         f"attempt {a['attempt']}: {a['directive']['action']} "
         f"({'advanced' if a.get('outcome') == 'advanced' else a.get('outcome') or 'no result yet'})"
         for a in attempts
     ) or "(no logged attempts)"
+
+
+def report_signature(mode, location_key, state, intervention_log):
+    """The substance of a report, minus its clock. Two reports with the same
+    signature tell a reader nothing new; wq#1097 uses that to stop appending
+    the identical block to the same ticket every supervisor tick."""
+    return "|".join(str(x) for x in (
+        mode, location_key, state.get("storyScore"), state.get("badges"),
+        state.get("eventFlags"), state.get("map"),
+        ",".join(state.get("frozenAxes") or []),
+        _attempt_outcomes(location_key, intervention_log),
+    ))
+
+
+def build_report(mode, location_key, location, state, intervention_log, now_ms):
+    frozen = state.get("frozenHours", 0.0)
+    # wq#1097: `frozen_axis=story_score` used to be a hardcoded string printed
+    # next to an any-axis clock, so the ticket could claim the story axis was
+    # frozen for 2.9h when what had actually moved 2.9h ago was one event flag
+    # and the story axis had been frozen for 42h. Both numbers are now real and
+    # both are named.
+    # "unknown" rather than "none" when the key is absent entirely: a state
+    # dict written by a pre-wq#1097 detector has no frozenAxes, and printing
+    # "none" would assert nothing is frozen on a report filed because
+    # something is.
+    axes = state.get("frozenAxes")
+    frozen_axes = "unknown" if axes is None else ("+".join(axes) or "none")
+    story_frozen = state.get("storyFrozenHours", frozen)
+    story_since = state.get("storyStalledSince") or state.get("lastAdvanceAt")
     prescription = I.PRESCRIPTIONS.get(mode)
     proposed = prescription["summary"] if prescription else "(no automated prescription for this mode)"
     return (
-        f"mode={mode} location={location} frozen_axis=story_score "
+        f"mode={mode} location={location} frozen_axes={frozen_axes} "
         f"(storyScore={state.get('storyScore')}, badges={state.get('badges')}, "
-        f"eventFlags={state.get('eventFlags')}) frozen={frozen:.1f}h since {state.get('lastAdvanceAt')}. "
-        f"interventions+outcomes: {outcomes}. "
+        f"eventFlags={state.get('eventFlags')}) "
+        f"story frozen={story_frozen:.1f}h since {story_since}; "
+        f"any-axis frozen={frozen:.1f}h since {state.get('lastAdvanceAt')}. "
+        f"interventions+outcomes: {_attempt_outcomes(location_key, intervention_log)}. "
         f"proposed-resolution: {proposed}"
     )
 
@@ -160,10 +199,14 @@ def resolve_advanced(escal, state, wq_call, now_ms):
     since exceeded gets its ticket closed and is dropped from tracked state."""
     closed = []
     for key, inc in list(escal["incidents"].items()):
+        # wq#1097: story axis only. Closing a stuck ticket because one event
+        # flag ticked marks an unresolved incident `done` while the agent is
+        # still standing in front of the same gym — and then re-files or
+        # re-appends the moment the 2h window lapses again, which is the churn
+        # this ticket is made of.
         advanced = (
             (state.get("storyScore") or 0) > (inc.get("baselineStoryScore") or 0)
             or (state.get("badges") or 0) > (inc.get("baselineBadges") or 0)
-            or (state.get("eventFlags") or 0) > (inc.get("baselineEventFlags") or 0)
         )
         if not advanced:
             continue
@@ -183,10 +226,15 @@ def resolve_advanced(escal, state, wq_call, now_ms):
 def maybe_file_or_append(escal, mode, location_key, location, state, intervention_log, wq_call, now_ms):
     inc = escal["incidents"].get(location_key)
     report = build_report(mode, location_key, location, state, intervention_log, now_ms)
+    sig = report_signature(mode, location_key, state, intervention_log)
 
     if inc is None:
         existing_id = find_open_ticket(location_key, wq_call)
-        first_stalled_ms = _parse_iso_ms(state["lastAdvanceAt"])
+        # wq#1097: the incident began when its OWN axis froze. Taking the
+        # any-axis lastAdvanceAt let an event-flag tick reset the 3h clock, so
+        # Frank's one page could be deferred indefinitely on a stall that had
+        # in fact been running for days.
+        first_stalled_ms = _parse_iso_ms(state.get("storyStalledSince") or state["lastAdvanceAt"])
         if existing_id is not None:
             old_detail = get_detail(existing_id, wq_call)
             wq_call(["edit", str(existing_id), "--detail",
@@ -215,20 +263,31 @@ def maybe_file_or_append(escal, mode, location_key, location, state, interventio
                 ticket_id, action = None, "filed"
         escal["incidents"][location_key] = {
             "ticketId": ticket_id, "firstStalledAt": first_stalled_ms, "ntfySentAt": None,
-            "lastAppendAt": now_ms, "baselineStoryScore": state.get("storyScore"),
+            "lastAppendAt": now_ms, "lastReportSig": sig,
+            "baselineStoryScore": state.get("storyScore"),
             "baselineBadges": state.get("badges"), "baselineEventFlags": state.get("eventFlags"),
         }
         return {"action": action, "ticketId": ticket_id}
 
     # Already tracked: a later exhaustion for the SAME incident appends again
-    # (dedup — never a second ticket) but only if we haven't just appended
-    # for this exact exhaustion (guarded by the caller only invoking this on
-    # a fresh `exhausted` decision, not every idle poll).
+    # (dedup — never a second ticket). wq#1097: and only if it has something
+    # new to say. The comment that used to sit here claimed the caller invoked
+    # this "on a fresh `exhausted` decision, not every idle poll" — no such
+    # guard existed, and `exhausted` is a level, not an edge, so every tick
+    # appended. Either a changed report or APPEND_COOLDOWN_H of silence earns
+    # the next block; anything else is suppressed.
+    since_h = (now_ms - (inc.get("lastAppendAt") or 0)) / 3.6e6
+    if sig == inc.get("lastReportSig") and since_h < APPEND_COOLDOWN_H:
+        return {"action": "suppressed", "ticketId": inc.get("ticketId"),
+                "reason": f"report unchanged and last append was {since_h:.1f}h ago "
+                          f"(< {APPEND_COOLDOWN_H:.0f}h cooldown)"}
+
     old_detail = get_detail(inc["ticketId"], wq_call) if inc.get("ticketId") is not None else ""
     if inc.get("ticketId") is not None:
         wq_call(["edit", str(inc["ticketId"]), "--detail",
                  f"{old_detail} || REPEAT {_iso(now_ms)}: {report}"])
     inc["lastAppendAt"] = now_ms
+    inc["lastReportSig"] = sig
     return {"action": "appended", "ticketId": inc.get("ticketId")}
 
 

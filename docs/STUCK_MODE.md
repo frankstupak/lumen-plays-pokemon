@@ -27,6 +27,28 @@ against here: none of these three ever move backwards during ordinary
 (non-whiteout) play, so a fresh flag or badge is real state progress even
 without a critical-path rank change.
 
+### Per-axis freshness (wq#1097)
+
+`stalled` and `frozenHours` stay that conjunction — any axis rising un-stalls
+the run — because it is the conservative test and widening it would flag
+ordinary grinding. But "the game moved at all" and "the axis this incident is
+*about* moved" are different questions, and the layers above need the second
+one. `compute()` therefore also reports:
+
+| field | meaning |
+| --- | --- |
+| `frozenAxes` | which of `story_score` / `badges` / `event_flags` have not risen inside the window |
+| `axisFrozenHours` | hours since each axis last rose |
+| `storyFrozenHours` | hours since `storyScore` **or** `badges` last rose |
+| `storyStalledSince` | ISO instant that story clock started |
+
+`event_flags` is the noisy one: it ticks for an item pickup or an NPC line,
+neither of which unsticks a lost gym fight. Reporting only the conjunction is
+what let `FIGHT_LOSS_LOOP@3` file `frozen=2.9h` against a story axis that had
+by then been frozen for 42 hours — one flag going 46 → 47 reset a 40-hour
+clock. Consumers that need to know whether an *incident* is progressing read
+the story fields; `frozenHours` remains what `stalled` is computed from.
+
 ## Window
 
 **2 hours**, deliberately tighter than the frontier engine's 12h. This axis

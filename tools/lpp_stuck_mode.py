@@ -104,6 +104,21 @@ NOISE_RE = re.compile(r"unknown tool|parse_error|tool error|no tool call", re.I)
 
 MODES = ("FIGHT_LOSS_LOOP", "WARP_OSC", "NOISE_STORM", "NAV_LOOP", "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
 
+# wq#1097: the three freshness axes, report-name -> sidecar key, and which of
+# them constitute STORY progress.
+#
+# `stalled` deliberately stays a conjunction — ANY axis rising un-stalls the
+# run — because that is the conservative test wq#671 shipped and widening it
+# would flag ordinary grinding as a stall. But the layers above (wq#672's K
+# budget, wq#673's ticket) need to tell "the game moved at all" apart from
+# "the thing THIS incident is about moved", and those are not the same
+# question. event_flags ticks for picking up an item or talking to an NPC;
+# neither unsticks a lost gym fight. Reporting only the conjunction is what
+# let FIGHT_LOSS_LOOP@3 print `frozen=2.9h` (wq#1097) over a story axis that
+# had by then been frozen for 42 hours.
+AXES = {"story_score": "storyScore", "badges": "badges", "event_flags": "events"}
+STORY_AXES = ("story_score", "badges")
+
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import lpp_frontier
@@ -172,23 +187,37 @@ def advances(sidecars):
     out = []
     for j in sidecars:
         ss, b, e = j.get("storyScore"), j.get("badges"), j.get("events")
-        why = []
+        why, axes = [], []
         if ss is not None and ss > max_ss:
             if max_ss >= 0:
                 why.append(f"storyScore {max_ss}->{ss}")
+                axes.append("story_score")
             max_ss = ss
         if b is not None and b > max_b:
             if max_b >= 0:
                 why.append(f"badges {max_b}->{b}")
+                axes.append("badges")
             max_b = b
         if e is not None and e > max_e:
             if max_e >= 0:
                 why.append(f"eventFlags {max_e}->{e}")
+                axes.append("event_flags")
             max_e = e
         if why:
-            out.append({"ts": j["ts"], "why": ", ".join(why),
+            # wq#1097: `axes` is what makes per-axis freshness answerable
+            # downstream; `why` alone is prose and would have to be re-parsed.
+            out.append({"ts": j["ts"], "why": ", ".join(why), "axes": axes,
                         "storyScore": max_ss, "badges": max_b, "events": max_e})
     return out
+
+
+def last_axis_advance(adv, axis, baseline_ts):
+    """Timestamp of the most recent rise on ONE axis, or baseline_ts if that
+    axis has never risen in the sidecar corpus."""
+    for a in reversed(adv):
+        if axis in a.get("axes", ()):
+            return a["ts"]
+    return baseline_ts
 
 
 # ---------------------------------------------------------------- MODE classification
@@ -396,6 +425,15 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
     frozen_h = (now_ms - last_ts) / 3.6e6
     stalled = frozen_h > window_h
 
+    # wq#1097: per-axis freshness alongside the conjunction. `baseline` is the
+    # first sidecar, matching last_ts's own fallback, so an axis that never
+    # rose reads as frozen for the whole corpus rather than as fresh.
+    baseline = sidecars[0]["ts"]
+    axis_frozen_h = {name: (now_ms - last_axis_advance(adv, name, baseline)) / 3.6e6
+                     for name in AXES}
+    story_frozen_h = min(axis_frozen_h[name] for name in STORY_AXES)
+    story_since = now_ms - story_frozen_h * 3.6e6
+
     latest = sidecars[-1]
     st = {
         "ok": True,
@@ -409,6 +447,15 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
         "lastAdvanceWhy": last["why"] if last else "(baseline: no advance recorded yet)",
         "frozenHours": frozen_h,
         "stalled": stalled,
+        # wq#1097: which axes are actually frozen, and how long the STORY axis
+        # specifically has been. `frozenHours` above stays the any-axis
+        # conjunction that `stalled` is computed from — unchanged contract —
+        # and these are the fields a consumer reaches for when it needs to
+        # know whether an incident's own axis moved.
+        "frozenAxes": [name for name, h in axis_frozen_h.items() if h > window_h],
+        "axisFrozenHours": axis_frozen_h,
+        "storyFrozenHours": story_frozen_h,
+        "storyStalledSince": _iso(story_since),
         "advanceCount": len(adv),
         "mode": None,
         "modeEvidence": None,
@@ -451,11 +498,17 @@ def persist(st, path=STATE):
 def one_line(st):
     if not st.get("ok"):
         return f"stuck-mode: DEAD — {st.get('reason')}"
+    # wq#1097: both clocks, because they disagree exactly when it matters —
+    # an "OK, frozen=0.1h" run whose story axis has not moved in two days is
+    # the shape this whole supervisor chain exists to notice.
+    story = st.get("storyFrozenHours")
+    story_txt = f" story_frozen={story:.1f}h" if story is not None else ""
     if not st.get("stalled"):
         return (f"stuck-mode: OK story_score={st.get('storyScore')} "
-                f"frozen={st.get('frozenHours'):.1f}h (< {st.get('windowHours')}h window)")
+                f"frozen={st.get('frozenHours'):.1f}h{story_txt} "
+                f"(< {st.get('windowHours')}h window)")
     return (f"stuck-mode: STALLED mode={st.get('mode')} story_score={st.get('storyScore')} "
-            f"frozen={st.get('frozenHours'):.1f}h — {st.get('modeEvidence')}")
+            f"frozen={st.get('frozenHours'):.1f}h{story_txt} — {st.get('modeEvidence')}")
 
 
 def main(argv=None):
