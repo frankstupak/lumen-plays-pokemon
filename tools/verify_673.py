@@ -90,7 +90,11 @@ def stalled(mode, location, story=10, badges=1, events=37, last_advance="2026-08
             frozen_h=43.0):
     return {"ok": True, "stalled": True, "mode": mode, "modeLocation": location,
             "storyScore": story, "badges": badges, "eventFlags": events,
-            "lastAdvanceAt": last_advance, "frozenHours": frozen_h, "map": location}
+            "lastAdvanceAt": last_advance, "frozenHours": frozen_h, "map": location,
+            # wq#1097: per-axis freshness. Every axis is flat in this fixture,
+            # so all three read frozen and the two clocks agree.
+            "storyStalledSince": last_advance, "storyFrozenHours": frozen_h,
+            "frozenAxes": ["story_score", "badges", "event_flags"]}
 
 
 def healthy(story=11, badges=1, events=38):
@@ -137,9 +141,13 @@ ok("incident is now tracked", "FIGHT_LOSS_LOOP@65" in escal["incidents"], escal[
 # 'superseded' via a fresh decide() cycle is out of scope here — this tests
 # the DEDUP path directly: calling maybe_file_or_append again for a location
 # already tracked must APPEND, never add a second ticket.
+#
+# wq#1097 put a cooldown on identical repeats, so this clock is past
+# APPEND_COOLDOWN_H; verify_1097.py owns the suppression half of that contract.
 before_calls = len(wq.calls)
 r2 = F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
-                             stalled("FIGHT_LOSS_LOOP", 65), log, wq, T0 + 5 * H_MS)
+                             stalled("FIGHT_LOSS_LOOP", 65), log, wq,
+                             T0 + int(4 + F.APPEND_COOLDOWN_H + 1) * H_MS)
 ok("repeat exhaustion appends, does not add a new ticket", r2["action"] == "appended" and r2["ticketId"] == ticket_id, r2)
 ok("still exactly one ticket after the repeat", len(wq.tickets) == 1, wq.tickets)
 ok("appended detail contains a REPEAT marker", "REPEAT" in wq.tickets[ticket_id]["detail"],

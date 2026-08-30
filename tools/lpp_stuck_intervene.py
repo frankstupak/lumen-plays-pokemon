@@ -313,11 +313,35 @@ def _snapshot(state):
             "eventFlags": state.get("eventFlags"), "map": state.get("map")}
 
 
+# wq#1097: which snapshot fields count as the prescription having WORKED.
+# An intervention is prescribed to unstick story progress, so only story
+# progress closes it out. eventFlags is excluded deliberately — see
+# resolve_pending.
+STORY_KEYS = ("storyScore", "badges")
+
+
+def _rose(now_snap, before, keys):
+    return any((now_snap.get(k) or 0) > (before.get(k) or 0) for k in keys)
+
+
 def resolve_pending(log, state):
     """Close out any open (afterState=None) attempts for keys OTHER than the
     current stall, or for the current key if state has actually advanced
     since that attempt was logged. Called on every decide() so the log never
     accumulates stale opens across an intervention that quietly worked.
+
+    wq#1097: "advanced" means the STORY axis rose (storyScore or badges), not
+    any axis. The old test also accepted an eventFlags rise, and eventFlags is
+    the noisy one — it ticks for an item pickup or an NPC line. On
+    FIGHT_LOSS_LOOP@3 that single difference made K unbounded in practice: one
+    flag tick closed the open attempts as "advanced", open_attempt_count fell
+    back to 1, and decide() re-prescribed the identical grind pin. The logged
+    outcomes read 1(superseded), 2(advanced), 3(advanced), 2(advanced),
+    3(advanced), 2, 3 — a ladder oscillating between 2 and 3 for 47 supervisor
+    ticks, never reaching attempt 1 again and never exhausting for good, while
+    storyScore sat at 10 and badges at 1 the entire time. A flags-only rise now
+    leaves the attempt OPEN: it keeps counting against K, and it stays eligible
+    to close as "advanced" if the story really does move later.
     """
     cur_key = _key(state.get("mode"), state.get("modeLocation")) if state.get("stalled") else None
     now_snap = _snapshot(state)
@@ -325,11 +349,7 @@ def resolve_pending(log, state):
     for entry in log["attempts"]:
         if entry.get("afterState") is not None:
             continue
-        advanced = (
-            (now_snap.get("storyScore") or 0) > (entry["beforeState"].get("storyScore") or 0)
-            or (now_snap.get("badges") or 0) > (entry["beforeState"].get("badges") or 0)
-            or (now_snap.get("eventFlags") or 0) > (entry["beforeState"].get("eventFlags") or 0)
-        )
+        advanced = _rose(now_snap, entry["beforeState"], STORY_KEYS)
         moved_on = entry["locationKey"] != cur_key
         if advanced or moved_on:
             entry["afterState"] = now_snap
@@ -338,15 +358,37 @@ def resolve_pending(log, state):
     return changed
 
 
-def open_attempt_count(log, location_key):
-    """Attempts logged for this key that have NOT yet been resolved as
-    'advanced' — i.e. every try that either failed or is still pending,
-    which is what K bounds. A 'superseded' close (agent moved to a different
-    mode/location without advancing) does not reset the counter: it is not
-    evidence the intervention worked, just that the incident's shape changed.
+def open_attempt_count(log, location_key, state=None):
+    """Attempts logged for this key SINCE its last genuine resolution — i.e.
+    every try that either failed or is still pending, which is what K bounds.
+    A 'superseded' close (agent moved to a different mode/location without
+    advancing) does not reset the counter: it is not evidence the intervention
+    worked, just that the incident's shape changed.
+
+    wq#1097: "since its last resolution" is what this module's header always
+    claimed and what the count now implements. It previously summed EVERY
+    non-advanced attempt ever logged for the key, with no notion of "since",
+    so one superseded attempt from a long-finished incident occupied a slot
+    forever — the reason FIGHT_LOSS_LOOP@3 could never return to attempt 1
+    even across genuine story progress. Two things retire an attempt and
+    everything logged before it: the attempt itself closing as 'advanced', and
+    (when `state` is supplied) the story axis having risen at all since that
+    attempt was prescribed. The second case is what catches attempts that were
+    already closed as 'superseded' before the advance landed — resolve_pending
+    never revisits a closed entry, so without it those slots leak.
     """
-    return sum(1 for e in log["attempts"]
-               if e["locationKey"] == location_key and e.get("outcome") != "advanced")
+    now_snap = _snapshot(state) if state is not None else None
+    spent = 0
+    for e in log["attempts"]:
+        if e["locationKey"] != location_key:
+            continue
+        if e.get("outcome") == "advanced":
+            spent = 0
+        elif now_snap is not None and _rose(now_snap, e["beforeState"], STORY_KEYS):
+            spent = 0
+        else:
+            spent += 1
+    return spent
 
 
 def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
@@ -400,7 +442,7 @@ def decide(state=None, log=None, now_ms=None):
     location_key = _key(mode, location_id)
     template = PRESCRIPTIONS.get(mode)
 
-    prior = open_attempt_count(log, location_key)
+    prior = open_attempt_count(log, location_key, state)
     attempt = prior + 1
 
     if template is None:
@@ -465,6 +507,28 @@ def decide(state=None, log=None, now_ms=None):
             "attempt": attempt, "k": K, "directive": directive, "exhausted": False}
 
 
+def persist_directive(result, path=DIRECTIVE_PATH):
+    """Write the directive decide() produced, if it produced one. Returns
+    whether it wrote.
+
+    wq#1097: shared by main() and tools/lpp-stuck-supervisor so the two can
+    never again disagree about when the pin is refreshed. BOTH the intervening
+    and the exhausted path produce a directive, and only the exhausted path
+    has no other way to correct a stale pin — an exhausted key can never
+    intervene again (wq#1091). Persisting on `intervened` alone, which is what
+    the supervisor entrypoint did, freezes the agent's pin at the attempt-3
+    text for the entire life of the incident.
+    """
+    directive = (result or {}).get("directive")
+    if not directive:
+        return False
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(directive, f, indent=1)
+    os.replace(tmp, path)
+    return True
+
+
 def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -477,14 +541,7 @@ def main(argv=None):
 
     if not args.dry_run:
         save_log(log)
-        # wq#1091: persist whenever decide() produced a directive at all — that
-        # is now the intervening path AND the exhausted path, which must be
-        # able to correct a stale pin it can no longer replace via an attempt.
-        if result.get("directive"):
-            tmp = DIRECTIVE_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(result["directive"], f, indent=1)
-            os.replace(tmp, DIRECTIVE_PATH)
+        persist_directive(result)
 
     if args.json:
         print(json.dumps(result, indent=1))

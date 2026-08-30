@@ -53,7 +53,11 @@ def main(argv=None):
         M.persist(state)
 
     out = {"stuckMode": {k: state.get(k) for k in
-                          ("ok", "stalled", "mode", "modeLocation", "frozenHours", "storyScore")}}
+                          ("ok", "stalled", "mode", "modeLocation", "frozenHours", "storyScore",
+                           # wq#1097: `frozenHours` alone is the any-axis clock, which one
+                           # event flag resets. The story clock is the one that says whether
+                           # this incident is going anywhere.
+                           "storyFrozenHours", "frozenAxes")}}
 
     if not state.get("ok"):
         out["intervention"] = None
@@ -63,11 +67,11 @@ def main(argv=None):
         decision = I.decide(state=state, log=log)
         if not args.dry_run:
             I.save_log(log)
-            if decision.get("intervened"):
-                tmp = I.DIRECTIVE_PATH + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(decision["directive"], f, indent=1)
-                os.replace(tmp, I.DIRECTIVE_PATH)
+            # wq#1097: the shared writer, so this entrypoint and
+            # lpp_stuck_intervene.main() can no longer drift on when the pin is
+            # refreshed. This script used to persist only on `intervened`,
+            # which silently un-did wq#1091 in the one path systemd runs.
+            I.persist_directive(decision)
         out["intervention"] = {k: decision.get(k) for k in ("intervened", "mode", "attempt", "k", "exhausted")}
 
         escal = F.load_state()
@@ -76,9 +80,13 @@ def main(argv=None):
             F.save_state(escal)
         out["feedback"] = result
 
+    # wq#1097: a suppressed append is the absence of an action, so under
+    # --quiet (how the timer runs it) it must not print. Otherwise the REPEAT
+    # storm this ticket removed from the work queue just moves to the journal.
+    filed = (out.get("feedback") or {}).get("filed") or {}
     took_action = (
         (out.get("intervention") or {}).get("intervened")
-        or (out.get("feedback") or {}).get("filed")
+        or (filed.get("action") not in (None, "suppressed"))
         or (out.get("feedback") or {}).get("ntfy")
         or (out.get("feedback") or {}).get("resolved")
     )
