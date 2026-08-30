@@ -112,6 +112,17 @@ Two changes, both in `tools/lpp_stuck_intervene.py`:
    intervene again, so no corrected prescription could ever reach the live
    agent. The log invariant wq#673 keys on is untouched: `exhausted` still
    appends nothing.
+3. **The same widened gate in `tools/lpp-stuck-supervisor`** (wq#1136). wq#1091
+   fixed only this module's `main()`, which nothing in production runs: the
+   30min `lumen-lpp-stuck-supervisor.timer` runs the wrapper, and the wrapper
+   calls `decide()` and reimplements the write itself. It kept the old
+   `if decision.get("intervened")` gate, so the fix above never reached the
+   live agent — `runtime/supervisor_directive.json` sat frozen at a
+   `FIGHT_LOSS_LOOP@3` pin for 25h+ while the run was actually stuck in an
+   already-exhausted `WARP_OSC@36`, with `runtime/intervention_log.json`
+   proving the timer itself was firing every cycle. Both call sites now gate
+   on `result.get("directive")`. Any future caller that persists the directive
+   must do the same.
 
 ## Verification
 
@@ -136,10 +147,22 @@ mode's template survives the terminal-directive `format()` call (the
 `{location}` rendering as `Cerulean City (map3)` rather than a bare `3`
 sitting among the level numbers, falling back to `map<id>` for an unknown id.
 
+`python3 tools/verify_1136.py` — **10/10**. `verify_672.py` only ever calls
+`decide()`/`main()` in this module, so it cannot see the wrapper's own write
+block, which is why the wq#1091 gap shipped green. This probe drives
+`tools/lpp-stuck-supervisor`'s `main()` for real with the three component
+modules stubbed and `DIRECTIVE_PATH` pointed at a temp file, asserting: an
+exhausted decision writes the directive; a later cycle overwrites it rather
+than freezing; the intervening path is unchanged; a decision with no directive
+neither writes nor truncates an existing file; a not-`ok` stuck-mode state
+writes nothing; and `--dry-run` stays read-only on the exhausted path. Reverting
+the wrapper's gate to `intervened` fails 4 of the 10.
+
 ## Rollback
 
 Deleting `runtime/intervention_log.json` resets every K counter to zero —
 safe, no live consumer depends on its history yet (see "what this does not
 do yet"). Deleting `runtime/supervisor_directive.json` costs nothing; it is
-overwritten in full on every intervening call. Nothing in this module
+overwritten in full on every call that produces a directive — intervening or
+exhausted. Nothing in this module
 touches the game, the service, checkpoints, `events/`, or the work queue.

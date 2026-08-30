@@ -94,6 +94,16 @@ a real advance both closes the ticket with evidence and clears tracked state,
 including when the *current* incident has since moved to a different
 mode/location.
 
+`python3 tools/verify_1136.py` — **10/10**. This wrapper is the only thing the
+timer runs, and until wq#1136 nothing tested it: the component probes
+(`verify_671`/`672`/`673`) all import the modules directly, so the wrapper's
+own copy of the directive-write step went unexercised and drifted behind
+`lpp_stuck_intervene.main()` — it kept an `intervened`-only gate and silently
+dropped every exhausted directive refresh. The probe loads this file by path,
+stubs `M`/`I`/`F`, and asserts the write block's behaviour on each decision
+shape. Any logic this wrapper reimplements rather than delegating belongs
+there.
+
 ## Rollback
 
 Deleting `runtime/stuck_escalation.json` forgets all tracked incidents —
