@@ -78,6 +78,7 @@ preserve across restarts other than what the source files already durably
 hold).
 """
 import glob, json, os, re, sys
+from collections import Counter
 from datetime import datetime, timezone
 
 BASE = os.environ.get("LPP_BASE", "/home/lumen/pokemon")
@@ -272,10 +273,13 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     share one counter or one ticket.
     """
     recent_resumes = [p.get("file") for p in (resume_picks or [])[-4:] if p.get("file")]
-    if len(recent_resumes) >= 2 and recent_resumes[-1] == recent_resumes[-2]:
-        return "RESUME_DEADEND", (
-            f"last 2 boots both resumed from {recent_resumes[-1]} "
-            f"— the harness is not advancing its own starting point"), None
+    # wq#1081/#1084: RESUME_DEADEND is a FALLBACK, not a pre-emptor. A long
+    # freeze naturally resumes the same checkpoint across reboots, so evaluating
+    # it first masked the real stuck mode every time the freeze spanned >1
+    # restart (this is how the reported stall kept flip-flopping modes). Compute
+    # the flag here but defer the return until after the fight-readiness
+    # diagnoses below.
+    resume_deadend = len(recent_resumes) >= 2 and recent_resumes[-1] == recent_resumes[-2]
 
     window = (warps or [])[-WARP_WINDOW:]
     if not window:
@@ -291,6 +295,53 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
             f"last {len(window)} warps bounce {map_label(gym_id, names)} "
             f"({fighting_gym[gym_id]}x) <-> {map_label(heal_id, names)} "
             f"({heal_hits[heal_id]}x) — healing-cycle pattern, not travel"), gym_id
+
+    # wq#1081/#1084: a stalled loop that collapses onto heal/hub maps
+    # (Pokecenter + city/town) with NO gym warp in the window is a
+    # fight-readiness / objective stall, not a navigation bug. The gym warp is
+    # ABSENT precisely because a readiness gate (e.g. mistyGymEntryRefusal,
+    # wq#674) refuses the entry, so it never lands in warp_history — which is
+    # why this used to misclassify as WARP_OSC/NAV_LOOP and get prescribed a
+    # map ban. Banning these maps can never help: they are the mandatory hub +
+    # only heal point (the live WARP_OSC ban even targeted Route 25, the grind
+    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the
+    # most-frequent city/town hub — a STABLE location that collapses the two
+    # transient WARP_OSC endpoints into one incident / one ticket.
+    heal_city = [m for m in window if is_heal_or_city(m, names)]
+    if not gym_hits and len(heal_city) >= max(4, int(0.6 * len(window))):
+        cities = [m for m in heal_city
+                  if map_label(m, names).lower().endswith(("city", "town"))]
+        hub = Counter(cities or heal_city).most_common(1)[0][0]
+        labels = ", ".join(sorted({map_label(m, names) for m in heal_city}))
+        return "FIGHT_LOSS_LOOP", (
+            f"stalled loop collapses onto heal/hub maps ({labels}) with no gym warp "
+            f"recorded — a readiness gate is refusing the objective (gym entry), not a "
+            f"navigation bug. Banning the hub/heal maps cannot help; the remedy is to "
+            f"grind and catch a type counter, not to ban the hub"), hub
+
+    # wq#1081/#1084: a stalled loop that keeps bouncing on and off a ROUTE (no
+    # gym warp in the window) is a grind stall, not a warp bug — the agent has
+    # reached the grind map but keeps re-entering an adjacent building/doorway
+    # instead of walking into the grass. The WARP_OSC remedy would ban the route
+    # itself, forbidding the exact map the agent must grind on. Route to
+    # FIGHT_LOSS_LOOP (grind remedy) anchored on the route.
+    routes = [m for m in window if map_label(m, names).lower().startswith("route")]
+    if not gym_hits and routes and len(set(window)) <= 3 and len(window) >= 4:
+        route_id = Counter(routes).most_common(1)[0][0]
+        labels = ", ".join(sorted({map_label(m, names) for m in set(window)}))
+        return "FIGHT_LOSS_LOOP", (
+            f"stalled loop on/around a route ({labels}) with no gym warp recorded — the "
+            f"agent reached the grind map but keeps bouncing off it (e.g. re-entering an "
+            f"adjacent building) instead of grinding. Banning the route can't help; the "
+            f"remedy is to walk into the grass and grind a type counter"), route_id
+
+    # wq#1081/#1084: deferred RESUME_DEADEND — the harness keeps resuming the
+    # same checkpoint and the warps DON'T show a fight-readiness stall, so a
+    # genuine "can't advance its own start point" deadend is the best read.
+    if resume_deadend:
+        return "RESUME_DEADEND", (
+            f"last 2 boots both resumed from {recent_resumes[-1]} "
+            f"— the harness is not advancing its own starting point"), None
 
     # wq#697: WARP_OSC
     osc_hit, osc_a, osc_b, osc_alt = detect_warp_osc(window)
