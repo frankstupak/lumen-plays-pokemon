@@ -246,7 +246,12 @@ def advances(sidecars):
 # ---------------------------------------------------------------- MODE classification
 
 def detect_warp_osc(warps, window=WARP_OSC_WINDOW, min_alt=WARP_OSC_MIN_ALT):
-    """wq#697: detect A<->B two-map warp oscillation."""
+    """wq#697: detect A<->B two-map warp oscillation.
+
+    Returns (hit, a, b, alternations). `a == b` means the whole slice landed on
+    one map — a self-bounce, which is a real stuck signal but NOT an
+    oscillation with an edge to ban; classify_mode gates on that (wq#1119).
+    """
     recent = (warps or [])[-window:]
     if len(recent) < min_alt:
         return False, None, None, 0
@@ -312,6 +317,61 @@ def load_recent_turn_summaries(base=BASE, n=50):
     return lines[-n:]
 
 
+def _readiness_stall(window, names):
+    """wq#1081/#1084: the two "a map ban cannot help here" diagnoses, over an
+    arbitrary slice of the warp history. Returns (mode, evidence, location) or
+    None if neither matches.
+
+    wq#1119 made this a function taking its slice as an argument, because the
+    classifier has to ask the question twice at two different scopes. See the
+    call site in classify_mode's WARP_OSC branch for why.
+    """
+    if not window:
+        return None
+    gym_hits = [m for m in window if is_gym(m, names)]
+
+    # wq#1081/#1084: a stalled loop that collapses onto heal/hub maps
+    # (Pokecenter + city/town) with NO gym warp in the window is a
+    # fight-readiness / objective stall, not a navigation bug. The gym warp is
+    # ABSENT precisely because a readiness gate (e.g. mistyGymEntryRefusal,
+    # wq#674) refuses the entry, so it never lands in warp_history — which is
+    # why this used to misclassify as WARP_OSC/NAV_LOOP and get prescribed a
+    # map ban. Banning these maps can never help: they are the mandatory hub +
+    # only heal point (the live WARP_OSC ban even targeted Route 25, the grind
+    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the
+    # most-frequent city/town hub — a STABLE location that collapses the two
+    # transient WARP_OSC endpoints into one incident / one ticket.
+    heal_city = [m for m in window if is_heal_or_city(m, names)]
+    if not gym_hits and len(heal_city) >= max(4, int(0.6 * len(window))):
+        cities = [m for m in heal_city
+                  if map_label(m, names).lower().endswith(("city", "town"))]
+        hub = Counter(cities or heal_city).most_common(1)[0][0]
+        labels = ", ".join(sorted({map_label(m, names) for m in heal_city}))
+        return "FIGHT_LOSS_LOOP", (
+            f"stalled loop collapses onto heal/hub maps ({labels}) with no gym warp "
+            f"recorded — a readiness gate is refusing the objective (gym entry), not a "
+            f"navigation bug. Banning the hub/heal maps cannot help; the remedy is to "
+            f"grind and catch a type counter, not to ban the hub"), hub
+
+    # wq#1081/#1084: a stalled loop that keeps bouncing on and off a ROUTE (no
+    # gym warp in the window) is a grind stall, not a warp bug — the agent has
+    # reached the grind map but keeps re-entering an adjacent building/doorway
+    # instead of walking into the grass. The WARP_OSC remedy would ban the route
+    # itself, forbidding the exact map the agent must grind on. Route to
+    # FIGHT_LOSS_LOOP (grind remedy) anchored on the route.
+    routes = [m for m in window if map_label(m, names).lower().startswith("route")]
+    if not gym_hits and routes and len(set(window)) <= 3 and len(window) >= 4:
+        route_id = Counter(routes).most_common(1)[0][0]
+        labels = ", ".join(sorted({map_label(m, names) for m in set(window)}))
+        return "FIGHT_LOSS_LOOP", (
+            f"stalled loop on/around a route ({labels}) with no gym warp recorded — the "
+            f"agent reached the grind map but keeps bouncing off it (e.g. re-entering an "
+            f"adjacent building) instead of grinding. Banning the route can't help; the "
+            f"remedy is to walk into the grass and grind a type counter"), route_id
+
+    return None
+
+
 def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summaries=None):
     """Returns (mode, evidence_str, location_id). `warps` newest-last, same
     shape as runtime/warp_history.json's "warps" list. `resume_picks`
@@ -357,44 +417,21 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
             f"({fighting_gym[gym_id]}x) <-> {map_label(heal_id, names)} "
             f"({heal_hits[heal_id]}x) — healing-cycle pattern, not travel"), gym_id
 
-    # wq#1081/#1084: a stalled loop that collapses onto heal/hub maps
-    # (Pokecenter + city/town) with NO gym warp in the window is a
-    # fight-readiness / objective stall, not a navigation bug. The gym warp is
-    # ABSENT precisely because a readiness gate (e.g. mistyGymEntryRefusal,
-    # wq#674) refuses the entry, so it never lands in warp_history — which is
-    # why this used to misclassify as WARP_OSC/NAV_LOOP and get prescribed a
-    # map ban. Banning these maps can never help: they are the mandatory hub +
-    # only heal point (the live WARP_OSC ban even targeted Route 25, the grind
-    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the
-    # most-frequent city/town hub — a STABLE location that collapses the two
-    # transient WARP_OSC endpoints into one incident / one ticket.
-    heal_city = [m for m in window if is_heal_or_city(m, names)]
-    if not gym_hits and len(heal_city) >= max(4, int(0.6 * len(window))):
-        cities = [m for m in heal_city
-                  if map_label(m, names).lower().endswith(("city", "town"))]
-        hub = Counter(cities or heal_city).most_common(1)[0][0]
-        labels = ", ".join(sorted({map_label(m, names) for m in heal_city}))
-        return "FIGHT_LOSS_LOOP", (
-            f"stalled loop collapses onto heal/hub maps ({labels}) with no gym warp "
-            f"recorded — a readiness gate is refusing the objective (gym entry), not a "
-            f"navigation bug. Banning the hub/heal maps cannot help; the remedy is to "
-            f"grind and catch a type counter, not to ban the hub"), hub
-
-    # wq#1081/#1084: a stalled loop that keeps bouncing on and off a ROUTE (no
-    # gym warp in the window) is a grind stall, not a warp bug — the agent has
-    # reached the grind map but keeps re-entering an adjacent building/doorway
-    # instead of walking into the grass. The WARP_OSC remedy would ban the route
-    # itself, forbidding the exact map the agent must grind on. Route to
-    # FIGHT_LOSS_LOOP (grind remedy) anchored on the route.
-    routes = [m for m in window if map_label(m, names).lower().startswith("route")]
-    if not gym_hits and routes and len(set(window)) <= 3 and len(window) >= 4:
-        route_id = Counter(routes).most_common(1)[0][0]
-        labels = ", ".join(sorted({map_label(m, names) for m in set(window)}))
-        return "FIGHT_LOSS_LOOP", (
-            f"stalled loop on/around a route ({labels}) with no gym warp recorded — the "
-            f"agent reached the grind map but keeps bouncing off it (e.g. re-entering an "
-            f"adjacent building) instead of grinding. Banning the route can't help; the "
-            f"remedy is to walk into the grass and grind a type counter"), route_id
+    stall = _readiness_stall(window, names)
+    if stall is None:
+        # wq#1119: ask again at the tighter, more recent scope WARP_OSC uses.
+        # Both diagnoses above test the SHAPE of a loop (<=3 distinct maps, or
+        # heal/hub maps dominating), and a 64-warp window that spans a 34h
+        # freeze has usually drifted across more maps than that even when the
+        # agent's CURRENT behaviour is a tight one-map bounce. On the live
+        # Route 25 stall the wide window held 6 distinct maps — guard silent —
+        # while the last 22 warps were a single map. Asking only at the wide
+        # scope left the deferral wq#1081/#1084 built here half-done: the real
+        # mode stayed hidden and RESUME_DEADEND below went on masking it,
+        # which is the exact failure that deferral existed to stop.
+        stall = _readiness_stall(window[-WARP_OSC_WINDOW:], names)
+    if stall:
+        return stall
 
     # wq#1081/#1084: deferred RESUME_DEADEND — the harness keeps resuming the
     # same checkpoint and the warps DON'T show a fight-readiness stall, so a
@@ -417,12 +454,22 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     # wq#697: WARP_OSC
     osc_hit, osc_a, osc_b, osc_alt = detect_warp_osc(window)
     if osc_hit:
-        pair = (f"{map_label(osc_a, names)} <-> {map_label(osc_b, names)}"
-                if osc_a != osc_b
-                else f"{map_label(osc_a, names)} (self-bounce)")
-        return "WARP_OSC", (
-            f"warp oscillation: {osc_alt} alternations between {pair} "
-            f"in last {min(len(window), WARP_OSC_WINDOW)} warps"), osc_a
+        # wq#1119: this mode's whole remedy is an EDGE ban — "ban the bounce
+        # edge, try a different warp" — so it may only be returned when there
+        # IS an edge. osc_a == osc_b means every warp in the slice landed on the
+        # same map: the agent re-entering one doorway, not alternating between
+        # two. There is nothing to ban, the pin's "the last several warps
+        # alternate between exactly two maps" is simply false, and the
+        # intervention layer pads the ban list out to two maps from the wider
+        # window's next most frequent id — which is how the live Route 25 stall
+        # got "ban the grind route + the only heal hub" prescribed three times
+        # in a row. A self-bounce that is not a readiness stall (handled above)
+        # falls through to NAV_LOOP/IDLE rather than to a ban that cannot help.
+        if osc_a != osc_b:
+            return "WARP_OSC", (
+                f"warp oscillation: {osc_alt} alternations between "
+                f"{map_label(osc_a, names)} <-> {map_label(osc_b, names)} "
+                f"in last {min(len(window), WARP_OSC_WINDOW)} warps"), osc_a
 
     # wq#697: NOISE_STORM
     noise_hit, noise_streak = detect_noise_storm(turn_summaries, NOISE_STORM_K)

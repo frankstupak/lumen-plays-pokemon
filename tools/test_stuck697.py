@@ -5,7 +5,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lpp_stuck_mode as M
 
 names = {"63": "Cerulean Trade House", "3": "Cerulean City", "65": "Cerulean Gym",
-         "64": "Cerulean Pokecenter", "35": "Route 24", "36": "Route 25"}
+         "64": "Cerulean Pokecenter", "35": "Route 24", "36": "Route 25",
+         "67": "Cerulean Mart", "88": "Bills House"}
 
 # --- A: WARP_OSC — alternating 63<->3 (the exact 2026-08-19 shape) ---
 warps_osc = [63, 3, 3, 63, 3, 3, 3, 63]  # ticket's own evidence line
@@ -80,4 +81,43 @@ assert modeG == "FIGHT_LOSS_LOOP", f"G1: heal/hub loop should be FIGHT_LOSS_LOOP
 assert locG == 3, f"G2: hub location should be the city (map3), got {locG}"
 print(f"G: heal/hub loop -> {modeG}@{locG} (readiness stall, not a nav bug)")
 
-print("\ntest_stuck697: ALL PASS (7 sections, A-G)")
+
+# --- H: wq#1119 — the live 34h Route 25 stall ---
+# runtime/warp_history.json, verbatim, at the moment the ticket last repeated
+# (2026-08-31T00:23Z). Six distinct maps across the 64-warp window, so the
+# wq#1081/#1084 route guard (<=3 distinct) stayed silent, while the last 22
+# warps are a single map, so WARP_OSC fired and the intervention layer resolved
+# a ban list of the window's top-2 maps: Route 25 (the grind route) + Cerulean
+# City (the only heal hub). Three interventions, all superseded, 34h frozen.
+warps_1119 = [88, 36, 64, 3, 63, 3, 64, 3, 63, 3, 64, 3, 3, 63, 3, 64, 3, 3, 63,
+              3, 64, 3, 63, 3, 64, 3, 63, 3, 67, 3, 64, 3, 3, 63, 3, 64, 3, 63,
+              3, 64, 3, 88] + [36] * 22
+modeH, evH, locH = M.classify_mode(warps_1119, [], names)
+assert modeH == "FIGHT_LOSS_LOOP", f"H1: live wq#1119 window should be FIGHT_LOSS_LOOP, got {modeH}"
+assert locH == 36, f"H2: should anchor on Route 25 (map36), got {locH}"
+print(f"H: live wq#1119 window -> {modeH}@{locH} (grind stall, route no longer bannable)")
+
+# H3: the same window still LOOKS like an oscillation to the raw detector — the
+# fix is in the classifier's gate, not by blinding the detector.
+hitH, aH, bH, _ = M.detect_warp_osc(warps_1119)
+assert hitH and aH == bH == 36, f"H3: detector should still see a self-bounce on 36, got {hitH}/{aH}/{bH}"
+print("H3: detector unchanged — self-bounce still detected, just not prescribed an edge ban")
+
+# H4: a self-bounce on a map that is neither route nor hub has no edge to ban
+# either, so it must not be handed the two-map WARP_OSC remedy.
+warps_selfbounce = [60, 61, 15, 59, 62] + [60] * 16
+modeH4, _, _ = M.classify_mode(warps_selfbounce, [], names)
+assert modeH4 != "WARP_OSC", f"H4: single-map self-bounce should not be WARP_OSC, got {modeH4}"
+print(f"H4: non-route self-bounce -> {modeH4} (no edge to ban)")
+
+# H5: a 34h freeze reboots, so the same checkpoint gets picked twice — the
+# wq#1081/#1084 RESUME_DEADEND deferral only helps if the readiness diagnoses
+# it defers past are asked at the scope that can actually see the stall. Live
+# on 2026-08-31 they were not, and RESUME_DEADEND masked Route 25 all over again.
+picks_same = [{"file": "/home/lumen/pokemon/checkpoints/auto-mtghr053-map36.state.gz"}] * 2
+modeH5, _, locH5 = M.classify_mode(warps_1119, picks_same, names)
+assert modeH5 == "FIGHT_LOSS_LOOP", f"H5: repeated resume must not mask the grind stall, got {modeH5}"
+assert locH5 == 36, f"H5b: should still anchor on Route 25, got {locH5}"
+print(f"H5: repeated same-checkpoint resume -> {modeH5}@{locH5} (deadend no longer masks it)")
+
+print("\ntest_stuck697: ALL PASS (8 sections, A-H)")

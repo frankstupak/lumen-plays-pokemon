@@ -62,7 +62,7 @@ persisted list is itself already a bounded recent window (wq#517's own
 
 ## Verification
 
-`python3 tools/verify_671.py` — **22/22**. Unit-tests `classify_mode()`
+`python3 tools/verify_671.py` — **23/23**. Unit-tests `classify_mode()`
 directly for MODE priority (an inlined literal copy of the live 43h stall's
 `warp_history.json`, captured 2026-08-17T20:15Z, MUST classify
 `FIGHT_LOSS_LOOP` and name both Cerulean Gym and Cerulean City in the
