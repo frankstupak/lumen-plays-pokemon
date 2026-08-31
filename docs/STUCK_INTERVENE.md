@@ -55,7 +55,7 @@ already-firing valve, not a repair to the valve itself.
 | `FIGHT_LOSS_LOOP` | `grind_sub_objective` | pins the harness's own gym-entry gate — level, potions, roster, type counter — read from `src/guidance.ts` (wq#1091) |
 | `NAV_LOOP` | `checkpoint_restore_then_goto_ban` | pins a goto-ban + fallback-checkpoint instruction |
 | `OBJECTIVE_UNREACHABLE` | `replan_verify_map_data` | pins a re-verify instruction against the frontier's `pathExhausted` milestone |
-| `RESUME_DEADEND` | `alternate_checkpoint` | pins an instruction to resume from a different checkpoint next boot |
+| `RESUME_DEADEND` | `advance_past_boot_state` | pins the three conditions `src/resume.ts`'s picker applies to a replacement save — newer than the boot state, not written on a warp tile, at or above `VIABLE_HP_PCT` (read, not retyped). The old `alternate_checkpoint` pin asked the brain to resume from a different checkpoint: it does not choose the save, and the harness's repeat guard had already tried that and found nothing to take (wq#1118) |
 | `IDLE` | *(none)* | the spec defines no IDLE action; guessing one would be exactly the unfounded intervention this module exists to avoid |
 
 ## Bounding and resolution
@@ -112,6 +112,40 @@ Two changes, both in `tools/lpp_stuck_intervene.py`:
    intervene again, so no corrected prescription could ever reach the live
    agent. The log invariant wq#673 keys on is untouched: `exhausted` still
    appends nothing.
+
+## …and it must be addressed to an actor that can act (wq#1118)
+
+`RESUME_DEADEND@None` is the same lesson one step further out. Its
+prescription, `alternate_checkpoint`, pinned **"resume from a different,
+earlier checkpoint next boot"** into the notepad the in-game brain reads. The
+brain has no such authority: `pickResume()` (`src/resume.ts`) chooses at boot,
+before the brain exists. Worse, the harness *already applies that remedy* — the
+repeat guard demotes a file picked `RESUME_REPEAT_LIMIT` times running whenever
+a newer non-warp state exists. So the pin asked the wrong actor for the one
+thing that had already been tried and proved impossible; three K attempts and
+35 hours later, `storyScore` was still 10.
+
+Three changes:
+
+1. **The mode fires only once the guard is beaten** —
+   `lpp_stuck_mode.resume_repeat_limit()` parses `RESUME_REPEAT_LIMIT` out of
+   `src/resume.ts` and the classifier requires *more* than that many identical
+   consecutive picks. A run of exactly the limit is the guard's own remedy in
+   flight, not a deadend.
+2. **The location is a real map** (the one the agent is standing on), not
+   `None`. wq#671's dedup key is `(mode, location)` "so two different stuck
+   spots never share one counter or one ticket", and `None` broke that for this
+   mode alone: every resume deadend anywhere in the game shared one key, one
+   K=3 budget, one permanently-exhausted ticket, and a pin reading "near
+   `mapNone`".
+3. **The pin names what the picker will actually take** — a save that is newer
+   than the boot state, not written on a warp tile (`onWarp` sorts below every
+   non-warp save; the guard's escape hatch looks for a non-warp state first),
+   and at or above `VIABLE_HP_PCT` (parsed by `resume_viable_pct()`, same
+   read-don't-retype rule as `_misty_gate()`). Those are the three legs of
+   `pickResume`'s own predicate, and all three are things the brain can do.
+
+Probe: `python3 tools/test_stuck1118.py` — 6 sections, A-F.
 
 ## Verification
 

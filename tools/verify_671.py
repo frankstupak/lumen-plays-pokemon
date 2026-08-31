@@ -92,16 +92,30 @@ one_visit = [3, 65, 3, 15, 59]
 mode, ev, _loc = M.classify_mode(one_visit, [], NAMES)
 ok("single gym visit does not classify FIGHT_LOSS_LOOP", mode != "FIGHT_LOSS_LOOP", mode)
 
-# GREEN: NAV_LOOP — two non-gym overworld maps bouncing, no healing signature.
-nav = [59, 60, 59, 60, 59, 60, 59, 60]
+# GREEN: NAV_LOOP — a small set of non-gym overworld maps circling, no healing
+# signature. Three maps, not two: wq#697 added WARP_OSC ABOVE NAV_LOOP and a
+# strict A<->B bounce is now that mode by definition, so the old two-map fixture
+# had been asserting the pre-wq#697 answer (and failing) since. NAV_LOOP's own
+# signature — <=3 distinct maps, repeats, no oscillation — is what is under test.
+nav = [59, 60, 61, 59, 60, 61, 59, 61]
 mode, ev, _loc = M.classify_mode(nav, [], NAMES)
 ok("non-gym 2-map bounce classifies NAV_LOOP", mode == "NAV_LOOP", f"got {mode} :: {ev}")
 
-# GREEN: RESUME_DEADEND — same resumedFrom on the last 2 consecutive boots,
-# takes priority even over an in-progress warp trail.
-resumes = [{"file": "auto-x-map3.state.gz"}, {"file": "auto-x-map3.state.gz"}]
+# GREEN: RESUME_DEADEND — the same resumedFrom on MORE consecutive boots than
+# src/resume.ts's repeat guard tolerates (wq#1118: at exactly the limit the
+# guard is about to demote that file itself, so the deadend is not yet proven).
+LIMIT = M.resume_repeat_limit()
+resumes = [{"file": "auto-x-map3.state.gz"}] * (LIMIT + 1)
 mode, ev, _loc = M.classify_mode([3, 15, 59], resumes, NAMES)
-ok("repeated resumedFrom classifies RESUME_DEADEND", mode == "RESUME_DEADEND", f"got {mode} :: {ev}")
+ok("resumedFrom repeated past the harness limit classifies RESUME_DEADEND",
+   mode == "RESUME_DEADEND", f"got {mode} :: {ev}")
+
+# RED: a run of exactly the limit is the guard's own remedy in flight, not a
+# deadend — this is the wq#1118 misfire (RESUME_DEADEND@None, 3 K attempts, 35h).
+at_limit = [{"file": "auto-x-map3.state.gz"}] * LIMIT
+mode, ev, _loc = M.classify_mode([3, 15, 59], at_limit, NAMES)
+ok("resumedFrom repeated exactly to the limit does NOT classify RESUME_DEADEND",
+   mode != "RESUME_DEADEND", f"got {mode} :: {ev}")
 
 # RED: resumes alternate between two DIFFERENT checkpoints -> not a deadend by
 # this definition (matches lpp_frontier.restart_loop's own "consecutive" bar,
