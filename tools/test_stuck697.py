@@ -94,7 +94,11 @@ warps_1119 = [88, 36, 64, 3, 63, 3, 64, 3, 63, 3, 64, 3, 3, 63, 3, 64, 3, 3, 63,
               3, 64, 3, 88] + [36] * 22
 modeH, evH, locH = M.classify_mode(warps_1119, [], names)
 assert modeH == "FIGHT_LOSS_LOOP", f"H1: live wq#1119 window should be FIGHT_LOSS_LOOP, got {modeH}"
-assert locH == 36, f"H2: should anchor on Route 25 (map36), got {locH}"
+# wq#1149: the anchor is the STAGE, not whichever of its maps this branch picked.
+# Route 25 is a member of src/guidance.ts's own `inRegion` set, so it collapses
+# onto the stage hub — see section I for why the raw anchor could not stay.
+assert locH == M.stage_anchor(M.stage_region(), names), \
+    f"H2: should anchor on the Cerulean stage hub, got {locH}"
 print(f"H: live wq#1119 window -> {modeH}@{locH} (grind stall, route no longer bannable)")
 
 # H3: the same window still LOOKS like an oscillation to the raw detector — the
@@ -117,7 +121,46 @@ print(f"H4: non-route self-bounce -> {modeH4} (no edge to ban)")
 picks_same = [{"file": "/home/lumen/pokemon/checkpoints/auto-mtghr053-map36.state.gz"}] * 2
 modeH5, _, locH5 = M.classify_mode(warps_1119, picks_same, names)
 assert modeH5 == "FIGHT_LOSS_LOOP", f"H5: repeated resume must not mask the grind stall, got {modeH5}"
-assert locH5 == 36, f"H5b: should still anchor on Route 25, got {locH5}"
+assert locH5 == M.stage_anchor(M.stage_region(), names), \
+    f"H5b: should still anchor on the Cerulean stage, got {locH5}"
 print(f"H5: repeated same-checkpoint resume -> {modeH5}@{locH5} (deadend no longer masks it)")
 
-print("\ntest_stuck697: ALL PASS (8 sections, A-H)")
+
+# --- I: wq#1149 — one unbroken freeze must produce ONE incident key ---
+# wq#671's key is (mode, location) so two stuck spots never share one counter;
+# nothing enforced the converse, and one stuck spot split across many. Replayed
+# warp-by-warp over the SAME live history as section H, the classifier used to
+# name three different keys as the window slid — FIGHT_LOSS_LOOP@3 for the first
+# 51 warps, WARP_OSC@36 for four, then FIGHT_LOSS_LOOP@36 — over a single 36.5h
+# story-axis freeze. Each key carried its own K=3 budget and filed its own
+# ticket, and each wrote its own pin into the one directive file the agent reads,
+# so the grind prescription was replaced by a ban on the grind route every other
+# supervisor tick. That is what "3 interventions, all superseded" (wq#1149) is
+# made of: not three failed remedies, three remedies overwriting each other.
+keys = []
+for n in range(8, len(warps_1119) + 1):
+    mI, _, locI = M.classify_mode(warps_1119[:n], [], names)
+    k = f"{mI}@{locI}"
+    if not keys or keys[-1] != k:
+        keys.append(k)
+assert keys == ["FIGHT_LOSS_LOOP@3"], f"I1: one freeze must be one key, got {keys}"
+print(f"I: sliding replay of the live history -> {len(keys)} key(s): {keys[0]}")
+
+# I2: the WARP_OSC endpoints that fired mid-slide (Route 25 <-> Bill's House)
+# are a genuine two-map edge — wq#1119's gate passes them — but Route 25 is a
+# map the stage's own plan sends the agent to grind on, so it is not bannable.
+hitI, aI, bI, _ = M.detect_warp_osc(warps_1119[:52])
+assert hitI and aI != bI, f"I2: the 52-warp slice really is a two-map edge, got {aI}<->{bI}"
+assert aI in M.stage_region() or bI in M.stage_region(), \
+    f"I2b: and one endpoint is inside the stage, got {aI}<->{bI}"
+modeI2, _, _ = M.classify_mode(warps_1119[:52], [], names)
+assert modeI2 != "WARP_OSC", f"I2c: an edge into the stage must not be prescribed a ban, got {modeI2}"
+print(f"I2: real edge map{aI}<->map{bI} inside the stage -> {modeI2}, not a ban")
+
+# I3: outside any stage the harness steers, a real edge is still bannable —
+# the guard is scoped to the stage, it does not blind the mode.
+modeI3, _, _ = M.classify_mode([60, 61] * 8, [], names)
+assert modeI3 == "WARP_OSC", f"I3: a dungeon edge outside the stage stays WARP_OSC, got {modeI3}"
+print(f"I3: dungeon edge outside the stage -> {modeI3} (ban still available)")
+
+print("\ntest_stuck697: ALL PASS (9 sections, A-I)")

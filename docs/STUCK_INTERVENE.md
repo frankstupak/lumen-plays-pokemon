@@ -73,7 +73,8 @@ story_score-primary axis exactly, so "did the intervention work" is answered
 the same way "is the game stuck" is. An attempt resolves as `"superseded"`
 (closes the entry, but does **not** reset K) if the incident's mode or
 location changes before an advance — drifting into a different stuck shape
-is not evidence the intervention worked.
+is not evidence the intervention worked. It does not bind the *next* freeze
+either: the count is scoped to the stall it was made in (wq#1149 below).
 
 ## A pin the agent obeys must agree with the gate that refuses it (wq#1091)
 
@@ -180,9 +181,89 @@ Three changes:
 
 Probe: `python3 tools/test_stuck1118.py` — 6 sections, A-F.
 
+## One stall is one incident (wq#1149)
+
+`FIGHT_LOSS_LOOP@36` burned all three K attempts across a 36.5h freeze and every
+one of them closed `"superseded"` — not one was ever tested. Superseded means the
+key changed before the attempt could be judged, so the escalation's own title,
+"unresolved after K interventions", asserts three trials that never ran. The
+worker on wq#1087 had already spent a session re-deriving that, and filed the fix
+spec as **NOT APPLIED**; this is it.
+
+Replaying the live warp history warp-by-warp through `classify_mode` (the same
+64-warp window the wq#1119 probe captured verbatim, `test_stuck697.py` section H)
+shows why. Over one unbroken freeze the classifier named three keys as the window
+slid:
+
+    warp #8   FIGHT_LOSS_LOOP@3    (hub clause — heal maps dominate)
+    warp #52  WARP_OSC@36          (Route 25 <-> Bill's House, a real edge)
+    warp #56  FIGHT_LOSS_LOOP@36   (route clause — narrow scope collapses)
+
+Three keys, three K=3 budgets, three tickets — and, because
+`runtime/supervisor_directive.json` is one object overwritten every supervisor
+tick, three pins taking turns roughly every 27 minutes in the one place the agent
+reads. `_resolve_loop_maps()` resolved the `WARP_OSC` half to the 64-warp
+window's two most frequent maps, Cerulean City and Route 25: the only heal point
+and the grind route. So the agent was told to grind on Route 25, then told Route
+25 was banned, then told to grind on it again. Nothing advanced, and every
+attempt closed `superseded` on the way past. That is not three failed remedies;
+it is three remedies overwriting each other.
+
+Every one of those maps — 3, 36, and the 64/65/67 of the earlier tickets in this
+same stall (wq#676, #1081, #1084, #1087, #1091, #1097, #1119) — is a member of
+one set: the `inRegion` list `src/guidance.ts` gates the whole Cerulean guidance
+pack on. The harness has been treating those seven maps as one objective all
+along; only the supervisor split them.
+
+Four changes:
+
+0. **The K budget belongs to the incident, not to the log file.** Only an
+   `"advanced"` close frees a slot, and `resolve_pending` only ever sets an
+   outcome on an entry that is still open — so an entry closed `"superseded"`
+   could never afterwards become `"advanced"`, and went on occupying one of its
+   key's three slots for the life of `runtime/intervention_log.json`, across
+   every later advance and every fresh stall. Three drifts spent the key
+   permanently, having never once tested the remedy: `FIGHT_LOSS_LOOP@36` can no
+   longer intervene at all today, and neither could the stable key the change
+   below routes it to. `open_attempt_count()` now counts only attempts logged
+   since the current freeze began — wq#671's `lastAdvanceAt`, which wq#673
+   already treats as the incident's identity. A state that does not carry it
+   keeps the old bound rather than silently unbounding K.
+1. **The incident key is the stage, not the map.** `lpp_stuck_mode.stage_region()`
+   parses `inRegion` (and the `MAP` const it names) out of `src/guidance.ts` —
+   read, not retyped, the same rule as `_misty_gate()` and
+   `resume_repeat_limit()` — and `classify_mode` collapses any location inside it
+   onto the stage's hub via `stage_anchor()`. wq#1081/#1084 already chose a hub
+   over transient loop endpoints for being "a STABLE location that collapses the
+   two transient `WARP_OSC` endpoints into one incident / one ticket"; this
+   applies that choice to the whole stage. Outside a declared stage nothing
+   changes.
+2. **A stalled loop inside a stage is a readiness stall, structurally.** The
+   wq#1081/#1084 pair test what a loop *looks like* (heal maps dominate, or `<=3`
+   distinct around a route), and both missed warps 52-55 above. The new clause
+   does not test shape: if the loop stays mostly inside a stage and no gym warp
+   is recorded — none can, the gate refuses the entry — then every map in it is
+   one the stage's plan needs, so no ban can help and the remedy is the same at
+   every point in the stage. It sits with its two siblings, ahead of the
+   `RESUME_DEADEND` fallback, for the reason wq#1081/#1084 put them there: a
+   freeze long enough to reboot re-picks the same checkpoint and would otherwise
+   mask the real mode.
+3. **A ban names an edge or nothing.** `WARP_OSC`/`NAV_LOOP` are not selectable
+   when their maps lie inside a stage, and `_resolve_loop_maps()` drops the
+   "top-2 most frequent" fallback that manufactured the Cerulean City + Route 25
+   ban. Frequency is not adjacency — the two most-visited maps of a long stall
+   are the hub and the destination, not the edge. It now asks at both of the
+   classifier's own scopes (wq#1119's "same scope for the guard as for the
+   detector", applied to the ban list this time) and filters stage maps out, so
+   an empty ban is the honest answer rather than a guess.
+
+Probe: `python3 tools/test_stuck697.py` section I replays the live history
+warp-by-warp and asserts one key; `verify_672.py` sections 10-12 cover the ban
+resolver, the restored K budget, and its release on the next advance.
+
 ## Verification
 
-`python3 tools/verify_672.py` — **62/62**. Every call passes an explicit
+`python3 tools/verify_672.py` — **79/79**. Every call passes an explicit
 `log` dict (never touches the live `runtime/intervention_log.json`), mirroring
 `verify_489.py`'s own pattern of exercising `emit()` directly against a
 throwaway state rather than real persisted state. Covers: no intervention

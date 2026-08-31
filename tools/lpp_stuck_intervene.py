@@ -275,25 +275,49 @@ NAMES_FILE = f"{os.path.join(HERE, 'map_names.json')}"
 
 
 def _resolve_loop_maps():
-    """Extract the distinct map IDs from the recent warp history — these are
-    the maps the agent is looping between. Returns a sorted list of ints."""
+    """The maps a ban may name, from the recent warp history. Sorted ints, or
+    empty when the history does not identify a bannable loop.
+
+    wq#1149 removed the two ways this could name a map the agent needs.
+
+    The old "top-2 most frequent" fallback fired whenever the window held more
+    than 3 distinct ids — which, across a multi-day freeze, is nearly always —
+    and frequency is not adjacency: the two most-visited maps of a long stall are
+    the hub and the destination, not the edge anyone is bouncing on. On the live
+    Route 25 window it resolved to Cerulean City + Route 25, i.e. the only heal
+    point and the grind route, three times running. wq#1119 fixed the classifier
+    side of that ("an edge ban needs an edge") and this side kept manufacturing
+    one. A window that does not collapse onto a small set does not name a loop,
+    and the honest answer is no ban rather than a frequency guess.
+
+    The second filter drops any map inside a stage the harness steers
+    (M.stage_region). Those maps are the stage's own plan — heal hub, mart, grind
+    routes — so banning one forbids a step the agent is simultaneously being told
+    to take. The classifier already refuses ban-remedy modes there; this is the
+    same rule applied where the ban list is actually built, so no future caller
+    can route around it.
+    """
     try:
         with open(WARP_HISTORY) as f:
             warps = json.load(f).get("warps", [])
     except Exception:
         return []
-    # Use the same window the classifier does (last 64 warps)
-    window = warps[-64:]
-    if not window:
-        return []
-    distinct = sorted(set(window))
-    # Only resolve if the window genuinely collapses onto a small set
-    if len(distinct) <= 3:
-        return distinct
-    # Fallback: take the top-2 most frequent maps in the window
-    from collections import Counter
-    counts = Counter(window)
-    return sorted(m for m, _ in counts.most_common(2))
+    # Ask at both of the classifier's own scopes, for wq#1119's reason: NAV_LOOP
+    # fires on the 64-warp window and WARP_OSC on the last 16, so resolving only
+    # at the wide scope leaves an oscillation ban naming a window the detector
+    # never looked at.
+    region = set(M.stage_region())
+    for window in (warps[-M.WARP_WINDOW:], warps[-M.WARP_OSC_WINDOW:]):
+        if not window:
+            continue
+        distinct = sorted(set(window))
+        # Only resolve if the window genuinely collapses onto a small set
+        if len(distinct) > M.NAV_LOOP_MAX_DISTINCT:
+            continue
+        bannable = [m for m in distinct if m not in region]
+        if bannable:
+            return bannable
+    return []
 
 
 def _map_label(mid):
@@ -343,6 +367,17 @@ def _key(mode, location_id):
     return f"{mode}@{location_id}"
 
 
+def _stall_started_ms(state):
+    """When the CURRENT story-axis freeze began, in ms, or None if the state does
+    not say. wq#673 already treats wq#671's `lastAdvanceAt` as the identity of an
+    incident (`firstStalledAt`, "so a supervisor that starts late still computes
+    the correct 3h mark"); the K budget is scoped to the same instant."""
+    try:
+        return datetime.fromisoformat(state["lastAdvanceAt"].replace("Z", "+00:00")).timestamp() * 1000
+    except Exception:
+        return None
+
+
 def _snapshot(state):
     """The before/after game-state slice worth logging per attempt — small,
     durable fields only, matching wq#671's own axis (story_score PRIMARY)."""
@@ -375,15 +410,25 @@ def resolve_pending(log, state):
     return changed
 
 
-def open_attempt_count(log, location_key):
-    """Attempts logged for this key that have NOT yet been resolved as
-    'advanced' — i.e. every try that either failed or is still pending,
-    which is what K bounds. A 'superseded' close (agent moved to a different
-    mode/location without advancing) does not reset the counter: it is not
-    evidence the intervention worked, just that the incident's shape changed.
+def open_attempt_count(log, location_key, since_ms=None):
+    """Attempts logged for this key during the CURRENT freeze that have not been
+    resolved as 'advanced' — i.e. every try that either failed or is still
+    pending, which is what K bounds. A 'superseded' close (agent moved to a
+    different mode/location without advancing) does not reset the counter: it is
+    not evidence the intervention worked, just that the incident's shape changed.
+
+    wq#1149: `since_ms` is the instant the current stall began (wq#671's
+    `lastAdvanceAt`), and without it the budget leaked permanently. An 'advanced'
+    close is the only thing that frees a slot, and `resolve_pending` only ever
+    sets it on an entry still open — so an entry closed 'superseded' can never
+    afterwards become 'advanced', and went on occupying one of the key's three
+    slots for the life of the log, across any number of later advances and fresh
+    stalls. Three drifts and the key was spent forever, having never once been
+    tested. The budget belongs to the incident, not to the file.
     """
     return sum(1 for e in log["attempts"]
-               if e["locationKey"] == location_key and e.get("outcome") != "advanced")
+               if e["locationKey"] == location_key and e.get("outcome") != "advanced"
+               and (since_ms is None or (e.get("ts") or 0) >= since_ms))
 
 
 def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
@@ -438,7 +483,7 @@ def decide(state=None, log=None, now_ms=None):
     location_key = _key(mode, location_id)
     template = PRESCRIPTIONS.get(mode)
 
-    prior = open_attempt_count(log, location_key)
+    prior = open_attempt_count(log, location_key, _stall_started_ms(state))
     attempt = prior + 1
 
     if template is None:

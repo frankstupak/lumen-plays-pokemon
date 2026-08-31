@@ -79,6 +79,17 @@ MODE CLASSIFICATION (spec wq#671 section 1)
   same-checkpoint resume loop is the most specific and most actionable signal
   when present — but see MISS below.
 
+ONE STALL IS ONE INCIDENT (wq#1149)
+  The (mode, location) key stops two stuck spots sharing one counter. Nothing
+  stopped the converse until wq#1149: one stuck spot splitting across several
+  keys as the warp window slid, each with its own K budget, its own ticket, and
+  its own pin taking turns in the single directive file the agent reads. So the
+  location every branch returns is collapsed onto the STAGE it belongs to,
+  where a stage is the map set src/guidance.ts itself gates a guidance pack on
+  (stage_region, parsed not retyped), and modes whose only remedy is a map ban
+  are not selectable inside one — every map there is a map the stage's own plan
+  needs.
+
 READ-ONLY. Reads runtime/*.json, checkpoints/**/*.json, tools/map_names.json.
 Writes only its own cache at runtime/stuck_mode.json (merge-max free — unlike
 the frontier cache, this one is fully recomputed every call, no history to
@@ -94,9 +105,13 @@ STATE = f"{BASE}/runtime/stuck_mode.json"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 NAMES_FILE = f"{TOOLS_DIR}/map_names.json"
 RESUME_TS = os.path.join(os.path.dirname(TOOLS_DIR), "src", "resume.ts")
+GUIDANCE_TS = os.path.join(os.path.dirname(TOOLS_DIR), "src", "guidance.ts")
 RESUME_REPEAT_FALLBACK = 2   # what src/resume.ts holds today; parse failure must
                              # degrade to the real bar, not to a stricter guess
 RESUME_VIABLE_FALLBACK = 0.5 # ditto for VIABLE_HP_PCT
+STAGE_REGION_FALLBACK = (3, 15, 35, 36, 64, 65, 67)  # the Cerulean stage as
+                             # src/guidance.ts holds it today; same rule — a parse
+                             # failure degrades to the real stage, not to no stage
 WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
 RESUME_HISTORY = f"{BASE}/runtime/resume_history.json"
 
@@ -178,6 +193,47 @@ def resume_viable_pct(path=RESUME_TS):
     except Exception:
         pass
     return RESUME_VIABLE_FALLBACK
+
+
+def stage_region(path=GUIDANCE_TS):
+    """The map ids the HARNESS itself treats as one stage, read out of
+    src/guidance.ts.
+
+    `ceruleanGuidance` gates its whole stage pack on one test — `inRegion`, a
+    literal list of MAP constants — so that list IS the harness's own statement
+    of "these maps are one objective". Parsed here rather than retyped, the same
+    read-don't-retype rule as resume_repeat_limit and
+    lpp_stuck_intervene._misty_gate (wq#1091): a set this module keys incidents
+    on has to come FROM the code that defines it, or the supervisor splits an
+    objective the harness is steering as a single unit.
+    """
+    try:
+        with open(path) as fh:
+            src = fh.read()
+        consts = re.search(r"const MAP\s*=\s*\{(.*?)\}\s*as const", src, re.S)
+        region = re.search(r"const inRegion\s*=\s*\(\[(.*?)\]\s*as number\[\]\)", src, re.S)
+        if consts and region:
+            ids = {k: int(v) for k, v in re.findall(r"(\w+)\s*:\s*(\d+)", consts.group(1))}
+            got = tuple(sorted({ids[n] for n in re.findall(r"MAP\.(\w+)", region.group(1))
+                                if n in ids}))
+            if got:
+                return got
+    except Exception:
+        pass
+    return STAGE_REGION_FALLBACK
+
+
+def stage_anchor(region, names):
+    """The single map id that keys a whole stage — its city/town hub.
+
+    wq#1081/#1084 already picked a hub over the transient loop endpoints because
+    it is "a STABLE location that collapses the two transient WARP_OSC endpoints
+    into one incident / one ticket"; this applies the same choice to the stage as
+    a whole. A stage without a labelled hub falls back to its lowest id, which is
+    arbitrary but stable, and stability is the only property the key needs.
+    """
+    hubs = [m for m in region if map_label(m, names).lower().endswith(("city", "town"))]
+    return min(hubs) if hubs else min(region)
 
 
 def is_gym(mid, names):
@@ -378,12 +434,26 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     newest-last list of resumedFrom checkpoint filenames, same shape as
     resume_history.json's "picks" (each a dict with a "file" key).
 
-    `location_id` is a best-guess single map id anchoring the incident — the
-    gym for FIGHT_LOSS_LOOP, the smallest looping map for NAV_LOOP, the most
-    recent map otherwise — used by wq#672's intervention K-count and wq#673's
-    ticket dedup key (mode+location), so two different stuck spots never
-    share one counter or one ticket.
+    `location_id` is a single map id anchoring the incident — used by wq#672's
+    intervention K-count and wq#673's ticket dedup key (mode+location), so two
+    different stuck spots never share one counter or one ticket.
+
+    wq#1149: and so that ONE stuck spot never splits across several counters and
+    several tickets, which is the failure this wrapper exists for. Inside a stage
+    the harness itself steers (stage_region), the raw anchor each branch picks is
+    collapsed onto the stage's hub. The Misty stall filed eight tickets under
+    four different maps — @65, @64, @36, @3 — every one of them a member of the
+    single `inRegion` set src/guidance.ts gates that stage on.
     """
+    region = stage_region()
+    mode, evidence, location = _classify(warps, resume_picks, names, path_exhausted,
+                                         turn_summaries, region)
+    if location in region:
+        location = stage_anchor(region, names)
+    return mode, evidence, location
+
+
+def _classify(warps, resume_picks, names, path_exhausted, turn_summaries, region):
     # wq#1081/#1084: RESUME_DEADEND is a FALLBACK, not a pre-emptor. A long
     # freeze naturally resumes the same checkpoint across reboots, so evaluating
     # it first masked the real stuck mode every time the freeze spanned >1
@@ -433,6 +503,34 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     if stall:
         return stall
 
+    # wq#1149: the same two diagnoses, asked structurally instead of by warp
+    # shape. The pair above tests what a loop LOOKS like (heal/hub maps dominate,
+    # or <=3 distinct around a route); both missed the live window between its
+    # 52nd and 56th warp, where the recent slice is Route 25 plus Bill's House
+    # plus the city — too many distinct ids for the route test, too few heal maps
+    # for the hub test — and the classifier fell through to WARP_OSC@36 for four
+    # warps before landing back on FIGHT_LOSS_LOOP@36. Three keys over one
+    # unbroken 36.5h freeze, each with its own K budget, its own ticket, and its
+    # own pin taking turns in the single directive file the agent reads.
+    #
+    # The structural test does not care about shape: if the agent is looping
+    # mostly inside a stage the harness has encoded guidance for, and no gym warp
+    # is recorded (the readiness gate is refusing entry, so none can land), then
+    # every map it is bouncing between is a map that stage's own plan needs — the
+    # heal hub, the mart, the grind routes. There is no navigation remedy to
+    # prescribe, only the readiness one, and it is the same remedy at every point
+    # in the stage. Same 0.6 majority bar as the hub clause it generalises.
+    if region and not gym_hits:
+        in_stage = [m for m in window if m in region]
+        if len(in_stage) >= max(4, int(0.6 * len(window))):
+            labels = ", ".join(sorted({map_label(m, names) for m in set(in_stage)}))
+            return "FIGHT_LOSS_LOOP", (
+                f"stalled loop stays inside one stage the harness steers ({labels}) with no "
+                f"gym warp recorded — a readiness gate is refusing the objective. Every map "
+                f"in the loop is one the stage's own plan needs (heal hub, mart, grind "
+                f"routes), so no map ban can help; the remedy is to clear the gate"), \
+                stage_anchor(region, names)
+
     # wq#1081/#1084: deferred RESUME_DEADEND — the harness keeps resuming the
     # same checkpoint and the warps DON'T show a fight-readiness stall, so a
     # genuine "can't advance its own start point" deadend is the best read.
@@ -465,7 +563,14 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
         # got "ban the grind route + the only heal hub" prescribed three times
         # in a row. A self-bounce that is not a readiness stall (handled above)
         # falls through to NAV_LOOP/IDLE rather than to a ban that cannot help.
-        if osc_a != osc_b:
+        #
+        # wq#1149: and an edge inside a stage the harness steers is not bannable
+        # either, for the same reason one endpoint of it never was — banning a
+        # stage map forbids a map the stage's own plan sends the agent to. The
+        # live 36<->88 edge (Route 25 <-> Bill's House) passes the "two distinct
+        # endpoints" test wq#1119 added and still resolves, in the intervention
+        # layer, to a ban on Cerulean City + Route 25.
+        if osc_a != osc_b and osc_a not in region and osc_b not in region:
             return "WARP_OSC", (
                 f"warp oscillation: {osc_alt} alternations between "
                 f"{map_label(osc_a, names)} <-> {map_label(osc_b, names)} "
@@ -484,8 +589,10 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
             "story_score/state axis is stalled and the frontier engine reports "
             "pathExhausted — no further CRITICAL_PATH milestone is encoded to aim at"), window[-1]
 
+    # wq#1149: NAV_LOOP's remedy is a map ban too, so it carries the same guard.
     distinct = sorted(set(window))
-    if len(distinct) <= NAV_LOOP_MAX_DISTINCT and len(window) >= 4:
+    if (len(distinct) <= NAV_LOOP_MAX_DISTINCT and len(window) >= 4
+            and not (set(distinct) & set(region))):
         labels = ", ".join(map_label(m, names) for m in distinct)
         return "NAV_LOOP", (
             f"last {len(window)} warps collapse onto {len(distinct)} map(s) ({labels}) "
