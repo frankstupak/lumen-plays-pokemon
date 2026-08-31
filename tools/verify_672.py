@@ -205,5 +205,138 @@ for mode in M.MODES:
     ok(f"{mode} exhausted directive formats without KeyError",
        bool(r.get("directive", {}).get("notepadPin")), r)
 
+
+# ── 10. wq#1149: a ban may never name a map the agent's own plan needs ──────
+# The live Route 25 stall was prescribed "ban Cerulean City + Route 25" — the
+# only heal point and the grind route — because the resolver fell back to the
+# window's two most frequent maps whenever it held more than 3 distinct ids,
+# which across a multi-day freeze it always does. Frequency is not adjacency.
+print("\n-- wq#1149: the ban list names an edge, or nothing --")
+import tempfile
+
+_real_warp_history = I.WARP_HISTORY
+_tmpdir = tempfile.mkdtemp(prefix="verify672-")
+
+
+def _loop_maps_for(warps):
+    path = os.path.join(_tmpdir, "warp_history.json")
+    with open(path, "w") as fh:
+        json.dump({"warps": warps}, fh)
+    I.WARP_HISTORY = path
+    try:
+        return I._resolve_loop_maps()
+    finally:
+        I.WARP_HISTORY = _real_warp_history
+
+
+REGION = M.stage_region()
+LIVE_1119 = ([88, 36, 64, 3, 63, 3, 64, 3, 63, 3, 64, 3, 3, 63, 3, 64, 3, 3, 63,
+              3, 64, 3, 63, 3, 64, 3, 63, 3, 67, 3, 64, 3, 3, 63, 3, 64, 3, 63,
+              3, 64, 3, 88] + [36] * 22)
+
+ok("the live window no longer resolves to a ban at all",
+   _loop_maps_for(LIVE_1119) == [], _loop_maps_for(LIVE_1119))
+ok("specifically, it no longer bans the grind route or the heal hub",
+   not ({3, 36} & set(_loop_maps_for(LIVE_1119))), _loop_maps_for(LIVE_1119))
+ok("a window that spreads over more than the NAV_LOOP bar names no loop",
+   _loop_maps_for([59, 60, 61, 62, 63] * 14) == [],
+   str(_loop_maps_for([59, 60, 61, 62, 63] * 14)))
+ok("a genuine two-map loop outside the stage still resolves",
+   _loop_maps_for([60, 61] * 12) == [60, 61], str(_loop_maps_for([60, 61] * 12)))
+ok("a tight loop is still filtered down to the maps outside the stage",
+   _loop_maps_for([3, 60] * 12) == [60], str(_loop_maps_for([3, 60] * 12)))
+ok("every stage map is filtered, leaving an empty ban rather than a partial one",
+   _loop_maps_for([REGION[0], REGION[-1]] * 12) == [],
+   str(_loop_maps_for([REGION[0], REGION[-1]] * 12)))
+# wq#1119's "same scope for the guard as for the detector", applied to the ban:
+# WARP_OSC fires on the last 16 warps, so a wide window that has drifted must not
+# be the only scope the ban is resolved at.
+_drifted = [59, 62, 63, 15, 88, 67] * 8 + [60, 61] * 8
+ok("an edge the detector sees in its own 16-warp scope still resolves",
+   _loop_maps_for(_drifted) == [60, 61], str(_loop_maps_for(_drifted)))
+ok("an unreadable warp history is still an empty ban, not a raise",
+   _loop_maps_for([]) == [])
+
+# The pin that interpolates a ban still renders when there is nothing to ban —
+# an empty list has always been possible here, but it is now the common case.
+log = {"v": 1, "attempts": []}
+I.WARP_HISTORY = os.path.join(_tmpdir, "absent.json")
+r = I.decide(state=stalled_state("NAV_LOOP", 60), log=log)
+I.WARP_HISTORY = _real_warp_history
+ok("NAV_LOOP still prescribes with an empty ban list",
+   r["directive"]["gotoBan"] == [] and "unknown" in r["directive"]["notepadPin"],
+   json.dumps(r.get("directive")))
+
+# ── 11. wq#1149: one freeze is one key, so K bounds one incident ────────────
+# wq#671's (mode, location) key stopped two stuck spots sharing one counter; it
+# never stopped one stuck spot splitting across several. Replayed over the live
+# window the classifier used to name FIGHT_LOSS_LOOP@3, WARP_OSC@36 and
+# FIGHT_LOSS_LOOP@36 in turn — three K budgets, three tickets, three pins taking
+# turns in the single directive file — which is why wq#1149's three logged
+# attempts all closed "superseded" without one of them ever being tested.
+print("\n-- wq#1149: one freeze, one incident key --")
+NAMES = M.load_map_names()
+keys = []
+for n in range(8, len(LIVE_1119) + 1):
+    m_, _, loc_ = M.classify_mode(LIVE_1119[:n], [], NAMES)
+    k = f"{m_}@{loc_}"
+    if not keys or keys[-1] != k:
+        keys.append(k)
+ok("the live freeze now replays as exactly one incident key", len(keys) == 1, keys)
+ok("and that key is the stage-anchored fight-readiness stall",
+   keys == [f"FIGHT_LOSS_LOOP@{M.stage_anchor(REGION, NAMES)}"], keys)
+
+log = {"v": 1, "attempts": []}
+anchor = M.stage_anchor(REGION, NAMES)
+for _ in range(3):
+    I.decide(state=stalled_state("FIGHT_LOSS_LOOP", anchor), log=log)
+ok("three attempts against one stable key stay OPEN, not superseded",
+   all(e.get("outcome") is None for e in log["attempts"]), log["attempts"])
+ok("K then bounds the incident it was counting",
+   I.decide(state=stalled_state("FIGHT_LOSS_LOOP", anchor), log=log).get("exhausted"), log)
+
+
+# ── 12. wq#1149: the K budget belongs to the incident, not to the log ───────
+# Only an 'advanced' close frees a slot, and resolve_pending sets an outcome
+# only on an entry still open — so an entry closed 'superseded' could never
+# afterwards become 'advanced' and occupied one of its key's three slots for the
+# life of the file. Three drifts spent the key permanently, across every later
+# advance and every fresh stall, having never once tested the remedy.
+print("\n-- wq#1149: a spent budget is released by the next advance --")
+OLD_FREEZE_MS = 1_786_000_000_000
+NEW_FREEZE_MS = OLD_FREEZE_MS + 48 * 3.6e6
+
+
+def stalled_since(iso, mode="FIGHT_LOSS_LOOP", location=3, story=10):
+    return dict(stalled_state(mode, location, story=story), lastAdvanceAt=iso)
+
+
+spent = {"v": 1, "attempts": [
+    {"ts": OLD_FREEZE_MS + i * 1000, "mode": "FIGHT_LOSS_LOOP",
+     "locationKey": "FIGHT_LOSS_LOOP@3", "attempt": i + 1, "directive": {},
+     "beforeState": {"storyScore": 10, "badges": 1, "eventFlags": 47, "map": 3},
+     "afterState": {"storyScore": 10, "badges": 1, "eventFlags": 47, "map": 36},
+     "outcome": "superseded"} for i in range(3)]}
+
+old = I.decide(state=stalled_since(I._iso(OLD_FREEZE_MS)),
+               log=dict(spent, attempts=list(spent["attempts"])))
+ok("three drifted attempts still bound the freeze they were logged in",
+   old.get("exhausted") is True, json.dumps(old.get("reason")))
+
+fresh_log = dict(spent, attempts=list(spent["attempts"]))
+new = I.decide(state=stalled_since(I._iso(NEW_FREEZE_MS)), log=fresh_log)
+ok("but a LATER freeze at the same key starts its own budget",
+   new.get("intervened") and new["attempt"] == 1, json.dumps(new.get("reason")))
+ok("and the old entries are left in the log, not rewritten",
+   sum(1 for e in fresh_log["attempts"] if e.get("outcome") == "superseded") == 3,
+   str([e.get("outcome") for e in fresh_log["attempts"]]))
+
+# A state with no lastAdvanceAt (an older cache, or a caller passing a bare
+# dict) must behave exactly as before rather than silently unbounding K.
+legacy = {"v": 1, "attempts": list(spent["attempts"])}
+ok("a state without lastAdvanceAt keeps the pre-wq#1149 bound",
+   I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3), log=legacy).get("exhausted") is True,
+   str(len(legacy["attempts"])))
+
 print(f"\n{PASS}/{PASS + FAIL} passed")
 sys.exit(1 if FAIL else 0)

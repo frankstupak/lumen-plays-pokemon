@@ -52,6 +52,30 @@ this. Priority order below (first match wins):
 | `NAV_LOOP` | no gym involved, but the warp window collapses onto <=3 distinct maps with >=4 warps — an overworld/dungeon loop, not a gym fight |
 | `IDLE` | stalled but nothing above matched — catch-all, deliberately last |
 
+## The location is a stage, not a map (wq#1149)
+
+The `(mode, location)` key exists so two stuck spots never share one counter or
+one ticket. Nothing enforced the converse until wq#1149, and one stuck spot kept
+splitting across several: replayed warp-by-warp over the live 64-warp window, one
+unbroken 36.5h freeze produced `FIGHT_LOSS_LOOP@3`, then `WARP_OSC@36`, then
+`FIGHT_LOSS_LOOP@36` — three K budgets, three tickets, three pins taking turns in
+the one directive file the agent reads. See `docs/STUCK_INTERVENE.md`'s wq#1149
+section for the downstream cost.
+
+`stage_region()` parses the map ids `src/guidance.ts` gates a guidance pack on
+(its `inRegion` list and the `MAP` const it names) — read from the code that
+defines them, the same rule as `resume_repeat_limit()`. Any classified location
+inside that set collapses onto the stage's hub (`stage_anchor()`), and the two
+modes whose only remedy is a map ban, `WARP_OSC` and `NAV_LOOP`, are not
+selectable there: every map in a stage is one the stage's own plan sends the
+agent to, so banning it forbids a step the agent is simultaneously told to take.
+A stalled loop that stays mostly inside a stage with no gym warp recorded is
+classified `FIGHT_LOSS_LOOP` on the stage anchor — the structural form of the
+wq#1081/#1084 shape tests, placed alongside them and ahead of the
+`RESUME_DEADEND` fallback for the same reason. Outside a declared stage nothing
+changes; a parse failure degrades to the stage as it stands today, never to "no
+stage".
+
 Classification runs over the **full persisted `warp_history.json` window**
 (64 entries), not a tighter recent slice. A 20-entry slice was tried first and
 missed the live fixture: the most recent 20 raw warps in the 43h incident
