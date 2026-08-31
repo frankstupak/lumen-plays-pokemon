@@ -56,6 +56,8 @@ already-firing valve, not a repair to the valve itself.
 | `NAV_LOOP` | `checkpoint_restore_then_goto_ban` | pins a goto-ban + fallback-checkpoint instruction |
 | `OBJECTIVE_UNREACHABLE` | `replan_verify_map_data` | pins a re-verify instruction against the frontier's `pathExhausted` milestone |
 | `RESUME_DEADEND` | `alternate_checkpoint` | pins an instruction to resume from a different checkpoint next boot |
+| `WARP_OSC` | `checkpoint_restore_then_goto_ban` | wq#697; bans the two maps of an A↔B bounce — see the edge rule below |
+| `NOISE_STORM` | `history_clear_restart` | wq#697; clears a history poisoned by consecutive invalid tool calls |
 | `IDLE` | *(none)* | the spec defines no IDLE action; guessing one would be exactly the unfounded intervention this module exists to avoid |
 
 ## Bounding and resolution
@@ -112,6 +114,37 @@ Two changes, both in `tools/lpp_stuck_intervene.py`:
    intervene again, so no corrected prescription could ever reach the live
    agent. The log invariant wq#673 keys on is untouched: `exhausted` still
    appends nothing.
+
+## An edge ban needs an edge, and the guards must share a scope (wq#1119)
+
+`WARP_OSC` is the only mode whose remedy names a *pair* of maps, so the
+classifier now refuses to select it unless a pair exists and banning it could
+help. Two rules, both learned from the same 34h stall on Route 25 (map 36),
+which burned all three K attempts on `checkpoint_restore_then_goto_ban` and
+stayed frozen:
+
+1. **No self-bounce.** When every warp in the detector's slice lands on the
+   same map, the agent is re-entering one doorway, not alternating between two.
+   The pin's "the last several warps alternate between exactly two maps" is
+   false, and `_resolve_loop_maps()` pads the ban list to two entries from the
+   wider window's next most frequent id — which is how "ban Route 25 (the grind
+   route) and Cerulean City (the only heal point)" got prescribed three times.
+   `classify_mode` now returns `WARP_OSC` only when the two endpoints differ.
+2. **Same scope for the guard as for the detector.** The wq#1081/#1084
+   route/hub diagnoses — the ones that say a map ban *cannot* help because the
+   loop is a fight-readiness stall — tested the full 64-warp window, while
+   `detect_warp_osc` fires on the last 16. Across a multi-day freeze the wide
+   window drifts over more maps than the `<=3 distinct` test allows (6, live)
+   even when the recent behaviour is a tight one-map bounce, so the guard went
+   silent and the deferral wq#1081/#1084 added was left half-done: with the
+   real mode hidden, the deferred `RESUME_DEADEND` masked it anyway, since a
+   freeze that long naturally reboots onto the same checkpoint. The diagnoses
+   are now asked at both scopes before that fallback.
+
+Live warp history at the time of the wq#1119 ticket reclassifies from
+`WARP_OSC@36` (ban the route) to `FIGHT_LOSS_LOOP@36` (grind, `gotoBan: []`) —
+whose pin already says, verbatim, to walk into the grass instead of re-entering
+the doorway, which is the behaviour the trace shows.
 
 ## Verification
 
