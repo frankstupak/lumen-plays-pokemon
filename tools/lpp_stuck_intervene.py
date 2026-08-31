@@ -136,6 +136,16 @@ def _misty_gate(path=None):
             gate[key] = int(m.group(1))
     return gate
 
+
+def _viable_pct():
+    """VIABLE_HP_PCT as a whole-number percent, for pins that name it.
+
+    Same rule as _misty_gate — parsed out of src/resume.ts by
+    lpp_stuck_mode.resume_viable_pct rather than retyped here, so the number the
+    RESUME_DEADEND pin quotes is the number the resume picker enforces (wq#1118).
+    """
+    return int(round(M.resume_viable_pct() * 100))
+
 # Per-MODE prescription. Each is a template; decide() fills in the live
 # state (badges/story/location) at call time so the directive always carries
 # what the agent SHOULD see, not just what to do in the abstract.
@@ -192,13 +202,40 @@ PRESCRIPTIONS = {
         ),
         "gotoBan": [],
     },
+    # wq#1118: the old prescription was "alternate_checkpoint — resume from a
+    # different one", pinned into the notepad the in-game brain reads. Two things
+    # were wrong with it, and together they are why three K attempts and 35h
+    # produced nothing. First, the brain has no authority over the resume pick at
+    # all: src/resume.ts's pickResume chooses, at boot, before the brain exists.
+    # Second, the harness ALREADY applies that exact remedy — the repeat guard
+    # demotes a file picked RESUME_REPEAT_LIMIT times running — and wq#1118's
+    # classifier bar now means the mode only fires once that guard has run and
+    # found nothing newer to take. So the pin asked the wrong actor for the one
+    # thing already proven impossible. This is the wq#1091 lesson in its purest
+    # form: an agent could obey it perfectly and stay stuck forever.
+    #
+    # What the brain CAN do is the only thing that changes the next boot: get off
+    # the boot state and put a newer, non-warp save on disk for the picker to
+    # take. Every claim the pin makes about ranking is read off pickResume's own
+    # comparator (badges/story -> onWarp -> rank), not asserted alongside it.
     "RESUME_DEADEND": {
-        "action": "alternate_checkpoint",
-        "summary": "Same checkpoint booted twice in a row — resume from a different one.",
+        "action": "advance_past_boot_state",
+        "summary": ("Same checkpoint re-booted past the harness's repeat-guard limit and "
+                    "nothing newer on disk qualifies — leave a newer non-warp, healthy save."),
         "notepadPin": (
-            "PIN: SUPERVISOR ({attempt}/{k}): the last two boots resumed from the same "
-            "checkpoint near {location} with no progress between them. Resume from a "
-            "different, earlier checkpoint next boot instead of the same one."
+            "PIN: SUPERVISOR ({attempt}/{k}): every recent boot has restored the SAME "
+            "checkpoint at {location}, and each run ends back on it. You do not choose "
+            "the save — the harness does, at boot — and its repeat guard has already "
+            "tried to pick a different one and found nothing on disk it will take. New "
+            "autosaves keep landing, so what disqualifies them is yours to fix. (1) A "
+            "save written while you are standing on a warp tile sorts below every "
+            "non-warp save and the guard looks past it: do not linger on, or walk back "
+            "into, the warp you booted on. (2) A save under {viable_pct}% HP, or with no "
+            "move that still has PP, counts as non-viable and the guard will not trade a "
+            "healthy checkpoint for it: heal BEFORE you keep playing, not after the next "
+            "save lands. Then put real progress — a level, a catch, a story flag — "
+            "between you and the boot state, so the save that replaces it is worth "
+            "restoring."
         ),
         "gotoBan": [],
     },
@@ -360,7 +397,8 @@ def _terminal_directive(template, mode, location_id, location_key, prior, now_ms
     """
     pin = template["notepadPin"].format(
         attempt=prior, k=K, location=_located(location_id),
-        loop_maps="unknown", loop_labels="unknown maps", **_misty_gate())
+        loop_maps="unknown", loop_labels="unknown maps",
+        viable_pct=_viable_pct(), **_misty_gate())
     return {
         "v": 1,
         "generatedAt": _iso(now_ms),
@@ -433,6 +471,8 @@ def decide(state=None, log=None, now_ms=None):
     # wq#1091: "the gym fight at 3" is a bare map id sitting next to several
     # level numbers in the same sentence. Name it.
     fmt_extras["location"] = _located(location_id)
+    # wq#1118: the resume picker's own viability bar, same read-don't-retype rule.
+    fmt_extras["viable_pct"] = _viable_pct()
     if goto_ban == "__RESOLVE_FROM_WARPS__":
         loop_maps = _resolve_loop_maps()
         goto_ban = loop_maps if loop_maps else []

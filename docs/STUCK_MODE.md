@@ -46,8 +46,8 @@ this. Priority order below (first match wins):
 
 | Mode | Fires when |
 |---|---|
-| `RESUME_DEADEND` | the same `resumedFrom` checkpoint booted on **>=2 consecutive** boots (`runtime/resume_history.json`) — mirrors `lpp_frontier.restart_loop`'s own definition (wq#515), reused here as a mode rather than a standalone alert |
 | `FIGHT_LOSS_LOOP` | among the most recent persisted warps (`runtime/warp_history.json`, capped at 64 by wq#517), a **gym** map (label containing "Gym") appears >=2x **and** a heal/city map for that trip (Pokecenter or a `*City`/`*Town` label) also appears >=2x — walked into the gym, walked back out, more than once |
+| `RESUME_DEADEND` | the same `resumedFrom` checkpoint booted on **more than `RESUME_REPEAT_LIMIT` consecutive** boots (`runtime/resume_history.json`; the bar is parsed out of `src/resume.ts`, never retyped). At exactly the limit the harness's own repeat guard is about to demote that file, so a run of exactly the limit is a remedy already in flight — only a longer run proves the guard ran and found no newer non-warp state to take (wq#1118). Deferred below the fight-readiness reads (wq#1081/#1084) because any long freeze re-resumes its own checkpoint; anchored on the map the agent is standing on, never `None` |
 | `OBJECTIVE_UNREACHABLE` | the frontier engine reports `pathExhausted` while this axis is *also* stalled — no further `CRITICAL_PATH` milestone is encoded to aim at |
 | `NAV_LOOP` | no gym involved, but the warp window collapses onto <=3 distinct maps with >=4 warps — an overworld/dungeon loop, not a gym fight |
 | `IDLE` | stalled but nothing above matched — catch-all, deliberately last |
@@ -62,14 +62,14 @@ persisted list is itself already a bounded recent window (wq#517's own
 
 ## Verification
 
-`python3 tools/verify_671.py` — **22/22**. Unit-tests `classify_mode()`
+`python3 tools/verify_671.py` — **23/23**. Unit-tests `classify_mode()`
 directly for MODE priority (an inlined literal copy of the live 43h stall's
 `warp_history.json`, captured 2026-08-17T20:15Z, MUST classify
 `FIGHT_LOSS_LOOP` and name both Cerulean Gym and Cerulean City in the
 evidence string; healthy multi-map travel and a single gym visit must NOT;
-`RESUME_DEADEND` takes priority when present but alternating-checkpoint
-resumes — the live fixture's own shape — must NOT mask a real
-`FIGHT_LOSS_LOOP`), then exercises `compute()` end-to-end against synthetic
+a same-checkpoint run PAST `RESUME_REPEAT_LIMIT` classifies `RESUME_DEADEND`
+while a run of exactly the limit and alternating-checkpoint resumes — the live
+fixture's own shape — must NOT), then exercises `compute()` end-to-end against synthetic
 checkpoint sidecars in a temp tree (flat story_score over the window stalls
 and classifies; a story_score rise, a badge-only rise, and a sub-window gap
 all stay silent), then two graceful-degradation cases (no sidecars, no warp

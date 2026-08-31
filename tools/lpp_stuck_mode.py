@@ -39,10 +39,18 @@ MODE CLASSIFICATION (spec wq#671 section 1)
   exists and is already durable (nothing new is persisted mid-run to compute
   this):
     RESUME_DEADEND    — runtime/resume_history.json: the same resumedFrom
-                        checkpoint booted on >=2 CONSECUTIVE boots. Mirrors
-                        lpp_frontier.restart_loop's own definition exactly
-                        (wq#515), reused here as a mode rather than a
-                        standalone alert.
+                        checkpoint booted on MORE consecutive boots than
+                        src/resume.ts's own RESUME_REPEAT_LIMIT tolerates
+                        (wq#1118). At exactly the limit the harness's repeat
+                        guard is about to demote that file itself, so a run of
+                        exactly the limit is a remedy in flight, not a
+                        deadend; a longer run is proof the guard ran and found
+                        nothing newer to take. The bar is READ FROM
+                        src/resume.ts, never retyped here — and it deliberately
+                        no longer mirrors lpp_frontier.restart_loop's >=2
+                        streak: that is an ALERT (report a repeat as soon as it
+                        is visible), this is a PRESCRIPTION (only act once the
+                        harness's own remedy has provably failed).
     FIGHT_LOSS_LOOP   — runtime/warp_history.json (wq#517 persisted, survives
                         restarts): among the most recent warps, a GYM map (per
                         tools/map_names.json label containing "Gym") appears
@@ -83,7 +91,12 @@ from datetime import datetime, timezone
 
 BASE = os.environ.get("LPP_BASE", "/home/lumen/pokemon")
 STATE = f"{BASE}/runtime/stuck_mode.json"
-NAMES_FILE = f"{os.path.dirname(os.path.abspath(__file__))}/map_names.json"
+TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+NAMES_FILE = f"{TOOLS_DIR}/map_names.json"
+RESUME_TS = os.path.join(os.path.dirname(TOOLS_DIR), "src", "resume.ts")
+RESUME_REPEAT_FALLBACK = 2   # what src/resume.ts holds today; parse failure must
+                             # degrade to the real bar, not to a stricter guess
+RESUME_VIABLE_FALLBACK = 0.5 # ditto for VIABLE_HP_PCT
 WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
 RESUME_HISTORY = f"{BASE}/runtime/resume_history.json"
 
@@ -126,6 +139,45 @@ def load_map_names(names_file=NAMES_FILE):
 
 def map_label(mid, names):
     return names.get(str(mid)) or names.get(mid) or f"map{mid}"
+
+
+def resume_repeat_limit(path=RESUME_TS):
+    """How many identical consecutive resume picks the HARNESS itself tolerates.
+
+    Read out of src/resume.ts (`export const RESUME_REPEAT_LIMIT = <int>;`) by
+    regex rather than retyped here — same idiom and same reason as
+    lpp_stuck_intervene._misty_gate reading the gym gate out of src/guidance.ts
+    (wq#1091): a threshold this module compares against must come FROM the code
+    that enforces it, or the two drift and the classifier fires on a state the
+    harness is already handling.
+    """
+    try:
+        with open(path) as fh:
+            m = re.search(r"export\s+const\s+RESUME_REPEAT_LIMIT\s*=\s*(\d+)", fh.read())
+        if m:
+            return max(1, int(m.group(1)))
+    except Exception:
+        pass
+    return RESUME_REPEAT_FALLBACK
+
+
+def resume_viable_pct(path=RESUME_TS):
+    """The HP fraction src/resume.ts calls a state "viable" at (VIABLE_HP_PCT).
+
+    The repeat guard refuses to trade a viable boot state for a non-viable newer
+    one, so it is the second reason a resume deadend can persist while newer
+    saves keep landing — and any prescription that asks the agent to leave a
+    replacement save behind has to name the bar the picker actually applies.
+    Read from the enforcing code for the same reason as resume_repeat_limit.
+    """
+    try:
+        with open(path) as fh:
+            m = re.search(r"export\s+const\s+VIABLE_HP_PCT\s*=\s*([0-9.]+)", fh.read())
+        if m:
+            return float(m.group(1))
+    except Exception:
+        pass
+    return RESUME_VIABLE_FALLBACK
 
 
 def is_gym(mid, names):
@@ -332,14 +384,23 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     ticket dedup key (mode+location), so two different stuck spots never
     share one counter or one ticket.
     """
-    recent_resumes = [p.get("file") for p in (resume_picks or [])[-4:] if p.get("file")]
     # wq#1081/#1084: RESUME_DEADEND is a FALLBACK, not a pre-emptor. A long
     # freeze naturally resumes the same checkpoint across reboots, so evaluating
     # it first masked the real stuck mode every time the freeze spanned >1
     # restart (this is how the reported stall kept flip-flopping modes). Compute
     # the flag here but defer the return until after the fight-readiness
     # diagnoses below.
-    resume_deadend = len(recent_resumes) >= 2 and recent_resumes[-1] == recent_resumes[-2]
+    # wq#1118: the bar is now "MORE identical picks than the harness tolerates",
+    # not ">=2". src/resume.ts's repeat guard already demotes a file picked
+    # RESUME_REPEAT_LIMIT (2) times running whenever a newer state exists, so the
+    # old >=2 bar fired at exactly the boot the picker was about to step aside on
+    # its own — and prescribed "resume from a different checkpoint", the remedy
+    # already in flight. A run LONGER than the limit is the honest signal: the
+    # guard ran and kept the same file because nothing newer exists to take.
+    repeat_limit = resume_repeat_limit()
+    need = repeat_limit + 1
+    recent_resumes = [p.get("file") for p in (resume_picks or [])[-need:] if p.get("file")]
+    resume_deadend = len(recent_resumes) >= need and len(set(recent_resumes)) == 1
 
     window = (warps or [])[-WARP_WINDOW:]
     if not window:
@@ -375,10 +436,20 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     # wq#1081/#1084: deferred RESUME_DEADEND — the harness keeps resuming the
     # same checkpoint and the warps DON'T show a fight-readiness stall, so a
     # genuine "can't advance its own start point" deadend is the best read.
+    # wq#1118: anchored on the map the agent is actually standing on rather than
+    # None. wq#671's dedup key is (mode, location) precisely "so two different
+    # stuck spots never share one counter or one ticket" — a None location broke
+    # that invariant for this mode alone: every resume deadend anywhere in the
+    # game shared the single key RESUME_DEADEND@None (one K=3 budget, one
+    # permanently-exhausted ticket), and the pin it wrote read "near mapNone".
+    # `window` is non-empty here (the empty case returned IDLE above).
     if resume_deadend:
         return "RESUME_DEADEND", (
-            f"last 2 boots both resumed from {recent_resumes[-1]} "
-            f"— the harness is not advancing its own starting point"), None
+            f"last {len(recent_resumes)} boots all resumed from {recent_resumes[-1]} — more "
+            f"than the {repeat_limit} identical picks src/resume.ts tolerates, so its repeat "
+            f"guard has already run and kept the same file: there is no newer non-warp "
+            f"checkpoint to step aside to. Re-picking cannot advance the start point; only a "
+            f"newer save further along can"), window[-1]
 
     # wq#697: WARP_OSC
     osc_hit, osc_a, osc_b, osc_alt = detect_warp_osc(window)
