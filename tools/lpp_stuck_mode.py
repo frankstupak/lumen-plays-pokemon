@@ -194,7 +194,12 @@ def advances(sidecars):
 # ---------------------------------------------------------------- MODE classification
 
 def detect_warp_osc(warps, window=WARP_OSC_WINDOW, min_alt=WARP_OSC_MIN_ALT):
-    """wq#697: detect A<->B two-map warp oscillation."""
+    """wq#697: detect A<->B two-map warp oscillation.
+
+    Returns (hit, a, b, alternations). `a == b` means the whole slice landed on
+    one map — a self-bounce, which is a real stuck signal but NOT an
+    oscillation with an edge to ban; classify_mode gates on that (wq#1119).
+    """
     recent = (warps or [])[-window:]
     if len(recent) < min_alt:
         return False, None, None, 0
@@ -260,41 +265,18 @@ def load_recent_turn_summaries(base=BASE, n=50):
     return lines[-n:]
 
 
-def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summaries=None):
-    """Returns (mode, evidence_str, location_id). `warps` newest-last, same
-    shape as runtime/warp_history.json's "warps" list. `resume_picks`
-    newest-last list of resumedFrom checkpoint filenames, same shape as
-    resume_history.json's "picks" (each a dict with a "file" key).
+def _readiness_stall(window, names):
+    """wq#1081/#1084: the two "a map ban cannot help here" diagnoses, over an
+    arbitrary slice of the warp history. Returns (mode, evidence, location) or
+    None if neither matches.
 
-    `location_id` is a best-guess single map id anchoring the incident — the
-    gym for FIGHT_LOSS_LOOP, the smallest looping map for NAV_LOOP, the most
-    recent map otherwise — used by wq#672's intervention K-count and wq#673's
-    ticket dedup key (mode+location), so two different stuck spots never
-    share one counter or one ticket.
+    wq#1119 made this a function taking its slice as an argument, because the
+    classifier has to ask the question twice at two different scopes. See the
+    call site in classify_mode's WARP_OSC branch for why.
     """
-    recent_resumes = [p.get("file") for p in (resume_picks or [])[-4:] if p.get("file")]
-    # wq#1081/#1084: RESUME_DEADEND is a FALLBACK, not a pre-emptor. A long
-    # freeze naturally resumes the same checkpoint across reboots, so evaluating
-    # it first masked the real stuck mode every time the freeze spanned >1
-    # restart (this is how the reported stall kept flip-flopping modes). Compute
-    # the flag here but defer the return until after the fight-readiness
-    # diagnoses below.
-    resume_deadend = len(recent_resumes) >= 2 and recent_resumes[-1] == recent_resumes[-2]
-
-    window = (warps or [])[-WARP_WINDOW:]
     if not window:
-        return "IDLE", "no warps recorded in the detection window — not moving map-to-map at all", None
-
-    gym_hits = {m: window.count(m) for m in set(window) if is_gym(m, names)}
-    heal_hits = {m: window.count(m) for m in set(window) if is_heal_or_city(m, names)}
-    fighting_gym = {m: c for m, c in gym_hits.items() if c >= 2}
-    if fighting_gym and any(c >= 2 for c in heal_hits.values()):
-        gym_id = max(fighting_gym, key=fighting_gym.get)
-        heal_id = max(heal_hits, key=heal_hits.get)
-        return "FIGHT_LOSS_LOOP", (
-            f"last {len(window)} warps bounce {map_label(gym_id, names)} "
-            f"({fighting_gym[gym_id]}x) <-> {map_label(heal_id, names)} "
-            f"({heal_hits[heal_id]}x) — healing-cycle pattern, not travel"), gym_id
+        return None
+    gym_hits = [m for m in window if is_gym(m, names)]
 
     # wq#1081/#1084: a stalled loop that collapses onto heal/hub maps
     # (Pokecenter + city/town) with NO gym warp in the window is a
@@ -335,6 +317,61 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
             f"adjacent building) instead of grinding. Banning the route can't help; the "
             f"remedy is to walk into the grass and grind a type counter"), route_id
 
+    return None
+
+
+def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summaries=None):
+    """Returns (mode, evidence_str, location_id). `warps` newest-last, same
+    shape as runtime/warp_history.json's "warps" list. `resume_picks`
+    newest-last list of resumedFrom checkpoint filenames, same shape as
+    resume_history.json's "picks" (each a dict with a "file" key).
+
+    `location_id` is a best-guess single map id anchoring the incident — the
+    gym for FIGHT_LOSS_LOOP, the smallest looping map for NAV_LOOP, the most
+    recent map otherwise — used by wq#672's intervention K-count and wq#673's
+    ticket dedup key (mode+location), so two different stuck spots never
+    share one counter or one ticket.
+    """
+    recent_resumes = [p.get("file") for p in (resume_picks or [])[-4:] if p.get("file")]
+    # wq#1081/#1084: RESUME_DEADEND is a FALLBACK, not a pre-emptor. A long
+    # freeze naturally resumes the same checkpoint across reboots, so evaluating
+    # it first masked the real stuck mode every time the freeze spanned >1
+    # restart (this is how the reported stall kept flip-flopping modes). Compute
+    # the flag here but defer the return until after the fight-readiness
+    # diagnoses below.
+    resume_deadend = len(recent_resumes) >= 2 and recent_resumes[-1] == recent_resumes[-2]
+
+    window = (warps or [])[-WARP_WINDOW:]
+    if not window:
+        return "IDLE", "no warps recorded in the detection window — not moving map-to-map at all", None
+
+    gym_hits = {m: window.count(m) for m in set(window) if is_gym(m, names)}
+    heal_hits = {m: window.count(m) for m in set(window) if is_heal_or_city(m, names)}
+    fighting_gym = {m: c for m, c in gym_hits.items() if c >= 2}
+    if fighting_gym and any(c >= 2 for c in heal_hits.values()):
+        gym_id = max(fighting_gym, key=fighting_gym.get)
+        heal_id = max(heal_hits, key=heal_hits.get)
+        return "FIGHT_LOSS_LOOP", (
+            f"last {len(window)} warps bounce {map_label(gym_id, names)} "
+            f"({fighting_gym[gym_id]}x) <-> {map_label(heal_id, names)} "
+            f"({heal_hits[heal_id]}x) — healing-cycle pattern, not travel"), gym_id
+
+    stall = _readiness_stall(window, names)
+    if stall is None:
+        # wq#1119: ask again at the tighter, more recent scope WARP_OSC uses.
+        # Both diagnoses above test the SHAPE of a loop (<=3 distinct maps, or
+        # heal/hub maps dominating), and a 64-warp window that spans a 34h
+        # freeze has usually drifted across more maps than that even when the
+        # agent's CURRENT behaviour is a tight one-map bounce. On the live
+        # Route 25 stall the wide window held 6 distinct maps — guard silent —
+        # while the last 22 warps were a single map. Asking only at the wide
+        # scope left the deferral wq#1081/#1084 built here half-done: the real
+        # mode stayed hidden and RESUME_DEADEND below went on masking it,
+        # which is the exact failure that deferral existed to stop.
+        stall = _readiness_stall(window[-WARP_OSC_WINDOW:], names)
+    if stall:
+        return stall
+
     # wq#1081/#1084: deferred RESUME_DEADEND — the harness keeps resuming the
     # same checkpoint and the warps DON'T show a fight-readiness stall, so a
     # genuine "can't advance its own start point" deadend is the best read.
@@ -346,12 +383,22 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     # wq#697: WARP_OSC
     osc_hit, osc_a, osc_b, osc_alt = detect_warp_osc(window)
     if osc_hit:
-        pair = (f"{map_label(osc_a, names)} <-> {map_label(osc_b, names)}"
-                if osc_a != osc_b
-                else f"{map_label(osc_a, names)} (self-bounce)")
-        return "WARP_OSC", (
-            f"warp oscillation: {osc_alt} alternations between {pair} "
-            f"in last {min(len(window), WARP_OSC_WINDOW)} warps"), osc_a
+        # wq#1119: this mode's whole remedy is an EDGE ban — "ban the bounce
+        # edge, try a different warp" — so it may only be returned when there
+        # IS an edge. osc_a == osc_b means every warp in the slice landed on the
+        # same map: the agent re-entering one doorway, not alternating between
+        # two. There is nothing to ban, the pin's "the last several warps
+        # alternate between exactly two maps" is simply false, and the
+        # intervention layer pads the ban list out to two maps from the wider
+        # window's next most frequent id — which is how the live Route 25 stall
+        # got "ban the grind route + the only heal hub" prescribed three times
+        # in a row. A self-bounce that is not a readiness stall (handled above)
+        # falls through to NAV_LOOP/IDLE rather than to a ban that cannot help.
+        if osc_a != osc_b:
+            return "WARP_OSC", (
+                f"warp oscillation: {osc_alt} alternations between "
+                f"{map_label(osc_a, names)} <-> {map_label(osc_b, names)} "
+                f"in last {min(len(window), WARP_OSC_WINDOW)} warps"), osc_a
 
     # wq#697: NOISE_STORM
     noise_hit, noise_streak = detect_noise_storm(turn_summaries, NOISE_STORM_K)

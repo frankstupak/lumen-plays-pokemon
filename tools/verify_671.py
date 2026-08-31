@@ -92,10 +92,16 @@ one_visit = [3, 65, 3, 15, 59]
 mode, ev, _loc = M.classify_mode(one_visit, [], NAMES)
 ok("single gym visit does not classify FIGHT_LOSS_LOOP", mode != "FIGHT_LOSS_LOOP", mode)
 
-# GREEN: NAV_LOOP — two non-gym overworld maps bouncing, no healing signature.
+# GREEN: two non-gym overworld maps bouncing, no healing signature — a map
+# loop, not a fight or a resume deadend. wq#697 split this shape out of
+# NAV_LOOP into the more specific WARP_OSC (a clean A<->B alternation has an
+# edge to ban; NAV_LOOP now covers the looser <=3-map collapse), so this check
+# has been red since that mode landed. Accept either — what wq#671 asserts here
+# is that a plain dungeon bounce is a map loop, and both modes say so.
 nav = [59, 60, 59, 60, 59, 60, 59, 60]
 mode, ev, _loc = M.classify_mode(nav, [], NAMES)
-ok("non-gym 2-map bounce classifies NAV_LOOP", mode == "NAV_LOOP", f"got {mode} :: {ev}")
+ok("non-gym 2-map bounce classifies as a map loop (NAV_LOOP or wq#697 WARP_OSC)",
+   mode in ("NAV_LOOP", "WARP_OSC"), f"got {mode} :: {ev}")
 
 # GREEN: RESUME_DEADEND — same resumedFrom on the last 2 consecutive boots,
 # takes priority even over an in-progress warp trail.
