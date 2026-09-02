@@ -17,6 +17,7 @@ import { StreamChat } from "./chat";
 import { CFG } from "./config";
 import { SYSTEM_PREFIX, buildMessages, History } from "./prompt";
 import { readFileSync } from "fs";
+import { join } from "path";
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, note = "") => {
@@ -429,7 +430,10 @@ void (async () => {
   ok("the gameplay user block no longer asks for a SAY line",
     !/\bSAY\b/.test(msgs[1].content), "");
 
-  const agentSrc = readFileSync("src/agent.ts", "utf8");
+  // Resolved off __dirname, not the cwd: probes-pure.sh cds to the repo root
+  // but a bare `npx tsx src/probe_streamer.ts` from anywhere else should still
+  // check the real file rather than fail on a missing path.
+  const agentSrc = readFileSync(join(__dirname, "agent.ts"), "utf8");
   ok("the gameplay agent no longer parses a SAY line off its completion",
     !agentSrc.includes("SAY:") && !agentSrc.includes("postSay"), "");
   ok("the gameplay agent holds no reference to the chat transport at all",
