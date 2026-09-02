@@ -973,7 +973,7 @@ export class Agent {
           // note text that actually landed is mined (a rejected note is not
           // something he said).
           if (res.startsWith("note saved") || res.startsWith("PINNED")) {
-            const notice = this.rememberSelf(raw, "notepad");
+            const notice = await this.rememberSelf(raw, "notepad");
             if (notice) return `${res}\n${notice}`;
           }
           return res;
@@ -1008,15 +1008,21 @@ export class Agent {
    * Returns the "!" notice for the brain when it contradicted itself, "" when
    * there is nothing to report. Never throws: a persona failure must not cost
    * a game turn.
+   *
+   * wq#1191: awaited because extraction is a model call on the cheap rung. It
+   * runs on lines Lumen SPEAKS (a SAY, a note), not on every turn, and the
+   * extractor is deadline-bounded — see persona_llm.ts.
    */
-  private rememberSelf(text: string, platform: string): string {
+  private async rememberSelf(text: string, platform: string): Promise<string> {
     if (!CFG.persona.enabled || !text.trim()) return "";
     try {
-      const events = this.persona.observe(text, platform);
+      const events = await this.persona.observe(text, platform);
       for (const e of events) {
         // Reaffirmations are the common case and are not worth an event each;
         // a NEW canonical fact and a CONTRADICTION are both worth counting.
         if (e.outcome === "reaffirmed") continue;
+        // "updated" is a change of mind: a new valid-from in lumen_state, not a
+        // conflict. Worth an event (the overlay shows it), no notice.
         this.bus.emit("persona", {
           outcome: e.outcome, key: e.key, value: e.value,
           canonical: e.fact.value, platform, src: "brain",
