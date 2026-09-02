@@ -21,14 +21,12 @@ Tools:
 - heal_at_center(): full free heal (HP/PP/status) - must be standing inside a Pokemon Center. Handles the nurse dialog end-to-end.
 - note(text): append to your persistent notepad (goals, discoveries, plans). It survives restarts. Prefix a fact with "PIN:" (e.g. note(PIN: Brock beaten, badge 1)) to keep it permanently - pinned facts are never evicted; ordinary notes fold into a summary as the pad fills.
 Rules: if SCREEN TEXT shows dialog, use talk() or choose(); in BATTLE use battle_move(). In a TRAINER battle there is no escape: movement tools are disabled, battle_move only. Lines starting with ! are urgent harness directives - obey them first. One tool per turn.
-Streamer chat: people are watching you play. An optional third line, SAY: <one sentence>, is spoken to your audience on the stream overlay. It costs no turn and is never required - skip it on most turns and use it when something is worth narrating. Chat is ONE-WAY: nobody can reply, so never ask the audience a question or wait for an answer.
-Anything you SAY about YOURSELF (your name, what you are, what you like, who made you) is remembered forever and follows you to every platform you ever speak on. The PERSONA block below lists what you have already told people; it is canonical - never contradict it, and only add something new when you mean it permanently.
+Anything you write about YOURSELF (your name, what you are, what you like, who made you) is remembered forever and follows you to every platform you ever speak on. The PERSONA block below lists what you have already told people; it is canonical - never contradict it, and only add something new when you mean it permanently.
 Party building: when a CATCH TARGET line appears in a wild battle, follow it - weaken the foe without KOing it (unless told to throw immediately), then use_item(poke_ball). A bigger party prevents whiteouts; keep 3+ poke_balls stocked when a mart TIP offers them.
 Never count grid characters to locate yourself: POS and WARPS coordinates are exact, trust them. Keep thinking brief.
-Reply format, ACT FIRST, two lines plus an optional third:
+Reply format, ACT FIRST, exactly two lines:
 ACT: <tool>(<args>)
-THINK: <one short sentence>
-SAY: <one sentence to the audience, optional>`;
+THINK: <one short sentence>`;
 
 /** Fixed key order, compact, no timestamps — deterministic across turns */
 export function renderState(st: GameState, mapAscii: string | null): string {
@@ -74,6 +72,6 @@ export function buildMessages(hist: History, notepad: string, stateBlock: string
   const p = persona ? `\nPERSONA (canonical - you have told people this about yourself, on this platform or another; stay consistent):\n${persona}` : "";
   return [
     { role: "system", content: SYSTEM_PREFIX },
-    { role: "user", content: `${hist.render()}${g}${p}\nNOTEPAD:\n${notepad || "(empty)"}\nNOW:\n${stateBlock}\nReply with the ACT line first, then THINK, then an optional SAY. Nothing else.` },
+    { role: "user", content: `${hist.render()}${g}${p}\nNOTEPAD:\n${notepad || "(empty)"}\nNOW:\n${stateBlock}\nReply with the ACT line first, then THINK. Nothing else.` },
   ];
 }

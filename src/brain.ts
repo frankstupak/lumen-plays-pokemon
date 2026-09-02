@@ -6,7 +6,7 @@ import { CFG, BrainProfile } from "./config";
 import { EventBus } from "./events";
 import { readFileSync, appendFileSync } from "fs";
 
-function apiKey(): string {
+export function apiKey(): string {
   // wq#903/wq#949: env first (scoped lpp key), then the lpp key file only.
   // Never /home/lumen/agent/.env — that silently misattributes spend to the
   // shared ops-emergency key. A missing key fails loudly (401 on sk-local).
