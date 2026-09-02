@@ -205,5 +205,46 @@ for mode in M.MODES:
     ok(f"{mode} exhausted directive formats without KeyError",
        bool(r.get("directive", {}).get("notepadPin")), r)
 
+# ── 10. wq#1162: a counter tick DURING the stall must not refund K ─────────
+#       FIGHT_LOSS_LOOP@3 ran attempts 1,2,3,2,3,2,3 across 4.9h because
+#       eventFlags rose a little while story_score stayed frozen at 10: the old
+#       resolver read that as three separate wins, refunded the budget each
+#       time, and reissued the same grind prescription forever instead of
+#       exhausting once and handing off to wq#673.
+print("\n-- wq#1162: partial progress mid-stall does not refund K --")
+log = {"v": 1, "attempts": []}
+ladder, events = [], 45
+for i in range(9):
+    if i in (2, 5):
+        events += 3           # eventFlags move; story_score does not
+    r = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3, story=10, events=events), log=log)
+    ladder.append(r["attempt"] if r.get("intervened") else "EXH")
+ok("the ladder climbs once and stops instead of resetting",
+   ladder == [1, 2, 3, "EXH", "EXH", "EXH", "EXH", "EXH", "EXH"], ladder)
+ok("exactly K attempts were ever logged", len(log["attempts"]) == 3, len(log["attempts"]))
+ok("no attempt is credited as a win while the same key is still stalled",
+   all(e.get("outcome") is None for e in log["attempts"]),
+   [e.get("outcome") for e in log["attempts"]])
+
+# the same tick AFTER the stall clears is still a win — the guard narrows what
+# counts as a resolution, it does not stop resolutions happening.
+r = I.decide(state=healthy_state(story=10, events=events), log=log)
+ok("the stall clearing closes all three attempts as advanced",
+   [e.get("outcome") for e in log["attempts"]] == ["advanced"] * 3,
+   [e.get("outcome") for e in log["attempts"]])
+ok("K is refunded once the key is genuinely no longer the live stall",
+   I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3, story=10, events=events),
+            log=log)["attempt"] == 1, log["attempts"])
+
+# a stall that clears WITHOUT any counter moving still closes, as superseded,
+# and superseded keeps costing K exactly as it did before.
+log = {"v": 1, "attempts": []}
+I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3, story=10, events=45), log=log)
+I.decide(state=healthy_state(story=10, badges=1, events=45), log=log)
+ok("clearing with no counter movement marks the attempt superseded",
+   log["attempts"][0]["outcome"] == "superseded", log["attempts"])
+ok("superseded still counts toward K", I.open_attempt_count(log, "FIGHT_LOSS_LOOP@3") == 1,
+   log["attempts"])
+
 print(f"\n{PASS}/{PASS + FAIL} passed")
 sys.exit(1 if FAIL else 0)

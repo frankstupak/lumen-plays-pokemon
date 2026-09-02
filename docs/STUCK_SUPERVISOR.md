@@ -45,6 +45,19 @@ duplicate (`DUPLICATE — task <id> ...`) — that response is parsed the same
 way and also treated as an append, so a filing race between two supervisor
 ticks still can't produce two tickets for one incident.
 
+**One append per change, not per tick (wq#1162).** An exhausted key stays
+exhausted, so every subsequent tick reaches the append path — and appended.
+`FIGHT_LOSS_LOOP@3` collected seven near-identical `REPEAT` blocks in 2.6h
+whose sole difference was `frozen=2.4h` counting up to `frozen=5.0h`, and it
+would have kept going for as long as the stall lasted. The append is now gated
+on `report_signature()`: the report with the frozen-hours figure masked out,
+compared against the last one stored on the incident. Anything that could
+genuinely be news — a new attempt, a changed outcome, moved counters, a
+`since <lastAdvanceAt>` that jumped because the freeze clock restarted — still
+earns its block; a stall that merely got older writes nothing and `run()`
+reports `action: "unchanged"`. An incident tracked from before this shipped
+has no stored signature, so it appends exactly once more and then goes quiet.
+
 **Ticket content** (from `build_report()`): mode, the frozen axis
 (story_score primary, plus badges/eventFlags), how many hours frozen and
 since when, every logged intervention attempt for this location with its
@@ -70,6 +83,14 @@ advance itself as the evidence, and drops out of tracked state. This fires
 even if the game has since moved into a *different* stuck incident — an old
 resolved incident is closed regardless of what's happening now.
 
+The one exception is the incident stalled *right now* (wq#1162). That baseline
+comparison is the same three-counter test wq#672's own resolver got wrong: a
+partial tick clears the baseline while the agent is still losing the same
+fight in the same room, and closing the ticket there retracts an escalation
+the classifier is reporting live in the very same call — after which the next
+tick files it all over again. The live key is skipped and resolves normally as
+soon as the stall clears. See `docs/STUCK_INTERVENE.md` for the wq#672 half.
+
 **Never autospawns fix-workers** (spec section 4, and the ticket's own
 title). The only side effects anywhere in this chain are: writing
 `runtime/*.json` state files, `wq add`/`wq edit`/`wq done` calls, and
@@ -78,13 +99,15 @@ the service, or touches the emulator.
 
 ## Verification
 
-`python3 tools/verify_673.py` — **29/29**. A `FakeWQ` emulates the real
+`python3 tools/verify_673.py` — **39/39**. A `FakeWQ` emulates the real
 `wq` CLI's `add`/`list`/`show`/`edit`/`done` text output (confirmed against
 `/home/lumen/bin/wq`'s own source, including its exact-title duplicate
 guard) so the dedup/append parsing is proven against the real format without
 touching the real database. Covers: no ticket before K exhausts; exactly one
 ticket filed on exhaustion, carrying mode/proposed-resolution; a repeat
-exhaustion appends rather than duplicating; `wq add`'s own duplicate-guard
+exhaustion carrying new facts appends rather than duplicating, while one
+carrying only a larger `frozen=` is dropped as `unchanged` and four further
+identical polls issue no `wq edit` at all; `wq add`'s own duplicate-guard
 response is handled as a race-safe append path; ntfy fires exactly once, only
 at/after the 3h mark measured from the incident's true start (not from
 ticket-filing time — this scenario is spaced tightly enough in the test to
@@ -92,7 +115,9 @@ separate "ticket exists, still under 3h" from "past 3h" as two distinct,
 independently-asserted moments); a second poll past 3h does not re-send; and
 a real advance both closes the ticket with evidence and clears tracked state,
 including when the *current* incident has since moved to a different
-mode/location.
+mode/location; and (wq#1162) a counter tick while the same key is still the
+live stall resolves nothing and leaves the ticket open, yet those same
+counters do resolve it once the stall clears.
 
 ## Rollback
 

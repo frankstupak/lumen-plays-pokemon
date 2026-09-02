@@ -66,14 +66,36 @@ Each `(mode, locationId)` — the same key wq#671 exposes as `modeLocation` —
 gets up to **K=3** logged attempts. A 4th `decide()` call for the same open
 key returns `exhausted: true` and appends **nothing** to the log; that is the
 signal wq#673 uses to file (or append to) its one ticket and stop trying
-locally. An attempt resolves as `"advanced"` (closing the counter, K resets)
-the moment a later read shows `storyScore`, `badges` or the event-flag count
-higher than the attempt's own `beforeState` — matching wq#671's own
-story_score-primary axis exactly, so "did the intervention work" is answered
-the same way "is the game stuck" is. An attempt resolves as `"superseded"`
-(closes the entry, but does **not** reset K) if the incident's mode or
-location changes before an advance — drifting into a different stuck shape
-is not evidence the intervention worked.
+locally. An attempt is only eligible to close **once the classifier stops
+naming its key as the live stall** (wq#1162). It then resolves as `"advanced"`
+(closing the counter, K resets) if `storyScore`, `badges` or the event-flag
+count reads higher than the attempt's own `beforeState`, or as `"superseded"`
+(closes the entry, but does **not** reset K) if not — drifting into a
+different stuck shape is not evidence the intervention worked.
+
+### Why the eligibility check, and not the counters alone (wq#1162)
+
+The counter comparison used to run on its own, without asking whether the
+stall was over. That is a strictly weaker test than the classifier's:
+`advances()` in `lpp_stuck_mode` restarts the *freeze clock* on those same
+three counters, so a partial tick — eventFlags 45→48 while `storyScore` sits
+at 10 — resets the clock, the stall re-freezes on the **same key** an hour
+later, and the still-open attempts now compare favourably against their stale
+`beforeState` and close as wins. Each false win refunded the K budget.
+
+`FIGHT_LOSS_LOOP@3` ran the ladder **1, 2, 3, 2, 3, 2, 3** across 4.9h that
+way: K never bit, the same grind prescription reissued indefinitely, and the
+one thing the bound exists to trigger — exhaust once, hand off to wq#673 —
+never happened. The rule is now the obvious one: the authority on whether a
+stall is over is the thing that declared it, and while it still says
+`FIGHT_LOSS_LOOP@3`, no counter reading closes an attempt prescribed for
+`FIGHT_LOSS_LOOP@3`.
+
+The same correction applies on the wq#673 side. `resolve_advanced()` compared
+current counters against the incident's baseline and would `wq done` the
+ticket on a mid-stall tick — retracting an escalation for a stall the
+classifier reported live in that very call. It now skips the key that is
+stalled right now, and resolves it the moment the stall genuinely clears.
 
 ## A pin the agent obeys must agree with the gate that refuses it (wq#1091)
 
@@ -182,7 +204,7 @@ Probe: `python3 tools/test_stuck1118.py` — 6 sections, A-F.
 
 ## Verification
 
-`python3 tools/verify_672.py` — **62/62**. Every call passes an explicit
+`python3 tools/verify_672.py` — **69/69**. Every call passes an explicit
 `log` dict (never touches the live `runtime/intervention_log.json`), mirroring
 `verify_489.py`'s own pattern of exercising `emit()` directly against a
 throwaway state rather than real persisted state. Covers: no intervention
@@ -202,6 +224,11 @@ mode's template survives the terminal-directive `format()` call (the
 `NAV_LOOP`/`WARP_OSC` pins reference `{loop_maps}`/`{loop_labels}`); plus
 `{location}` rendering as `Cerulean City (map3)` rather than a bare `3`
 sitting among the level numbers, falling back to `map<id>` for an unknown id.
+wq#1162 adds the ladder itself: the `FIGHT_LOSS_LOOP@3` sequence replayed with
+eventFlags ticking mid-stall now climbs `1, 2, 3` and stays exhausted instead
+of resetting, logs exactly K entries, credits no win while the key is still
+stalled — and still closes all three as `"advanced"` (refunding K) the moment
+the stall clears, or as `"superseded"` if it clears with nothing moved.
 
 ## Rollback
 
