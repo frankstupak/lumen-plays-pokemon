@@ -70,10 +70,14 @@ CONSUMPTION (was "not wired yet"; it is wired now)
 BOUNDING (K=3)
   Each (mode, locationId) pair — wq#671's own dedup key — gets up to K=3
   prescribed attempts. `decide()` counts prior LOGGED attempts for that exact
-  key since the key's last resolution (a story_score/badge/event advance
-  logged as "afterState" on a later call) and returns exhausted=True once the
+  key since the key's last resolution and returns exhausted=True once the
   count reaches K, WITHOUT prescribing a 4th — the signal wq#673 uses to file
   (or append to) its one ticket and stop trying locally.
+
+  wq#1162: "the key's last resolution" means the classifier stopped calling
+  that key the live stall — not merely that some counter ticked up. Crediting
+  a raw counter tick refunded the budget mid-stall and made K unbounded in
+  practice; see resolve_pending's own note for the failure it produced.
 
 READ+WRITE, LOCAL FILES ONLY. Reads runtime/stuck_mode.json (or recomputes it
 live via lpp_stuck_mode), checkpoints/**/*.json. Writes only
@@ -351,10 +355,27 @@ def _snapshot(state):
 
 
 def resolve_pending(log, state):
-    """Close out any open (afterState=None) attempts for keys OTHER than the
-    current stall, or for the current key if state has actually advanced
-    since that attempt was logged. Called on every decide() so the log never
-    accumulates stale opens across an intervention that quietly worked.
+    """Close out any open (afterState=None) attempts the current stall has
+    moved past. Called on every decide() so the log never accumulates stale
+    opens across an intervention that quietly worked.
+
+    wq#1162: an attempt is only closed once the classifier STOPS reporting its
+    own key as the live stall. While `mode@location` is still stalled, no
+    counter reading can close an attempt prescribed for it, because the one
+    authority on whether that stall is over already said it is not.
+
+    The old rule closed an attempt as "advanced" whenever any of
+    storyScore/badges/eventFlags had risen above the attempt's own beforeState,
+    regardless of what the classifier currently said. That is a strictly weaker
+    test than the classifier's: `advances()` in lpp_stuck_mode restarts the
+    freeze clock on the same three counters, so a partial tick (eventFlags
+    45->48 while story_score sits at 10) resets the clock, the stall re-freezes
+    on the SAME key two hours later, and by then the open attempts compare
+    favourably against their stale beforeState and close as wins. Each false
+    win refunded the K budget, so the ladder ran 1,2,3,2,3,2,3... and the same
+    grind prescription reissued indefinitely instead of exhausting once and
+    handing off to wq#673. FIGHT_LOSS_LOOP@3 spent 4.9h and seven supervisor
+    ticks in that shape.
     """
     cur_key = _key(state.get("mode"), state.get("modeLocation")) if state.get("stalled") else None
     now_snap = _snapshot(state)
@@ -362,16 +383,18 @@ def resolve_pending(log, state):
     for entry in log["attempts"]:
         if entry.get("afterState") is not None:
             continue
+        if entry["locationKey"] == cur_key:
+            # Still the live stall. Whatever the counters read, this attempt
+            # has not resolved anything — leave it open so it keeps costing K.
+            continue
         advanced = (
             (now_snap.get("storyScore") or 0) > (entry["beforeState"].get("storyScore") or 0)
             or (now_snap.get("badges") or 0) > (entry["beforeState"].get("badges") or 0)
             or (now_snap.get("eventFlags") or 0) > (entry["beforeState"].get("eventFlags") or 0)
         )
-        moved_on = entry["locationKey"] != cur_key
-        if advanced or moved_on:
-            entry["afterState"] = now_snap
-            entry["outcome"] = "advanced" if advanced else "superseded"
-            changed = True
+        entry["afterState"] = now_snap
+        entry["outcome"] = "advanced" if advanced else "superseded"
+        changed = True
     return changed
 
 

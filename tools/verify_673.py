@@ -133,17 +133,41 @@ ok("ticket detail carries a proposed-resolution", "proposed-resolution:" in wq.t
    wq.tickets[ticket_id]["detail"])
 ok("incident is now tracked", "FIGHT_LOSS_LOOP@65" in escal["incidents"], escal["incidents"])
 
-# repeat exhaustion (K refills after resolve_pending marks the old 3 attempts
-# 'superseded' via a fresh decide() cycle is out of scope here — this tests
-# the DEDUP path directly: calling maybe_file_or_append again for a location
-# already tracked must APPEND, never add a second ticket.
-before_calls = len(wq.calls)
+# repeat exhaustion for a location already tracked must never add a second
+# ticket. wq#1162 splits that into two cases: a poll that would restate the
+# ticket verbatim is dropped, and a poll carrying new facts appends.
 r2 = F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
-                             stalled("FIGHT_LOSS_LOOP", 65), log, wq, T0 + 5 * H_MS)
-ok("repeat exhaustion appends, does not add a new ticket", r2["action"] == "appended" and r2["ticketId"] == ticket_id, r2)
+                             stalled("FIGHT_LOSS_LOOP", 65, frozen_h=44.0), log, wq, T0 + 5 * H_MS)
+ok("a repeat with nothing new is dropped, not appended", r2["action"] == "unchanged", r2)
+ok("the dropped repeat writes no REPEAT block", "REPEAT" not in wq.tickets[ticket_id]["detail"],
+   wq.tickets[ticket_id]["detail"])
+ok("a longer frozen= alone is not new information",
+   "frozen=44.0h" not in wq.tickets[ticket_id]["detail"], wq.tickets[ticket_id]["detail"])
+
+# ...but the freeze clock restarting IS new information, and so is a changed
+# counter: both mean the incident's facts moved even though it stayed stuck.
+r2b = F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
+                              stalled("FIGHT_LOSS_LOOP", 65, events=48,
+                                      last_advance="2026-08-16T04:00:00Z", frozen_h=2.4),
+                              log, wq, T0 + 6 * H_MS)
+ok("a repeat carrying new facts appends", r2b["action"] == "appended" and r2b["ticketId"] == ticket_id, r2b)
 ok("still exactly one ticket after the repeat", len(wq.tickets) == 1, wq.tickets)
 ok("appended detail contains a REPEAT marker", "REPEAT" in wq.tickets[ticket_id]["detail"],
    wq.tickets[ticket_id]["detail"])
+ok("the appended block carries the new counter", "eventFlags=48" in wq.tickets[ticket_id]["detail"],
+   wq.tickets[ticket_id]["detail"])
+
+# and the SAME facts a third time go quiet again — one append per change, not
+# one per poll, which is the wq#1162 REPEAT storm this guard exists to stop.
+edits_before = len([c for c in wq.calls if c[0] == "edit"])
+for i in range(4):
+    F.maybe_file_or_append(escal, "FIGHT_LOSS_LOOP", "FIGHT_LOSS_LOOP@65", 65,
+                           stalled("FIGHT_LOSS_LOOP", 65, events=48,
+                                   last_advance="2026-08-16T04:00:00Z", frozen_h=2.9 + i),
+                           log, wq, T0 + (7 + i) * H_MS)
+ok("four further polls of an unchanged stall write nothing",
+   len([c for c in wq.calls if c[0] == "edit"]) == edits_before,
+   [c for c in wq.calls if c[0] == "edit"])
 
 # ── 3. race backstop: wq add's OWN duplicate guard is honoured too ─────────
 print("\n-- wq add's own duplicate guard as a backstop --")
@@ -225,6 +249,35 @@ result, escal = F.run(state=stalled("NAV_LOOP", 59, story=13), intervention_log=
                        escal=escal, wq_call=wq, ntfy_call=ntfy, now_ms=T0 + 6 * H_MS)
 ok("advance resolves the OLD incident even while a NEW one is stalled",
    any(r["locationKey"] == "FIGHT_LOSS_LOOP@65" for r in result["resolved"]), result)
+
+# ── 6. wq#1162: the incident stalled RIGHT NOW is never auto-resolved ──────
+#      The baseline test is the same three-counter comparison wq#672's
+#      resolve_pending used to misread. A partial tick (eventFlags 37->48 with
+#      story_score frozen) clears the baseline while the agent is still losing
+#      the same fight in the same room; closing the ticket there retracts an
+#      escalation the classifier is reporting live in the very same call.
+print("\n-- wq#1162: no auto-resolve while the key is still the live stall --")
+wq, ntfy = FakeWQ(), FakeNtfy()
+log = {"v": 1, "attempts": []}
+escal = {"v": 1, "incidents": {}}
+for i in range(1, 5):
+    _, escal = F.run(state=stalled("FIGHT_LOSS_LOOP", 65, story=10, events=37),
+                      intervention_log=log, escal=escal, wq_call=wq, ntfy_call=ntfy,
+                      now_ms=T0 + i * H_MS)
+live_id = escal["incidents"]["FIGHT_LOSS_LOOP@65"]["ticketId"]
+result, escal = F.run(state=stalled("FIGHT_LOSS_LOOP", 65, story=10, events=48),
+                       intervention_log=log, escal=escal, wq_call=wq, ntfy_call=ntfy,
+                       now_ms=T0 + 5 * H_MS)
+ok("a mid-stall counter tick resolves nothing", result["resolved"] == [], result)
+ok("the ticket stays open", wq.tickets[live_id]["status"] == "open", wq.tickets[live_id])
+ok("the incident stays tracked", "FIGHT_LOSS_LOOP@65" in escal["incidents"], escal["incidents"])
+
+# the same counters, once the stall itself is over, DO resolve it
+result, escal = F.run(state=healthy(story=10, badges=1, events=48), intervention_log=log,
+                       escal=escal, wq_call=wq, ntfy_call=ntfy, now_ms=T0 + 6 * H_MS)
+ok("the same advance resolves it once the stall clears",
+   len(result["resolved"]) == 1 and result["resolved"][0]["ticketId"] == live_id, result)
+ok("and the ticket is marked done", wq.tickets[live_id]["status"] == "done", wq.tickets[live_id])
 
 print(f"\n{PASS}/{PASS + FAIL} passed")
 sys.exit(1 if FAIL else 0)

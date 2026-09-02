@@ -10,8 +10,9 @@ WHY THIS EXISTS
   ntfy page to Frank at the 3h mark of that incident — never hourly, never
   again after the first page for the same incident. The incident
   auto-resolves (ticket closed, escalation state cleared) the moment
-  story_score/badges/event-flags actually advance, with the advance itself
-  recorded as evidence on the ticket.
+  story_score/badges/event-flags actually advance PAST the incident — never
+  while the classifier still names that same key as the live stall (wq#1162) —
+  with the advance itself recorded as evidence on the ticket.
 
   Anti-footgun (spec section 4, echoed verbatim in the ticket): "Supervisor
   NEVER autospawns fix-workers: file ONE ticket + page Frank; orch/Frank
@@ -39,6 +40,12 @@ TICKET DEDUP AND APPEND
   `wq show`, concatenate a new dated block, `wq edit --detail`) instead of
   filing a duplicate. This is read via the `wq` CLI, not the sqlite file
   directly, to stay inside the tool's own concurrency/locking contract.
+
+  An exhausted key stays exhausted, so every later poll reaches the append
+  path. wq#1162 gates it on report_signature(): the append lands only when the
+  report differs from the last one on something other than the frozen-hours
+  count, so a standing stall adds a block when its facts change and nothing
+  while it merely gets older.
 
 NTFY ESCALATION
   Exactly once per incident, the FIRST time `now - firstStalledAt >= 3h`
@@ -155,11 +162,49 @@ def build_report(mode, location_key, location, state, intervention_log, now_ms):
     )
 
 
+FROZEN_RE = re.compile(r"frozen=[\d.]+h ")
+
+
+def report_signature(report):
+    """The report with the one field that changes on EVERY tick stripped out.
+
+    wq#1162: maybe_file_or_append used to claim it appended "only if we haven't
+    just appended for this exact exhaustion", crediting the guard to a caller
+    that "only invokes this on a fresh `exhausted` decision". No such caller
+    exists — `run()` calls it on every poll where decide() says exhausted, and
+    once K is spent decide() says exhausted forever. FIGHT_LOSS_LOOP@3 collected
+    seven REPEAT blocks in 2.6h whose only difference was `frozen=2.4h` counting
+    up to `frozen=5.0h`; the detail grows without bound and the reader has to
+    diff paragraphs to find out that nothing changed.
+
+    So compare on content instead of on cadence. Everything a later poll could
+    genuinely add — a new attempt, a changed outcome, moved counters, a
+    `since <lastAdvanceAt>` that jumped because the freeze clock restarted —
+    survives into the signature and still earns its append. Only the wall-clock
+    duration is masked, because it is a restatement of `since` plus now.
+    """
+    return FROZEN_RE.sub("frozen=<h> ", report)
+
+
 def resolve_advanced(escal, state, wq_call, now_ms):
     """Auto-resolve: any tracked incident whose baseline the CURRENT state has
-    since exceeded gets its ticket closed and is dropped from tracked state."""
+    since exceeded gets its ticket closed and is dropped from tracked state.
+
+    wq#1162: except the incident that is stalled RIGHT NOW. The baseline test
+    below is the same three-counter comparison wq#672's resolve_pending used to
+    misread, and it fails the same way — a partial tick (eventFlags 45->48 with
+    story_score frozen) clears the baseline while the agent is still losing the
+    same fight in the same room. Closing the ticket there would retract the
+    escalation on a stall the classifier is reporting live in this very call,
+    and the next tick would file it again from scratch. An incident the
+    classifier still names is not resolved, whatever the counters read.
+    """
+    live_key = (f"{state.get('mode')}@{state.get('modeLocation')}"
+                if state.get("stalled") else None)
     closed = []
     for key, inc in list(escal["incidents"].items()):
+        if key == live_key:
+            continue
         advanced = (
             (state.get("storyScore") or 0) > (inc.get("baselineStoryScore") or 0)
             or (state.get("badges") or 0) > (inc.get("baselineBadges") or 0)
@@ -217,17 +262,23 @@ def maybe_file_or_append(escal, mode, location_key, location, state, interventio
             "ticketId": ticket_id, "firstStalledAt": first_stalled_ms, "ntfySentAt": None,
             "lastAppendAt": now_ms, "baselineStoryScore": state.get("storyScore"),
             "baselineBadges": state.get("badges"), "baselineEventFlags": state.get("eventFlags"),
+            "reportSig": report_signature(report),
         }
         return {"action": action, "ticketId": ticket_id}
 
     # Already tracked: a later exhaustion for the SAME incident appends again
-    # (dedup — never a second ticket) but only if we haven't just appended
-    # for this exact exhaustion (guarded by the caller only invoking this on
-    # a fresh `exhausted` decision, not every idle poll).
+    # (dedup — never a second ticket), but only when the report actually says
+    # something the ticket does not already carry (wq#1162). An incident
+    # tracked before this guard shipped has no stored signature, so it earns
+    # exactly one more append and then goes quiet.
+    sig = report_signature(report)
+    if inc.get("reportSig") == sig:
+        return {"action": "unchanged", "ticketId": inc.get("ticketId")}
     old_detail = get_detail(inc["ticketId"], wq_call) if inc.get("ticketId") is not None else ""
     if inc.get("ticketId") is not None:
         wq_call(["edit", str(inc["ticketId"]), "--detail",
                  f"{old_detail} || REPEAT {_iso(now_ms)}: {report}"])
+    inc["reportSig"] = sig
     inc["lastAppendAt"] = now_ms
     return {"action": "appended", "ticketId": inc.get("ticketId")}
 
@@ -289,14 +340,19 @@ def main(argv=None):
     if args.json:
         print(json.dumps(result, indent=1))
     else:
+        filed = result.get("filed")
+        # "unchanged" is the standing-stall steady state (wq#1162): the ticket
+        # already says everything this poll would have said, so it is not an
+        # action and must not print like one.
+        acted = filed is not None and filed["action"] != "unchanged"
         if result.get("resolved"):
             for r in result["resolved"]:
                 print(f"RESOLVED {r['locationKey']} (wq#{r['ticketId']})")
-        if result.get("filed"):
-            print(f"TICKET {result['filed']['action']} wq#{result['filed']['ticketId']}")
+        if acted:
+            print(f"TICKET {filed['action']} wq#{filed['ticketId']}")
         if result.get("ntfy"):
             print(f"NTFY sent={result['ntfy']['sent']}: {result['ntfy']['message']}")
-        if not (result.get("resolved") or result.get("filed") or result.get("ntfy")):
+        if not (result.get("resolved") or acted or result.get("ntfy")):
             print("no escalation action")
     return 0 if result.get("ok", True) else 1
 
