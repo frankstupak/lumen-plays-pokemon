@@ -114,3 +114,205 @@ export function saveHistory(file: string, warps: number[]): void {
     writeFileSync(file, JSON.stringify({ v: 1, warps: warps.slice(-KEEP) }));
   } catch {}
 }
+
+// ---- wq#1178: the DIRECTED warp-edge ledger -------------------------------
+//
+// WHY THE HISTORY ABOVE IS NOT ENOUGH. `warps` is a list of ARRIVAL MAP IDS.
+// It can say "map59 keeps coming up" and nothing else — not which door fired,
+// not what the door was left for, not whether the trip bought anything. The
+// live stall this was written for (wq#1178: 60% of turns returning
+// "enter_warp: refused - this is the door you just arrived through", frontier
+// frozen at Route 25 for 407h / 8110 turns) is invisible on that axis twice
+// over: a refused warp records no arrival at all, and a door-bounce pair
+// A->B->A leaves the same two map ids as a legitimate there-and-back.
+//
+// An EDGE is (fromMap, warpIndex, toMap) plus the timestamp and the visited-
+// tile count at the moment it fired. Two things follow that the map list
+// cannot give:
+//   * the WARPS line can be annotated per DOOR ("taken 4x in the last 10
+//     warps, 0 new tiles since"), so the cost of a door is visible at the
+//     moment the brain picks one, not two turns later in a LOOP NOTICE;
+//   * an alternating pair can be detected as such, and the offending doors
+//     put on a TIME-BOXED cooldown.
+//
+// TIME-BOXED, AND wq#517's LESSON IS WHY. A permanent ban wedges: the only
+// exit from Mt Moon runs back the way you came, and a rule with no expiry
+// would eventually forbid the one move that leaves. Every cooldown here dies
+// two ways — a wall-clock deadline, and the FIRST NEW TILE the agent reaches
+// (novelty.ts's visited set). The second matters more than the first: a
+// cooldown that was wrong costs one step to lift, because any move that
+// actually goes somewhere clears it immediately.
+
+export interface WarpEdge {
+  from: number;   // map the warp was fired FROM
+  idx: number;    // warp index on that map (the door's identity, not its tile)
+  to: number;     // map actually landed on (read after the warp, never predicted)
+  ts: number;
+  tiles: number;  // novelty.ts uniqueTiles() at the moment it fired
+}
+
+export interface WarpCooldown {
+  key: string;
+  from: number; idx: number; to: number;
+  untilTs: number;   // wall-clock expiry
+  tilesAt: number;   // lifts as soon as uniqueTiles() exceeds this
+  reason: string;
+  /** "bounce" — an alternating pair that bought nothing; the door WORKED and
+   *  the trip was the waste. "refusal" — the door never fired at all, the same
+   *  request was refused N times running, and the only thing being asked for is
+   *  a move. A refusal cooldown is therefore satisfied BY that move and is
+   *  dropped on it (dropRefusalCooldowns); a bounce cooldown is not, because a
+   *  step does not make the round trip productive. Absent on records written
+   *  before this field existed, which read as "bounce" — the conservative side. */
+  kind?: "bounce" | "refusal";
+}
+
+/** Edges considered when annotating a door and when looking for a pair. Ten is
+ *  the plan's own figure ("taken 4x in last 10 warps") and roughly two round
+ *  trips' worth of slack past the trip threshold. */
+export const EDGE_WINDOW = 10;
+/** A door is annotated from the second time it appears in the window: once is
+ *  a trip, twice is a pattern worth a token. */
+export const EDGE_ANNOTATE_MIN = 2;
+/** Round trips over the SAME map pair before its doors go on cooldown. Two
+ *  means four warps spent to end up where you started. */
+export const PAIR_TRIPS = 2;
+/** Cooldown deadline. At the live agent's ~20-60s/turn cadence this is on the
+ *  order of 10-30 turns — long enough to force a different plan, short enough
+ *  that a false positive costs less than the loop it interrupts. */
+export const COOLDOWN_MS = 10 * 60_000;
+const KEEP_EDGES = 64;
+
+export function edgeKey(from: number, idx: number, to: number): string {
+  return `${from}:${idx}->${to}`;
+}
+
+export interface EdgeStore { edges: WarpEdge[]; cools: WarpCooldown[] }
+
+export function edgesFile(dir?: string): string {
+  return process.env.LPP_WARP_EDGES ?? `${dir ?? `${process.cwd()}/runtime`}/warp_edges.json`;
+}
+
+export function loadEdges(file: string): EdgeStore {
+  try {
+    const s = JSON.parse(readFileSync(file, "utf8")) as Partial<EdgeStore>;
+    const edges = Array.isArray(s?.edges)
+      ? s!.edges!.filter(e => e && typeof e.from === "number" && typeof e.idx === "number" &&
+                              typeof e.to === "number").slice(-KEEP_EDGES)
+      : [];
+    const cools = Array.isArray(s?.cools)
+      ? s!.cools!.filter(c => c && typeof c.key === "string" && typeof c.untilTs === "number")
+      : [];
+    return { edges, cools };
+  } catch {}
+  return { edges: [], cools: [] };
+}
+
+export function saveEdges(file: string, s: EdgeStore): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({
+      v: 1, edges: s.edges.slice(-KEEP_EDGES), cools: s.cools,
+    }));
+  } catch {}
+}
+
+/** How often this DOOR (from-map + index, direction included) fired in the
+ *  window, and the visited-tile count when it first did. */
+export function doorUsage(edges: WarpEdge[], from: number, idx: number,
+                          window = EDGE_WINDOW): { count: number; window: number; tilesAt: number | null } {
+  const win = edges.slice(-window);
+  const hits = win.filter(e => e.from === from && e.idx === idx);
+  return { count: hits.length, window: win.length, tilesAt: hits.length ? hits[0].tiles : null };
+}
+
+/** The per-door annotation for the WARPS line, or null when there is nothing
+ *  worth spending tokens on. `tilesNow` is novelty.ts's uniqueTiles(). */
+export function doorAnnotation(edges: WarpEdge[], from: number, idx: number,
+                               tilesNow: number, window = EDGE_WINDOW): string | null {
+  const u = doorUsage(edges, from, idx, window);
+  if (u.count < EDGE_ANNOTATE_MIN) return null;
+  const gained = u.tilesAt === null ? null : tilesNow - u.tilesAt;
+  const novelty = gained === null ? "" : `, ${gained} new tiles since`;
+  return `taken ${u.count}x in last ${u.window} warps${novelty}`;
+}
+
+/** Round trips per unordered map pair inside the window. A round trip is two
+ *  ADJACENT edges that undo each other: A->B immediately followed by B->A.
+ *  Adjacency is deliberate — A->B, a productive detour, then B->A is a route,
+ *  not a bounce, and only the bounce is worth acting on.
+ *
+ *  Trips do not OVERLAP. In A->B->A->B->A a sliding window finds three
+ *  reversals in four warps and would reach PAIR_TRIPS after three; consuming
+ *  each pair keeps `trips` meaning what the word says, so the threshold below
+ *  is stated in whole there-and-backs and PAIR_TRIPS=2 costs four warps. */
+export function roundTrips(edges: WarpEdge[], window = EDGE_WINDOW):
+    Map<string, { a: number; b: number; trips: number; tilesAt: number; doors: WarpEdge[] }> {
+  const win = edges.slice(-window);
+  const out = new Map<string, { a: number; b: number; trips: number; tilesAt: number; doors: WarpEdge[] }>();
+  for (let i = 0; i + 1 < win.length; i++) {
+    const e = win[i], f = win[i + 1];
+    if (e.to !== f.from || f.to !== e.from || e.from === e.to) continue;
+    const a = Math.min(e.from, e.to), b = Math.max(e.from, e.to);
+    const k = `${a}<->${b}`;
+    const prev = out.get(k);
+    if (prev) { prev.trips++; prev.doors.push(e, f); }
+    else out.set(k, { a, b, trips: 1, tilesAt: e.tiles, doors: [e, f] });
+    i++;   // consume the pair: trips never overlap
+  }
+  return out;
+}
+
+/** Cooldowns the ledger justifies right now that are not already live. Trips
+ *  alone are not enough: the pair must also have bought NOTHING (no new tile
+ *  since the pattern started), which is what separates a bounce from a
+ *  corridor that legitimately runs back and forth past new ground. */
+export function assessCooldowns(edges: WarpEdge[], nowTs: number, tilesNow: number,
+                                existing: WarpCooldown[]): WarpCooldown[] {
+  const live = new Set(existing.filter(c => coolActive(c, nowTs, tilesNow)).map(c => c.key));
+  const fresh: WarpCooldown[] = [];
+  for (const [pair, t] of roundTrips(edges)) {
+    if (t.trips < PAIR_TRIPS) continue;
+    if (tilesNow > t.tilesAt) continue;   // the loop DID find new ground: not a bounce
+    const seen = new Set<string>();
+    for (const d of t.doors) {
+      const key = edgeKey(d.from, d.idx, d.to);
+      if (seen.has(key) || live.has(key)) continue;
+      seen.add(key);
+      fresh.push({
+        key, from: d.from, idx: d.idx, to: d.to,
+        untilTs: nowTs + COOLDOWN_MS, tilesAt: tilesNow, kind: "bounce",
+        reason: `${pair} alternated ${t.trips}x with 0 new tiles`,
+      });
+    }
+  }
+  return fresh;
+}
+
+/** Live iff the deadline has not passed AND no new tile has been found since
+ *  it was set. Either condition alone lifts it. */
+export function coolActive(c: WarpCooldown, nowTs: number, tilesNow: number): boolean {
+  return nowTs < c.untilTs && tilesNow <= c.tilesAt;
+}
+
+export function activeCooldown(cools: WarpCooldown[], key: string, nowTs: number,
+                               tilesNow: number): WarpCooldown | null {
+  return cools.find(c => c.key === key && coolActive(c, nowTs, tilesNow)) ?? null;
+}
+
+export function pruneCooldowns(cools: WarpCooldown[], nowTs: number, tilesNow: number): WarpCooldown[] {
+  return cools.filter(c => coolActive(c, nowTs, tilesNow));
+}
+
+/** Called when the agent has actually MOVED. A refusal cooldown exists only to
+ *  force that move, so the move retires it — otherwise a door refused three
+ *  times would stay shut for ten minutes AFTER the brain complied, which is the
+ *  wq#517 wedge in miniature. Bounce cooldowns survive: a single step does not
+ *  make a round trip worth repeating. */
+export function dropRefusalCooldowns(cools: WarpCooldown[]): WarpCooldown[] {
+  return cools.filter(c => c.kind !== "refusal");
+}
+
+export function coolMinutesLeft(c: WarpCooldown, nowTs: number): number {
+  return Math.max(0, Math.ceil((c.untilTs - nowTs) / 60_000));
+}

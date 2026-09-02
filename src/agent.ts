@@ -29,12 +29,16 @@ import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  //
 import { MISTY_MIN_LEVEL, mistyGymEntryRefusal } from "./guidance";        // wq#516/#674
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
-import { RecoveryTracker } from "./recovery";
+import { RecoveryTracker, DivergenceTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker } from "./novelty";   // wq#1179 (observe-only)
 import { assess as assessOscillation, historyFile as oscHistoryFile,
-         loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
-import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
+         loadHistory as loadOscHistory, saveHistory as saveOscHistory,
+         // wq#1178: directed warp-edge ledger + time-boxed door cooldowns
+         edgesFile, loadEdges, saveEdges, edgeKey, doorAnnotation, assessCooldowns,
+         activeCooldown, pruneCooldowns, dropRefusalCooldowns, coolMinutesLeft, COOLDOWN_MS,
+         EdgeStore, WarpCooldown } from "./oscillation";  // wq#517
+import { warpViews, renderWarps, stuckHint, WarpView, LAST_MAP } from "./reach";   // wq#538
 import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
@@ -190,6 +194,21 @@ export class Agent {
   // Assigned in the constructor body rather than as a field initializer because
   // it needs `checkpointDir` and `bus`, which are parameter properties.
   private novelty!: NoveltyTracker;
+  // wq#1178: the directed warp-edge ledger. Loaded lazily (first read or first
+  // recorded edge) for the same reason crossRunWarps is — a new Agent is built
+  // on every continue, and the loop this measures spans them.
+  private edgesPath!: string;
+  private edgeStore: EdgeStore | null = null;
+  // wq#1178: consecutive door-bounce refusals per (map:warpIndex). The refusal
+  // text alone repeated for 8110 turns; a streak is what earns an escalation
+  // and, past REFUSE_COOLDOWN_AT, a cooldown on the door itself.
+  private doorRefusals = new Map<string, number>();
+  private static readonly REFUSE_DIVERGE_AT = 2;
+  private static readonly REFUSE_COOLDOWN_AT = 3;
+  // wq#1178 item 8: set by live_agent, one per process. onBoot fires on this
+  // agent's first turn — a fresh Agent IS the boot this detects.
+  divergence?: DivergenceTracker;
+  private divergenceBooted = false;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -203,7 +222,115 @@ export class Agent {
     // the same anchor loadSupervisorBans() uses, and correct for probes and
     // one-off drivers that run from a different cwd than the live deployment.
     this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
+    this.edgesPath = edgesFile(join(checkpointDir, "..", "runtime"));
     this.loadSupervisorBans();
+  }
+
+  // ---- wq#1178: warp-edge ledger, annotations, cooldowns ------------------
+
+  /** Lazy load; every access goes through here so a probe or a one-off driver
+   *  never pays for the file it does not use. */
+  private edges(): EdgeStore {
+    if (!this.edgeStore) this.edgeStore = loadEdges(this.edgesPath);
+    return this.edgeStore;
+  }
+
+  /** novelty.ts's cross-run visited-tile count — the "did this buy anything"
+   *  axis both the annotation and the cooldown lift are measured against. */
+  private tilesNow(): number {
+    try { return this.novelty.uniqueTiles(); } catch { return 0; }
+  }
+
+  /** Record a warp that ACTUALLY fired, then let the ledger decide whether the
+   *  pattern now justifies a cooldown. Never throws into the turn. */
+  private noteWarpEdge(from: number, idx: number, to: number): void {
+    try {
+      const s = this.edges();
+      const now = Date.now(), tiles = this.tilesNow();
+      s.edges.push({ from, idx, to, ts: now, tiles });
+      const fresh = assessCooldowns(s.edges, now, tiles, s.cools);
+      s.cools = pruneCooldowns(s.cools, now, tiles).concat(fresh);
+      saveEdges(this.edgesPath, s);
+      for (const c of fresh)
+        this.bus.emit("tool_call", { tool: "warp_cooldown_set", src: "harness",
+          from: c.from, idx: c.idx, to: c.to, reason: c.reason,
+          minutes: Math.round(COOLDOWN_MS / 60_000) });
+    } catch { /* bookkeeping must never break a turn */ }
+  }
+
+  /** Gen 1 warps store 0xFF for "the map you last came in from" (reach.ts).
+   *  Recorded edges hold the map actually LANDED on, so a lookup keyed on the
+   *  raw 255 would never match its own ledger entry. Resolve through wLastMap,
+   *  the same source reach.ts renders from. */
+  private destMapOf(destMap: number | undefined): number | undefined {
+    if (destMap === undefined) return undefined;
+    if (destMap !== LAST_MAP) return destMap;
+    try { return this.emu.mem()[this.sym.addr("wLastMap")]; } catch { return undefined; }
+  }
+
+  /** Live cooldown on this exact directed door, or null. */
+  private warpCooldown(from: number, idx: number, to: number): WarpCooldown | null {
+    try {
+      return activeCooldown(this.edges().cools, edgeKey(from, idx, to), Date.now(), this.tilesNow());
+    } catch { return null; }
+  }
+
+  /** wq#1178: a door the brain keeps firing into a refusal gets the same
+   *  treatment as one that keeps firing into a bounce — the door goes away for
+   *  a while, with an expiry, so the state block stops offering it. */
+  private addRefusalCooldown(from: number, idx: number, to: number, reason: string): void {
+    try {
+      const s = this.edges();
+      const now = Date.now(), tiles = this.tilesNow();
+      const key = edgeKey(from, idx, to);
+      s.cools = pruneCooldowns(s.cools, now, tiles);
+      if (!s.cools.some(c => c.key === key)) {
+        s.cools.push({ key, from, idx, to, untilTs: now + COOLDOWN_MS, tilesAt: tiles,
+                       kind: "refusal", reason });
+        this.bus.emit("tool_call", { tool: "warp_cooldown_set", src: "harness",
+          from, idx, to, reason, minutes: Math.round(COOLDOWN_MS / 60_000) });
+      }
+      saveEdges(this.edgesPath, s);
+    } catch {}
+  }
+
+  /** wq#1178: the agent actually moved. That ends a refusal streak AND the
+   *  cooldowns that streak set — they asked for exactly this and got it. */
+  private onRealMove(): void {
+    this.doorRefusals.clear();
+    try {
+      const s = this.edges();
+      const before = s.cools.length;
+      s.cools = dropRefusalCooldowns(s.cools);
+      if (s.cools.length !== before) saveEdges(this.edgesPath, s);
+    } catch {}
+  }
+
+  /** The WARPS-line note for one warp: usage from the ledger, plus the
+   *  cooldown state when there is one. Null when there is nothing to say. */
+  private warpAnno(v: WarpView, fromMap: number): string | null {
+    try {
+      const dest = this.destMapOf(v.destMap);
+      const cool = dest === undefined ? null : this.warpCooldown(fromMap, v.i, dest);
+      const use = doorAnnotation(this.edges().edges, fromMap, v.i, this.tilesNow());
+      if (cool) return `COOLDOWN ${coolMinutesLeft(cool, Date.now())}m${use ? `, ${use}` : ""}`;
+      return use;
+    } catch { return null; }
+  }
+
+  /** Warps worth naming instead of the one being refused: reachable, not on
+   *  cooldown, not the refused index. Kept short — this rides on a refusal
+   *  the brain is already re-reading. */
+  private warpAlternatives(fromMap: number, exceptIdx: number): string {
+    try {
+      const usable = this.currentWarpViews().filter(v => {
+        if (v.i === exceptIdx || v.state === "unreachable") return false;
+        const dest = this.destMapOf(v.destMap);
+        return dest === undefined || !this.warpCooldown(fromMap, v.i, dest);
+      });
+      if (!usable.length) return "No other warp on this map is usable right now — walk (goto) or take a map edge instead.";
+      return `Usable warps instead: ${usable.map(v => `${v.i}->${v.dest}`).join(", ")}.`;
+    } catch { return ""; }
   }
 
   /** wq#724: read the supervisor directive at boot and enforce map bans. */
@@ -422,7 +549,19 @@ export class Agent {
 
     this.map.build();
     const p = this.nav.posChecked();
-    block += `\n${renderWarps(this.currentWarpViews())}`;
+    // wq#1178: one warpViews() pass (it is an A* per warp), annotated from the
+    // warp-edge ledger, and told which door the player just came in through so
+    // the "standing on it" hint cannot advise an action the executor refuses.
+    {
+      const views = this.currentWarpViews();
+      // The hint only ever speaks about the warp UNDERFOOT, and the refusal
+      // that contradicted it is the tile-equality one (`onTile`), which fires
+      // for whatever warp that is — not necessarily the door arrived through.
+      // Matching the executor's own predicate is the point of the change, so
+      // this is `here` while nothing has moved, and nothing cleverer.
+      const arrivedIdx = this.movedSinceWarp ? undefined : views.find(v => v.state === "here")?.i;
+      block += `\n${renderWarps(views, { arrivedIdx, anno: v => this.warpAnno(v, p.map) })}`;
+    }
     block += `\nMAPGRID (P=you W=warp N=npc B=item ball #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
     // wq#607: item-ball perception — the line renders ONLY when a ball is on
     // this map (no dead prose). Steps via the same astar goto() uses, so
@@ -592,6 +731,13 @@ export class Agent {
               }
             }
           }
+          // wq#1178: if this goto fires a warp, it fires the one UNDER THE
+          // TARGET TILE — astar never crosses an unrelated warp tile (reach.ts)
+          // and exempts only the goal cell, so the target is the only door a
+          // goto can trip. Resolved from the departure map's geometry BEFORE
+          // the walk, because after it this.map describes somewhere else. No
+          // build() here: observe() already built this map this turn.
+          const gotoDoorIdx = this.map.warps.findIndex(cw => cw.x === tx && cw.y === ty);
           const r = await this.nav.goto(tx, ty);
           // wq#487: a goto cut short by a battle becomes a harness-owned goal;
           // any other outcome retires it. Must run before the returns below.
@@ -639,10 +785,12 @@ export class Agent {
             this.justWarpedBack = backDoors.length === 1
               ? { map: dst, index: backDoors[0].ci }
               : undefined;
+            if (gotoDoorIdx >= 0) this.noteWarpEdge(st0.map, gotoDoorIdx, dst);
           } else {
             this.justWarpedBack = undefined;
           }
           this.movedSinceWarp = r !== "warped";
+          this.onRealMove();   // wq#1178: the streak (and its cooldowns) are about NOT moving
           return `goto -> ${r} now ${JSON.stringify(this.nav.posChecked())}`;
         }
         case "enter_warp": {
@@ -684,6 +832,26 @@ export class Agent {
               `stuck supervisor (navigation loop detected). Pick a different destination ` +
               `or pursue a different objective. The ban lifts when story progress advances.`;
           }
+          // wq#1178: time-boxed cooldown on a directed door — set either by an
+          // alternating A->B/B->A pair that bought no new ground, or by this
+          // door refusing the same request REFUSE_COOLDOWN_AT times running.
+          // Checked BEFORE the door-bounce refusal below because it is the
+          // stronger statement: it carries an expiry and names alternatives,
+          // where the bounce text alone was re-read 8110 times without effect.
+          {
+            const fromMap = this.nav.posChecked().map;
+            const dest = this.destMapOf(w.destMap);
+            const cool = dest === undefined
+              ? null : this.warpCooldown(fromMap, Number(args[0]), dest);
+            if (cool) {
+              this.bus.emit("tool_call", { tool: "warp_cooldown_refused", src: "harness",
+                from: cool.from, idx: cool.idx, to: cool.to, reason: cool.reason });
+              return `enter_warp: refused - warp ${args[0]} -> map${cool.to} is on COOLDOWN for another ` +
+                `${coolMinutesLeft(cool, Date.now())} min (${cool.reason}). This is TEMPORARY and not a` +
+                ` claim the warp is wrong: it expires on its own, and reaching ANY tile you have not` +
+                ` stood on before lifts it immediately. ${this.warpAlternatives(fromMap, Number(args[0]))}`;
+            }
+          }
           // wq#674: the door tile you just warped IN on is ALSO the warp back
           // out (true of every gym/building entrance) - firing enter_warp on
           // it again with zero steps taken since arrival just replays your
@@ -711,11 +879,38 @@ export class Agent {
               this.justWarpedBack.map === p.map &&
               this.justWarpedBack.index === Number(args[0]);
             if (onTile || sameDoor) {
-              return `enter_warp: refused - this is the door you just arrived through and you ` +
+              // wq#1178: the refusal above is correct and was ignored 8110
+              // turns running — 60% of every turn in the 407h Route 25 stall
+              // came back with this exact string. A message that has already
+              // failed N times is not made truer by repetition; from the
+              // second refusal it carries concrete alternatives, and from the
+              // third the door goes on a cooldown so the WARPS line stops
+              // advertising it at all. Both escalations expire (the streak on
+              // the next real step, the cooldown on time or novelty).
+              const key = `${p.map}:${Number(args[0])}`;
+              const n = (this.doorRefusals.get(key) ?? 0) + 1;
+              this.doorRefusals.set(key, n);
+              this.bus.emit("tool_call", { tool: "door_bounce_refused", src: "harness",
+                map: p.map, idx: Number(args[0]), streak: n });
+              let msg = `enter_warp: refused - this is the door you just arrived through and you ` +
                 `have not moved since. Firing it again replays your OWN arrival and sends you ` +
                 `right back out. goto() a DIFFERENT tile first to actually go somewhere (wq#674, wq#1086).`;
+              if (n >= Agent.REFUSE_DIVERGE_AT)
+                msg += ` You have asked for this same door ${n} times in a row and the answer will not` +
+                  ` change until you MOVE. ${this.warpAlternatives(p.map, Number(args[0]))}` +
+                  ` If nothing here is usable, leave by a map edge (leave_edge) or pick a goto target` +
+                  ` from the MAPGRID.`;
+              const dest = this.destMapOf(w.destMap);
+              if (n >= Agent.REFUSE_COOLDOWN_AT && dest !== undefined) {
+                this.addRefusalCooldown(p.map, Number(args[0]), dest,
+                  `refused ${n}x in a row without moving`);
+                msg += ` This door is now on a ${Math.round(COOLDOWN_MS / 60_000)}-minute cooldown;` +
+                  ` any new tile you reach lifts it early.`;
+              }
+              return msg;
             }
           }
+          const warpedFrom = this.nav.posChecked().map;   // wq#1178: edge origin, read before it changes
           const r = await this.nav.enterWarp(w);
           // wq#487: enterWarp walks to the tile first, so a wild encounter
           // interrupts it exactly like a goto - same ownership rules.
@@ -729,6 +924,11 @@ export class Agent {
             // its partner on the map we just landed on. No ambiguity to guess
             // around, unlike the goto branch above.
             this.justWarpedBack = { map: this.nav.posChecked().map, index: w.destWarp };
+            // wq#1178: the DESTINATION is read, never taken from w.destMap —
+            // 0xFF means "the map you came in from" and only the landing tells
+            // the truth about where that was.
+            this.onRealMove();
+            this.noteWarpEdge(warpedFrom, Number(args[0]), this.nav.posChecked().map);
           }
           // wq#517: record an arrival ONLY when the warp actually happened.
           // This call used to be unconditional, so an enter_warp that returned
@@ -768,6 +968,7 @@ export class Agent {
           // having moved, same as a successful goto.
           this.movedSinceWarp = true;
           this.justWarpedBack = undefined; // wq#1086: stale identity, no longer relevant once truly moved
+          this.onRealMove();               // wq#1178: a real move ends the streak
           return `leave_edge -> ${r} now ${JSON.stringify(this.nav.posChecked())}`;
         }
         case "interact": {
@@ -923,9 +1124,16 @@ export class Agent {
     this.map.build();
     const start = (this.noActStreak * 2) % Math.max(1, this.map.warps.length);
     for (let i = 0; i < this.map.warps.length; i++) {
-      const w = this.map.warps[(start + i) % this.map.warps.length];
+      const idx = (start + i) % this.map.warps.length;
+      const w = this.map.warps[idx];
+      const from = this.nav.posChecked().map;   // wq#1178: edge origin, before it changes
       const r = await this.nav.enterWarp(w);
-      if (r === "warped") { await this.notePotentialOscillation(this.reader.read().map); return `enter_warp->${w.destMap} auto`; }
+      if (r === "warped") {
+        const to = this.reader.read().map;
+        this.noteWarpEdge(from, idx, to);   // wq#1178: the unwedge path warps for real too
+        await this.notePotentialOscillation(to);
+        return `enter_warp->${w.destMap} auto`;
+      }
       if (r === "battle") { await this.bat.run(() => 0); return "battle auto"; }
     }
     // no warp took: fall back to rotating edge pushes
@@ -1120,6 +1328,19 @@ export class Agent {
       if (goal) stateBlock += `\n${goal}`;
     }
 
+    // wq#1178 item 8: a NEW Agent is exactly what "a boot" means here —
+    // live_agent constructs one per continue, reboot and crash recovery — so
+    // the boot ledger is stamped on this agent's first turn, from the live
+    // state rather than from whichever checkpoint file happened to win.
+    if (this.divergence) {
+      if (!this.divergenceBooted) {
+        this.divergenceBooted = true;
+        this.divergence.onBoot(before, this.reader.storyScore(), idx => this.reader.eventFlag(idx));
+      }
+      const diverge = this.divergence.directive();
+      if (diverge) stateBlock += `\n${diverge}`;
+    }
+
     let think = "", act = "", result = "";
     let plannedTurn = false;
     const forced = await this.battleLockForce();
@@ -1232,7 +1453,13 @@ export class Agent {
     // arriving map's id (the wq#699 class) and invent tiles that do not exist.
     // Wrapped because bookkeeping may never break a turn; the tracker's own file
     // I/O is fail-soft too, so this catch is for arithmetic on a torn read.
-    try { this.novelty.observe(this.turn, after); } catch { /* observe-only */ }
+    try {
+      const sample = this.novelty.observe(this.turn, after);
+      // wq#1178: the divergence ledger records the composite P this run booted
+      // at and where it got to, so the NEXT boot from this same state can be
+      // told what the last one achieved instead of guessing.
+      this.divergence?.noteProgress(sample.P, this.turn);
+    } catch { /* observe-only */ }
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;
     this.hist.push(line);
