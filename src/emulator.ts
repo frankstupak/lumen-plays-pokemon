@@ -24,9 +24,23 @@ export class Emulator {
   onFrame: ((png: Buffer) => void) | null = null;
   paceMs = 0;                  // ms per 6 frames; 100 = realtime, 50 = 2x, 0 = unpaced
   private frameCount = 0;
+  /**
+   * wq#511: opt-in per-frame hook, installed by LINK drivers.
+   *
+   * A remote link lives in node's event loop, and node only reads a socket on a
+   * MACROTASK. A core stepping through `await framesAsync(n)` yields microtasks
+   * only, so it starves its own link for the whole slice — fatal during the walk
+   * to the trade table, where the Cable Club ROM clocks the partner's position
+   * every frame. Navigation and dialog run through here, so this is the one hook
+   * that reaches them without every helper learning about the bridge.
+   *
+   * The pacer is expected to end in setImmediate (check phase, AFTER poll).
+   */
+  framePacer: (() => Promise<void>) | null = null;
   async framesAsync(n: number) {
     for (let i = 0; i < n; i++) {
       this.gb.doFrame(); this.frameCount++;
+      if (this.framePacer) await this.framePacer();
       if (this.frameCount % 6 === 0) {
         if (this.onFrame) this.onFrame(this.screenPngBuffer());
         if (this.paceMs) await new Promise(r => setTimeout(r, this.paceMs));
