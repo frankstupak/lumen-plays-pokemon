@@ -88,6 +88,26 @@ export const CFG = {
   // call (see src/transit.ts). Deliberately INDEPENDENT of autoTurnRatio: this
   // is a targeted loop-breaker, not a rate lever, so it works at ratio=0.
   // ON by default; LPP_TRANSIT=0 is a full revert with no redeploy.
+  // wq#1181 WINNABILITY VERDICT (roadmap item 5). The damage calc runs every
+  // battle turn and renders its verdict to the brain; `force` is what lets it
+  // spend a real action (a wild UNWINNABLE flee) instead of only advising.
+  //
+  // force DEFAULTS OFF ON PURPOSE. The roadmap rates this Medium risk and asks
+  // for a soak week of advisory-only first: with force=0 every turn still emits
+  // a `winnability` event carrying the verdict AND the action it withheld, so
+  // the soak produces exactly the log needed to decide whether flipping
+  // LPP_WINNABILITY_FORCE=1 is safe. Flipping it is an env change in the
+  // systemd unit — no redeploy, and no code change to revert.
+  winnability: {
+    advisory: envN0("LPP_WINNABILITY", 1) > 0,
+    force: envN0("LPP_WINNABILITY_FORCE", 0) > 0,
+  },
+  // wq#1181 LOSS LEDGER + engagement gates (roadmap item 6). ON by default:
+  // unlike the verdict above it cannot act on its own, it can only refuse a
+  // re-entry the agent has already proven it loses, and every gate carries
+  // three expiries plus a fire cap (ledger.ts). LPP_FIGHT_GATE=0 reverts to
+  // record-only, which still feeds the ledger file for analysis.
+  fightGate: envN0("LPP_FIGHT_GATE", 1) > 0,
   transitPolicy: envN0("LPP_TRANSIT", 1) > 0,
   transitResumeCap: envN("LPP_TRANSIT_RESUME_CAP", 5),
   // wq#487: when an XP grind is the point (pre-gym levelling), transit must NOT

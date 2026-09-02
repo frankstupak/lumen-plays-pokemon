@@ -26,12 +26,16 @@ import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
 import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
-import { MISTY_MIN_LEVEL, mistyGymEntryRefusal } from "./guidance";        // wq#516/#674
+import { MISTY_MIN_LEVEL, mistyGymEntryRefusal,
+         engagementGateLine, grindPressure, gateLiftedLine } from "./guidance";  // wq#516/#674/#1181
 import { catchAdvice, WANTED } from "./catch_policy";
-import { assessBattleLock } from "./softlock";
+import { assessBattleLock, assessWinnability } from "./softlock";
+import { FightLedger, grindJustified, GateCtx } from "./ledger";   // wq#1181 item 6
+import { Winnability } from "./calc";                              // wq#1181 item 5
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
-import { NoveltyTracker } from "./novelty";   // wq#1179 (observe-only)
+import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
+import { CENTER_MAPS } from "./centers";
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
@@ -190,6 +194,19 @@ export class Agent {
   // Assigned in the constructor body rather than as a field initializer because
   // it needs `checkpointDir` and `bus`, which are parameter properties.
   private novelty!: NoveltyTracker;
+  // wq#1181: the fight loss ledger + its gates. Unlike novelty above this one
+  // IS read back — enter_warp consults it (CFG.fightGate) — which is why every
+  // gate it hands out carries three expiries and a fire cap (ledger.ts header).
+  private ledger!: FightLedger;
+  // Identity of the battle currently in progress, captured on the turn it
+  // starts: wCurOpponent/wTrainerNo are only meaningful while the fight is
+  // loaded, and the outcome has to be recorded AFTER they have been cleared.
+  private btId: { opponent: number; trainerNo: number; map: number;
+                  levelSum: number; badges: number;
+                  money: number; grace: number } | null = null;
+  // wq#1181: consecutive turns the grind governor has called grinding
+  // unjustified. Drives the escalating pressure line, nothing else.
+  private grindUnjustified = 0;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -203,6 +220,7 @@ export class Agent {
     // the same anchor loadSupervisorBans() uses, and correct for probes and
     // one-off drivers that run from a different cwd than the live deployment.
     this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
+    this.ledger = new FightLedger({ dir: join(checkpointDir, "..", "runtime"), bus });
     this.loadSupervisorBans();
   }
 
@@ -350,6 +368,17 @@ export class Agent {
           b.myMaxHp > 0 ? b.myHp / b.myMaxHp : 1);
         if (adv) block += `\n${adv}`;
       }
+      // wq#1181: the damage calc's read on this exchange. This is the line the
+      // level-number gates were standing in for — MISTY_MIN_LEVEL says "L30 is
+      // enough", the calc says how many turns each side actually needs.
+      const win = this.winnabilityNow();
+      if (win) {
+        block += `\nWINNABILITY ${win.verdict}${win.confidence === "low" ? "?" : ""}: ${win.reason}`;
+        if (win.bestSlot >= 0)
+          block += `\nBEST BY DAMAGE slot ${win.bestSlot} (${win.bestName}), ~${win.myDmg} dmg/turn`;
+        const wa = assessWinnability(win, !trainer, CFG.winnability.force);
+        if (wa.directive) block += `\n${wa.directive}`;
+      }
       const lock = assessBattleLock(this.btTurns, this.btStall, !trainer);
       if (lock.directive) block += `\n${lock.directive}`;
       block += `\nBAG ${this.items.bagLine()}`;
@@ -361,6 +390,27 @@ export class Agent {
     // written to runtime/supervisor_directive.json and never read (wq#724 wired
     // ban enforcement but not this). Prefixed "!!" so it reads as high-priority.
     if (this.supervisorPin) block += `\n!! ${this.supervisorPin}`;
+
+    // wq#1181 (roadmap item 6): the grind governor. Evaluated ONLY while a loss
+    // gate is live — that is the state in which the harness itself put the
+    // agent into a grind, so it is the only state in which "is this grind still
+    // paying" is a question about grinding rather than about ordinary travel
+    // (levelSum is flat for most story turns, and pressuring those would be
+    // noise). The other edge, the gate LIFTING, is announced for a few turns by
+    // recentLift() below: that is the moment grinding stops being justified.
+    {
+      const gate = this.ledger.anyLiveGate(this.gateCtx());
+      if (gate.blocked) {
+        const g = grindJustified(this.novelty.recent(), { gated: true });
+        this.grindUnjustified = g.justified ? 0 : this.grindUnjustified + 1;
+        const line = grindPressure(g, this.grindUnjustified, this.storyObjective());
+        if (line) block += `\n${line}`;
+      } else {
+        this.grindUnjustified = 0;
+        const lift = this.ledger.recentLift();
+        if (lift) block += `\n${gateLiftedLine(this.mapLabel(lift.map) ?? `map${lift.map}`, lift.reason)}`;
+      }
+    }
 
     const inCenter = this.emu.mem()[this.sym.addr("wCurMapTileset")] === 6;  // POKECENTER tileset
     const lead = st.party[0];
@@ -683,6 +733,19 @@ export class Agent {
             return `enter_warp: refused — ${label} (map${w.destMap}) is BANNED by the ` +
               `stuck supervisor (navigation loop detected). Pick a different destination ` +
               `or pursue a different objective. The ban lifts when story progress advances.`;
+          }
+          // wq#1181 (roadmap item 6): the generalized loss gate. Same principle
+          // as the Misty gate above and, unlike it, derived from what actually
+          // happened rather than from a hand-picked level threshold — and it
+          // expires four different ways (ledger.ts), because a gate that cannot
+          // expire is the wq#517 wedge with a new name.
+          if (CFG.fightGate && w.destMap !== undefined) {
+            const g = this.ledger.gateForMap(w.destMap, this.gateCtx());
+            if (g.blocked && g.key) {
+              this.ledger.noteFire(g.key);
+              const label = this.mapLabel(w.destMap) ?? `map${w.destMap}`;
+              return `enter_warp: ${engagementGateLine(g, `${label} (map${w.destMap})`)}`;
+            }
           }
           // wq#674: the door tile you just warped IN on is ALSO the warp back
           // out (true of every gym/building entrance) - firing enter_warp on
@@ -1050,6 +1113,16 @@ export class Agent {
       const w = this.map.warps.find(v => v.x === goal.x && v.y === goal.y &&
         (goal.destMap === undefined || v.destMap === goal.destMap));
       if (!w) { this.transit.clear(); return null; }   // warp gone: brain re-reads WARPS
+      // wq#1181: this is the OTHER way into a warp — a goal the brain set
+      // before the loss, resumed by the harness without passing the dispatch
+      // gate. A gate the agent can walk around by being interrupted is not a
+      // gate, so the same refusal applies here; the goal is dropped and handed
+      // back rather than refused in prose, because nobody is asking.
+      if (CFG.fightGate && w.destMap !== undefined &&
+          this.ledger.gateForMap(w.destMap, this.gateCtx()).blocked) {
+        this.transit.clear();
+        return null;
+      }
       this.bus.emit("tool_call", { tool: "enter_warp", args: [`${goal.x},${goal.y}`], src: "transit" });
       const rw = await this.nav.enterWarp(w);
       this.transit.onWarp(w, rw, this.nav.posChecked().map);
@@ -1064,14 +1137,101 @@ export class Agent {
 
   /** wq#423: per-battle counters. HP-only signature: PP is deliberately
    *  excluded so a move that fires but never lands (Normal vs Ghost) still
-   *  reads as a stall. Reset the moment the battle is over. */
+   *  reads as a stall. Reset the moment the battle is over.
+   *  wq#1181: also opens and closes the loss-ledger record for the fight. */
   private trackBattleLock(): void {
-    if (!this.bat.active()) { this.btTurns = 0; this.btStall = 0; this.btLastSig = ""; return; }
+    if (!this.bat.active()) {
+      this.btTurns = 0; this.btStall = 0; this.btLastSig = "";
+      this.resolveFight();
+      return;
+    }
     const b = this.bat.state();
     this.btTurns++;
     const sig = `${b.mySpecies}:${b.myHp}|${b.foeSpecies}:${b.foeHp}`;
     if (sig === this.btLastSig) this.btStall++;
     else { this.btStall = 0; this.btLastSig = sig; }
+    if (this.btTurns === 1) this.openFight();
+  }
+
+  /** wq#1181: capture who this fight is against while the fight is loaded.
+   *  wCurOpponent/wTrainerNo are cleared when it ends, and a LOSS teleports the
+   *  player to a Pokemon Center, so neither the identity nor the map survives
+   *  to the turn the outcome is known. Money is captured for the same reason
+   *  the blackout detector uses it (blackout.ts): a Gen 1 white-out halves the
+   *  purse and that is the one signature a normal Center heal cannot fake. */
+  private openFight(): void {
+    // A pending outcome from the previous fight must be settled before its slot
+    // is reused, or a loss whose white-out landed inside the grace window would
+    // vanish silently — exactly the record the gate depends on.
+    this.resolveFight(true);
+    try {
+      const id = this.bat.fightId();
+      if (!id.trainer) { this.btId = null; return; }   // see resolveFight()
+      const st = this.reader.read();
+      this.btId = {
+        opponent: id.opponent, trainerNo: id.trainerNo, map: st.map,
+        levelSum: levelSum(st), badges: st.badgeCount,
+        money: st.money, grace: 0,
+      };
+    } catch { this.btId = null; }
+  }
+
+  /**
+   * wq#1181: decide how the fight that just ended went, and record it.
+   *
+   * ONLY TRAINER FIGHTS ARE LEDGERED. A gate is a refusal to walk back into a
+   * place, and wild encounters have no place to refuse — gating Route 24 grass
+   * because a Rattata got lucky would ban the very grind the gate is asking
+   * for. Trainer fights are also the ones that cannot be fled, so an outcome
+   * there is a real verdict on the party rather than a policy choice.
+   *
+   * The loss signature is the white-out, not "party was fainted": the fainted
+   * window closes inside one poll interval and is unobservable at one read per
+   * turn (blackout.ts measured 0 sightings in 1285 reads). Money halving plus a
+   * Centre/restored corroborator is what fires, and it is given a few turns of
+   * grace because the halving lands behind the white-out dialog.
+   */
+  private resolveFight(final = false): void {
+    const f = this.btId;
+    if (!f) return;
+    try {
+      const st = this.reader.read();
+      const halved = f.money > 0 && st.money <= Math.floor(f.money / 2);
+      const restored = st.party.length > 0 && st.party.every(p => p.maxHp > 0 && p.hp === p.maxHp);
+      const wiped = st.party.length > 0 && st.party.every(p => p.maxHp > 0 && p.hp <= 0);
+      const lost = wiped || (halved && (CENTER_MAPS.has(st.map) || restored));
+      if (!lost && !final && f.grace < 3) { f.grace++; return; }   // the halving lags the fight
+      this.ledger.record({
+        ts: Date.now(), turn: this.turn, outcome: lost ? "loss" : "win",
+        opponent: f.opponent, trainerNo: f.trainerNo, map: f.map,
+        levelSum: f.levelSum, badges: f.badges,
+      });
+    } catch { /* a bookkeeping failure must never break a turn */ }
+    this.btId = null;
+  }
+
+  /** wq#1181: the verdict for the exchange on screen, or null outside a battle
+   *  / on a frame whose RAM is mid-load. Cheap (array indexes + arithmetic),
+   *  and CFG.winnability.advisory turns the whole feature off in one env flip. */
+  private winnabilityNow(): Winnability | null {
+    if (!CFG.winnability.advisory) return null;
+    try { return this.bat.winnability(); } catch { return null; }
+  }
+
+  /** wq#1181: where the grind governor points when it says stop. The notepad
+   *  already carries the stage's ordered NEXT OBJECTIVE (guidance.ts) and the
+   *  corridor pack carries the route, so this names them rather than inventing
+   *  a third, competing objective. */
+  private storyObjective(): string {
+    return "the NEXT OBJECTIVE line in your notes - heal, then advance the story " +
+      "(next gym / next story map), not more wild encounters.";
+  }
+
+  /** wq#1181: what the gates need to know about right now. */
+  private gateCtx(estimate?: GateCtx["estimate"]): GateCtx {
+    let ls = 0;
+    try { ls = levelSum(this.reader.read()); } catch {}
+    return { levelSum: ls, now: Date.now(), estimate };
   }
 
   /** wq#423: deterministic escalation. Returns a result line when the harness
@@ -1080,6 +1240,34 @@ export class Agent {
     if (!this.bat.active()) return null;
     const b = this.bat.state();
     const wild = b.inBattle !== 2;
+
+    // wq#1181 (roadmap item 5): the winnability half of this escalation. The
+    // stall counters below need 15 wasted turns to notice a hopeless fight; the
+    // damage calc knows on turn 1. ADVISORY FOR A SOAK WEEK: with
+    // CFG.winnability.force off, this emits the verdict and the action it
+    // withheld and then falls through to the counters exactly as before, which
+    // is the evidence the flip is supposed to be argued from.
+    const win = this.winnabilityNow();
+    if (win) {
+      const wa = assessWinnability(win, wild, CFG.winnability.force);
+      this.bus.emit("winnability", {
+        turn: this.turn, battleTurn: this.btTurns, wild,
+        verdict: win.verdict, confidence: win.confidence,
+        myDmg: win.myDmg, foeDmg: win.foeDmg, myTurns: win.myTurns,
+        foeTurns: win.foeTurns, clearTurns: win.clearTurns, faster: win.faster,
+        bestSlot: win.bestSlot, bestName: win.bestName, eff: win.eff,
+        foe: b.foeSpecies, foeLevel: b.foeLevel,
+        force: wa.force, withheld: wa.withheld, reason: win.reason,
+      });
+      if (wa.force === "flee") {
+        const r = await this.bat.flee();
+        if (r === "fled")
+          return `winnability: forced flee() on turn ${this.btTurns} — UNWINNABLE (${win.reason})`;
+        // trapped/failed: the fight continues and the stall counters below own
+        // it from here, same handback the wq#423 forced flee already uses.
+      }
+    }
+
     const lock = assessBattleLock(this.btTurns, this.btStall, wild);
     if (lock.terminal) {
       this.bus.emit("battle_softlock", { stage: "terminal", turns: this.btTurns, stall: this.btStall, wild,
