@@ -582,7 +582,7 @@ export class Agent {
     if (this.ceiling.record(tool, argsKey, cpos, result)) {
       // one board-visible line: lpp-sentinel forwards retry_ceiling events
       this.bus.emit("tool_call", { tool: "retry_ceiling",
-        line: `${tool}(${argsKey}) failed its verify ${CEILING}x at map${cpos.map} ` +
+        line: `${tool}(${argsKey}) failed or was refused ${CEILING}x at map${cpos.map} ` +
               `(${cpos.x},${cpos.y}) — verbatim retries stopped`, src: "harness" });
       if (!this.bat.active()) {
         try {
@@ -593,8 +593,8 @@ export class Agent {
           await this.maybeConsultVision(cpos, grid);
         } catch { /* a geometry failure must not kill the turn */ }
       }
-      return result + `\n! RETRY CEILING (${CEILING}x): this exact action has now failed its own ` +
-        `verify ${CEILING} times from this tile and will be REFUSED verbatim. Do NOT repeat it. ` +
+      return result + `\n! RETRY CEILING (${CEILING}x): this exact action has now failed or been ` +
+        `refused ${CEILING} times from this tile and will be REFUSED verbatim. Do NOT repeat it. ` +
         `Reconsider the goal — move at least one tile, use a different tool, or pick a new target.`;
     }
     return result;
