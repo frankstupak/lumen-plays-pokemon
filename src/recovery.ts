@@ -15,7 +15,9 @@
 // returns null. Normal exploration is never touched.
 import { STORY_FLAGS, GameState } from "./state";
 import { EventBus } from "./events";
-import { readdirSync, readFileSync } from "fs";
+import { levelSum, StateLike } from "./novelty";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname } from "path";
 
 /** storyScore->corridor mapping (the "small table" of wq#477): for the
  *  FURTHEST story milestone attained, where the campaign frontier is.
@@ -55,6 +57,19 @@ export function corridorPoint(flagAt: (idx: number) => boolean): CorridorPoint {
     if (idx !== undefined && flagAt(idx)) return c;
   }
   return FALLBACK;
+}
+
+/** The milestone AFTER the current corridor point — CORRIDOR is ordered
+ *  most-advanced-first, so that is the entry above the match. Null at the top
+ *  of the list. Used by the divergence directive (wq#1178) to name a concrete
+ *  alternative objective rather than repeating the objective that just
+ *  produced nothing. */
+export function corridorNext(flagAt: (idx: number) => boolean): CorridorPoint | null {
+  for (let i = 0; i < CORRIDOR.length; i++) {
+    const idx = FLAG_IDX.get(CORRIDOR[i].afterFlag);
+    if (idx !== undefined && flagAt(idx)) return i > 0 ? CORRIDOR[i - 1] : null;
+  }
+  return CORRIDOR[CORRIDOR.length - 1] ?? null;
 }
 
 /** Seed the campaign-level max storyScore from existing checkpoint sidecars
@@ -125,5 +140,147 @@ export class RecoveryTracker {
       ? "You BLACKED OUT and respawned at the last Pokemon Center"
       : `You resumed BEHIND your best progress (story ${score}/${this.maxStoryScore})`;
     return `!! RECOVERY OBJECTIVE (top priority): ${why}. Return to the frontier: ${t.desc}. Target map${t.targetMap}. Heal if needed, then head straight there - no detours.`;
+  }
+}
+
+// ---- wq#1178 item 8: divergence on repeat --------------------------------
+//
+// THE FAILURE THIS ADDRESSES. live_agent builds a NEW Agent inside its outer
+// `for (;;)` loop on every continue, reboot and crash-recovery, each time from
+// the newest checkpoint. When that checkpoint keeps describing the SAME game
+// state, the brain gets the same state block, the same guidance and the same
+// history shape it had last time, and does the same thing — which is how a
+// frontier sits at one map for 407 hours across 8110 turns while every
+// individual turn looks locally reasonable. Demoting the checkpoint does not
+// help: the state, not the file, is what replays.
+//
+// So the inputs have to change. When a state identity boots a SECOND time,
+// this injects a mandatory alternative objective naming the next corridor
+// milestone, and states the measured outcome of the previous run from that
+// exact state (its dP). This is prose in the state block, not a ban: it
+// changes what the brain is asked to do without forbidding any move.
+//
+// IDENTITY, NOT FILENAME. The key is (map, x, y, storyScore, badges,
+// levelSum) — the same tuple the plan's item 1 puts in the resume sidecar. A
+// fresh checkpoint written at the same position and story is the identical
+// trap under a new name, and comparing paths cannot see that.
+
+/** Boot identity. Coordinates are included because "same map, different side
+ *  of it" is a genuinely different situation. */
+export function stateKey(st: StateLike, storyScore: number): string {
+  return [st.map, st.x, st.y, storyScore, st.badgeCount, levelSum(st)].join(":");
+}
+
+export interface BootRecord {
+  key: string;
+  ts: number;
+  bootP: number | null;   // composite P at the first sample of that run
+  endP: number | null;    // composite P at its last recorded sample
+  turns: number;
+}
+
+/** Boots retained. Bounded like every other runtime file here. */
+export const KEEP_BOOTS = 32;
+/** Progress writes are cheap but not free; the ledger only needs to be roughly
+ *  current, and it is always flushed on the boot that follows. */
+const FLUSH_EVERY = 20;
+
+export function bootLedgerFile(dir?: string): string {
+  return process.env.LPP_BOOT_LEDGER ?? `${dir ?? `${process.cwd()}/runtime`}/boot_states.json`;
+}
+
+export function loadBoots(file: string): BootRecord[] {
+  try {
+    const s = JSON.parse(readFileSync(file, "utf8")) as { boots?: BootRecord[] };
+    if (Array.isArray(s?.boots))
+      return s.boots.filter(b => b && typeof b.key === "string").slice(-KEEP_BOOTS);
+  } catch {}
+  return [];
+}
+
+export function saveBoots(file: string, boots: BootRecord[]): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ v: 1, boots: boots.slice(-KEEP_BOOTS) }));
+  } catch {}
+}
+
+/** What a previous run starting from this same key achieved, in composite P.
+ *  Null when no earlier boot from that key finished a measurable run. */
+export function priorOutcome(boots: BootRecord[], key: string): { dP: number; turns: number } | null {
+  for (let i = boots.length - 1; i >= 0; i--) {
+    const b = boots[i];
+    if (b.key !== key || b.bootP === null || b.endP === null) continue;
+    return { dP: b.endP - b.bootP, turns: b.turns };
+  }
+  return null;
+}
+
+export class DivergenceTracker {
+  private boots: BootRecord[];
+  private cur: BootRecord | null = null;
+  private repeat = 0;
+  private prior: { dP: number; turns: number } | null = null;
+  private alt: CorridorPoint | null = null;
+  private here: CorridorPoint | null = null;
+  private sinceFlush = 0;
+
+  constructor(private file: string, private bus?: EventBus) {
+    this.boots = loadBoots(file);
+  }
+
+  /** Called once per Agent construction, before the first brain turn. */
+  onBoot(st: StateLike, storyScore: number, flagAt: (idx: number) => boolean): void {
+    const key = stateKey(st, storyScore);
+    this.repeat = this.boots.filter(b => b.key === key).length;   // 0 == first time
+    this.prior = this.repeat > 0 ? priorOutcome(this.boots, key) : null;
+    this.here = corridorPoint(flagAt);
+    this.alt = corridorNext(flagAt);
+    this.cur = { key, ts: Date.now(), bootP: null, endP: null, turns: 0 };
+    this.boots.push(this.cur);
+    saveBoots(this.file, this.boots);
+    if (this.repeat > 0) {
+      this.bus?.emit("regression", {
+        stage: "detected", reason: "state_repeat", key,
+        repeat: this.repeat + 1, priorDP: this.prior?.dP ?? null,
+        priorTurns: this.prior?.turns ?? null,
+        altMap: this.alt?.targetMap ?? null,
+      });
+    }
+  }
+
+  /** Once per turn with the composite P sample (novelty.ts). Fills bootP on the
+   *  first call and tracks endP for the NEXT boot from this key to read. */
+  noteProgress(P: number, turn: number): void {
+    if (!this.cur) return;
+    if (this.cur.bootP === null) this.cur.bootP = P;
+    this.cur.endP = P;
+    this.cur.turns = turn;
+    if (++this.sinceFlush >= FLUSH_EVERY) { this.sinceFlush = 0; saveBoots(this.file, this.boots); }
+  }
+
+  /** The line to append to the state block, or null. Clears itself the moment
+   *  this run's composite P rises above where it booted: the objective exists
+   *  to break a repeat, and a repeat that has started producing is over. */
+  directive(): string | null {
+    if (!this.cur || this.repeat === 0) return null;
+    if (this.cur.bootP !== null && this.cur.endP !== null && this.cur.endP > this.cur.bootP) {
+      this.bus?.emit("regression", { stage: "cleared", reason: "state_repeat",
+        key: this.cur.key, gained: this.cur.endP - this.cur.bootP });
+      this.repeat = 0;
+      return null;
+    }
+    const outcome = this.prior
+      ? `Your previous run from this exact state ran ${this.prior.turns} turns and achieved dP=${this.prior.dP >= 0 ? "+" : ""}${this.prior.dP}.`
+      : `A previous run has already started from this exact state.`;
+    const target = this.alt ?? this.here;
+    const where = target
+      ? ` MANDATORY ALTERNATIVE OBJECTIVE: ${target.desc} (map${target.targetMap}).`
+      : "";
+    return `!! DIVERGENCE REQUIRED (boot ${this.repeat + 1} from the same game state:` +
+      ` map/position/story/badges/levels all identical). ${outcome}` +
+      ` DO NOT REPEAT THAT PLAN — the same inputs produced the same nothing.${where}` +
+      ` Pick a DIFFERENT first action than last time: a warp index you have not used from here,` +
+      ` a map edge, or a trainer you have not fought.`;
   }
 }

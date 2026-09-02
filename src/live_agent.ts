@@ -20,7 +20,7 @@ import { pickResume } from "./resume";
 import { Notepad } from "./notepad";   // wq#486
 import { makeBorrowGuard } from "./borrow_guard";   // wq#488
 import { ceruleanGuidance, hasTypeCounter } from "./guidance";   // wq#478, wq#696
-import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
+import { RecoveryTracker, seedMaxFromSidecars, DivergenceTracker, bootLedgerFile } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
 import { CFG } from "./config";   // wq#476: mapStepBudgets
@@ -464,6 +464,10 @@ function ceruleanApproachPack(map: number): string {
   // reboots), seeded from sidecars so restarts onto older checkpoints are
   // still detected as regressions.
   const recovery = new RecoveryTracker(seedMaxFromSidecars([SAVES, CKPTS]));
+  // wq#1178 item 8: one divergence ledger for the process, persisted under
+  // runtime/ so it also spans SERVICE restarts — the repeat it detects is a
+  // state booting twice, and the second boot is usually a whole new process.
+  const divergence = new DivergenceTracker(bootLedgerFile(RUNTIME), bus);
   // wq#486: ONE notepad for the whole process — persists across in-process
   // continues AND service restarts (bind restores runtime/notepad.txt). The
   // brain's notes survive; the guidance channel is re-derived each boot.
@@ -591,6 +595,7 @@ function ceruleanApproachPack(map: number): string {
     if (phaseWarnings.length) bus.emit("turn_summary", { line: `PHASE WARN: ${phaseWarnings.join("; ")}` });
     refreshCorridorGuidance();
     agent.recovery = recovery;   // wq#477: regression detector + goal injection
+    agent.divergence = divergence;   // wq#1178: divergence-on-repeat objective injection
     liveAgent = agent;   // wq#476: expose to step-budget watchdog
     // wq#478/486: dynamic Cerulean/Misty stage guidance — now its OWN guidance
     // section, refreshed every turn (money/potions/level move constantly). No

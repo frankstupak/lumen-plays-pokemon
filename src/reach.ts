@@ -69,23 +69,43 @@ export function warpViews(map: MapModel, px: number, py: number, lastMap: number
   });
 }
 
+/** Per-entry decoration for the WARPS line (wq#1178). `anno` is the warp-edge
+ *  ledger's usage note; `arrivedIdx` is the door the player came in through and
+ *  has not yet moved away from. */
+export interface WarpRenderOpts {
+  anno?: (v: WarpView) => string | null;
+  arrivedIdx?: number;
+}
+
 /** The WARPS line. Compact, fixed order, one token-cheap marker per entry. */
-export function renderWarps(views: WarpView[]): string {
+export function renderWarps(views: WarpView[], opts: WarpRenderOpts = {}): string {
   if (!views.length) return "WARPS none on this map";
   const body = views.map(v => {
     const mark = v.state === "here" ? "STANDING-ON-IT"
       : v.state === "reachable" ? `${v.steps} steps`
         : "NO PATH";
-    return `${v.i}:(${v.x},${v.y})->${v.dest} [${mark}]`;
+    const a = opts.anno?.(v);
+    return `${v.i}:(${v.x},${v.y})->${v.dest} [${mark}]${a ? ` {${a}}` : ""}`;
   }).join("  ");
   const here = views.find(v => v.state === "here");
   // A warp underfoot is invisible as an option: it already fired when you
   // arrived, so it looks used up. It is not — enter_warp steps off and back on,
   // which re-triggers it. rabbit12 watched the brain take 25 minutes and 9 turns
   // to discover this by accident (wq#536 T40), so the state block says it now.
-  const hint = here
-    ? `\n! You are STANDING ON warp ${here.i} — enter_warp(${here.i}) still uses it (it steps off and back on).`
-    : "";
+  //
+  // wq#1178: EXCEPT on the turn you arrived through that very door, where this
+  // hint was advising the one action the harness refuses. That is not a
+  // hypothetical — 60% of turns in the 407h Route 25 stall were
+  // "enter_warp: refused - this is the door you just arrived through", with
+  // this line sitting directly above the refusal telling the brain to do it.
+  // The state block and the executor now agree about the same door.
+  const arrived = here !== undefined && opts.arrivedIdx === here.i;
+  const hint = !here ? ""
+    : arrived
+      ? `\n! You ARRIVED through warp ${here.i} and have NOT MOVED since — enter_warp(${here.i}) is REFUSED,` +
+        ` it would replay your own arrival and bounce you straight back. Take a real step first` +
+        ` (goto a different tile), or pick another warp.`
+      : `\n! You are STANDING ON warp ${here.i} — enter_warp(${here.i}) still uses it (it steps off and back on).`;
   return `WARPS ${body}${hint}`;
 }
 
