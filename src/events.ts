@@ -13,6 +13,11 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
                    // used to run from the EventBus CONSTRUCTOR inside a bare
                    // `catch {}`, so files vanished with no record anywhere. Now
                    // deletion happens once, on request, and says so on the bus.
+  | "progress"     // wq#1179: per-turn composite progress scalar P + tile
+                   // novelty (novelty.ts). OBSERVE-ONLY: no gameplay path reads
+                   // it. It exists so a stall can be seen in TURNS ("dP == 0
+                   // over 40 turns") instead of only in wall hours, which is
+                   // what every prior axis was limited to.
   | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
                    // nav.goto. The turn-level log records position ONCE PER TURN,
                    // POST-ACTION, which makes every decision inside a journey

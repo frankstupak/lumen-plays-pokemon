@@ -31,6 +31,7 @@ import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
+import { NoveltyTracker } from "./novelty";   // wq#1179 (observe-only)
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
@@ -183,6 +184,12 @@ export class Agent {
   // observe(). wq#724 wired ban consumption but never rendered this, so the
   // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
   private supervisorPin = "";
+  // wq#1179: tile novelty + composite progress scalar. OBSERVE-ONLY — nothing
+  // below reads it back; observe() writes runtime/{visited_tiles,progress}.json
+  // and emits a `progress` event, and tools/lpp_stuck_mode.py is the consumer.
+  // Assigned in the constructor body rather than as a field initializer because
+  // it needs `checkpointDir` and `bus`, which are parameter properties.
+  private novelty!: NoveltyTracker;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -192,6 +199,10 @@ export class Agent {
     public bus: EventBus, public checkpointDir: string,
     public items: Items = new Items(emu, sym, scr, sync, dlg, nav, map, bat),
     public heal: Heal = new Heal(emu, sym, scr, sync, dlg, nav, reader, bat, bus)) {
+    // checkpointDir is <base>/checkpoints, so <base>/runtime is its sibling —
+    // the same anchor loadSupervisorBans() uses, and correct for probes and
+    // one-off drivers that run from a different cwd than the live deployment.
+    this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
     this.loadSupervisorBans();
   }
 
@@ -1214,6 +1225,14 @@ export class Agent {
     // escalation - stallTurns measures the BRAIN failing to progress, and no
     // brain call happened this turn. (No-op while ratio=0: plannedTurn never true.)
     if (!plannedTurn) this.brain.reportProgress(progressed);
+
+    // wq#1179: one progress sample per turn, taken from the SAME settled `after`
+    // read the turn summary and the checkpoint sidecar use — a novelty signal
+    // read mid-map-load would count the departed map's coordinates under the
+    // arriving map's id (the wq#699 class) and invent tiles that do not exist.
+    // Wrapped because bookkeeping may never break a turn; the tracker's own file
+    // I/O is fail-soft too, so this catch is for arithmetic on a torn read.
+    try { this.novelty.observe(this.turn, after); } catch { /* observe-only */ }
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;
     this.hist.push(line);
