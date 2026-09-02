@@ -77,6 +77,60 @@ history). A final SKIP-shaped live-corpus check (never fails the suite on its
 own — see `src/fixtures.ts`'s own doctrine on corpus rot) confirms the real
 `runtime/` still reproduces the incident today.
 
+## The dP axis — composite progress in turns, not hours (wq#1179)
+
+Both axes above are **wall-clock** ones over story flags, badges and event
+flags. A live 60%-refused-warp stall ran with `stuck_mode=None` and every
+sentinel silent for twelve days: the agent re-entered the same doorway
+forever, which moves none of those three and so looked identical to "between
+milestones". There was also no exploration signal anywhere in `src/` — nothing
+counted whether the agent had ever stood somewhere new.
+
+`src/novelty.ts` adds both halves of the PWhiddy borrow:
+
+- **Tile novelty** — a persistent `Set` of visited `(map,x,y)` keys in
+  `runtime/visited_tiles.json`, carried across reboots (the loops this catches
+  outlive restarts). One sample per turn at the turn's **end** position, so
+  `newTiles` is 0 or 1 per turn: it measures "did this turn end somewhere new",
+  not "how much ground did this turn cover". Intra-turn steps live in
+  `nav_trace` (wq#542) and are a possible later refinement.
+- **Composite scalar** `P = 1000·storyScore + 500·badges + 10·Σ(levels) +
+  5·pokedexOwned + 1·uniqueTiles`, appended per turn to
+  `runtime/progress.json` (bounded at 512 samples) and emitted on the event bus
+  as a `progress` event.
+
+`dP` is `P(last) − P(first)` over the last **`DP_WINDOW_TURNS` = 40 samples**,
+windowed by position in the log rather than by turn id, because turn counters
+restart at 1 on every reboot. A window is `flat` when it is **complete** and
+`dP <= 0`. That is what separates productive grinding (levels rising on ground
+already walked) from a fight-loss loop (nothing rising at all) — today both
+look identical until `storyScore` has been flat for two hours.
+
+`tools/lpp_stuck_mode.py` reads `DP_WINDOW_TURNS` and `WEIGHTS` **out of
+`src/novelty.ts`** rather than retyping them (same idiom as
+`resume_repeat_limit()` reading `src/resume.ts`), and re-derives every logged
+`P` from that sample's own components. If any sample disagrees, the axis
+reports `pMismatch` and refuses to flag — a detector that cannot verify its
+input says so rather than guessing.
+
+**Shipping state: OBSERVE-ONLY.** `compute()` always reports the `dP` block
+(and `one_line()` marks it `OBSERVE-ONLY`), but the axis only sets `stalled`
+— and so only reaches wq#672's interventions and wq#673's tickets — behind
+`--dp-axis` / `LPP_DP_AXIS=1`; `--no-dp-axis` forces it off regardless of the
+env. When it does fire, `stallAxis` is `"dP"`, the existing classifier runs
+unchanged, and the evidence string leads with the dP window so a reader can
+tell "flat for 40 turns" from "frozen for 2 hours". A deployment with no
+tracker running (no `runtime/progress.json`) behaves exactly as it did before.
+
+Verification: `npx tsx src/probe_novelty1179.ts` — 32 checks (novelty collapses
+in a synthetic re-entry loop and not in exploration; dP flags the loop within
+window+2 turns of onset; a productive grind is never flagged; cross-reboot
+persistence; corrupt/unwritable files degrade instead of throwing) — and
+`python3 tools/test_novelty1179.py` — 5 sections A-E on the consumer side
+(constants parsed from the TS source, loop-vs-exploration-vs-grind,
+fail-closed on partial/unverifiable windows, observe-only default vs
+`--dp-axis`, flag resolution).
+
 ## Known limits
 
 - Party level/species/type are **not** in checkpoint sidecars (confirmed:
@@ -94,6 +148,10 @@ own — see `src/fixtures.ts`'s own doctrine on corpus rot) confirms the real
 ## Rollback
 
 Deleting `runtime/stuck_mode.json` costs nothing — it is fully recomputed
-every call, no merge-max history to lose. Nothing currently calls this module
+every call, no merge-max history to lose. The wq#1179 axis rolls back the same
+way: `LPP_DP_AXIS` unset (the default) leaves it observe-only, and deleting
+`runtime/progress.json` / `runtime/visited_tiles.json` costs only the visited
+set — `src/novelty.ts` rebuilds both from the next turn onward, and a missing
+log degrades the axis to "not running" rather than to a stall claim. Nothing currently calls this module
 from a live/cron path (wq#673 wires that); running it manually never touches
 the game, the service, checkpoints or the work queue.

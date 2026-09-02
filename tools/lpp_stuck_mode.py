@@ -34,6 +34,24 @@ WINDOW
   live corpus) doesn't false-fire, short enough that three failed K=3
   interventions plus a 3h Frank page both still fit inside the same incident.
 
+SECOND AXIS: COMPOSITE PROGRESS DELTA, IN TURNS (wq#1179)
+  The window above is a WALL CLOCK, and an agent that re-enters the same
+  doorway forever moves none of storyScore/badges/eventFlags — so a live
+  60%-refused-warp stall ran with mode=None and the sentinels silent for
+  twelve days. src/novelty.ts samples a composite scalar
+  P = 1000*storyScore + 500*badges + 10*levelSum + 5*pokedexOwned + tiles
+  once per TURN into runtime/progress.json, including the exploration term
+  (unique (map,x,y) tiles ever stood on) that this repo previously had
+  nowhere. dP == 0 over DP_WINDOW_TURNS samples is a stall the 2h clock cannot
+  see yet, and it is what separates productive grinding (levels rising) from a
+  fight-loss loop (nothing rising).
+
+  OBSERVE-ONLY BY DEFAULT. The dP block is always computed and always reported;
+  it only sets `stalled` (and so only reaches the wq#672 intervention layer)
+  under --dp-axis / LPP_DP_AXIS=1. Thresholds and weights are PARSED from
+  src/novelty.ts, and each logged P is recomputed from its own components —
+  a mismatch disables the axis rather than guessing (fail-closed).
+
 MODE CLASSIFICATION (spec wq#671 section 1)
   Computed only once the story_score axis is stalled, from state that already
   exists and is already durable (nothing new is persisted mid-run to compute
@@ -79,7 +97,9 @@ MODE CLASSIFICATION (spec wq#671 section 1)
   same-checkpoint resume loop is the most specific and most actionable signal
   when present — but see MISS below.
 
-READ-ONLY. Reads runtime/*.json, checkpoints/**/*.json, tools/map_names.json.
+READ-ONLY. Reads runtime/*.json (warp_history, resume_history, progress),
+checkpoints/**/*.json, tools/map_names.json, and src/{resume,novelty}.ts for the
+thresholds it must not retype.
 Writes only its own cache at runtime/stuck_mode.json (merge-max free — unlike
 the frontier cache, this one is fully recomputed every call, no history to
 preserve across restarts other than what the source files already durably
@@ -99,6 +119,14 @@ RESUME_REPEAT_FALLBACK = 2   # what src/resume.ts holds today; parse failure mus
 RESUME_VIABLE_FALLBACK = 0.5 # ditto for VIABLE_HP_PCT
 WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
 RESUME_HISTORY = f"{BASE}/runtime/resume_history.json"
+# wq#1179: the composite-progress axis. src/novelty.ts samples P once per turn
+# into runtime/progress.json; the constants below are PARSED from that file for
+# the same reason resume_repeat_limit() parses src/resume.ts — a threshold this
+# module compares against must come from the code that produces it, or the two
+# drift silently.
+NOVELTY_TS = os.path.join(os.path.dirname(TOOLS_DIR), "src", "novelty.ts")
+DP_WINDOW_FALLBACK = 40
+DP_WEIGHTS_FALLBACK = {"story": 1000, "badge": 500, "level": 10, "dex": 5, "tile": 1}
 
 DEFAULT_WINDOW_H = 2.0
 WARP_WINDOW = 64          # matches oscillation.ts's own KEEP=64 cap on warp_history.json —
@@ -178,6 +206,121 @@ def resume_viable_pct(path=RESUME_TS):
     except Exception:
         pass
     return RESUME_VIABLE_FALLBACK
+
+
+# ---------------------------------------------------------------- dP axis (wq#1179)
+def dp_window_turns(path=NOVELTY_TS):
+    """The stall window, in TURNS, that src/novelty.ts declares (DP_WINDOW_TURNS).
+
+    Read from the producing module, never retyped — same idiom and same reason
+    as resume_repeat_limit() above.
+    """
+    try:
+        with open(path) as fh:
+            m = re.search(r"export\s+const\s+DP_WINDOW_TURNS\s*=\s*(\d+)", fh.read())
+        if m:
+            return max(2, int(m.group(1)))
+    except Exception:
+        pass
+    return DP_WINDOW_FALLBACK
+
+
+def dp_weights(path=NOVELTY_TS):
+    """The composite weights src/novelty.ts uses, parsed from its WEIGHTS object.
+
+    Parsed rather than assumed so this module can RE-DERIVE each logged P from
+    its own components and refuse to trust a log the producer and the consumer
+    disagree about (see `pMismatch` in dp_axis) — the fail-closed rule: a
+    detector that cannot verify its input must say so, not guess.
+    """
+    try:
+        with open(path) as fh:
+            m = re.search(r"export\s+const\s+WEIGHTS\s*=\s*\{([^}]*)\}", fh.read())
+        if m:
+            w = {k: int(v) for k, v in re.findall(r"(\w+)\s*:\s*(\d+)", m.group(1))}
+            if set(DP_WEIGHTS_FALLBACK) <= set(w):
+                return {k: w[k] for k in DP_WEIGHTS_FALLBACK}
+    except Exception:
+        pass
+    return dict(DP_WEIGHTS_FALLBACK)
+
+
+def composite_from_parts(sample, weights):
+    """P recomputed from a sample's components. Mirror of novelty.ts composite()."""
+    return (weights["story"] * (sample.get("storyScore") or 0)
+            + weights["badge"] * (sample.get("badges") or 0)
+            + weights["level"] * (sample.get("levelSum") or 0)
+            + weights["dex"] * (sample.get("pokedexOwned") or 0)
+            + weights["tile"] * (sample.get("uniqueTiles") or 0))
+
+
+def load_progress(base=BASE, path=None):
+    """Samples from runtime/progress.json, oldest-first. Missing file is normal
+    (a deployment that has not yet run the wq#1179 tracker) and must degrade to
+    an empty list, never raise — this axis is additive to the wall-clock one."""
+    j = load_json(path or f"{base}/runtime/progress.json", {}) or {}
+    s = j.get("samples")
+    return s if isinstance(s, list) else []
+
+
+def dp_axis(samples, window_turns=None, weights=None):
+    """Composite-progress delta over the last `window_turns` SAMPLES.
+
+    Turn-count windowing, not wall-clock: turn rate varies by an order of
+    magnitude between brain turns and deterministic ones, so hours are a poor
+    unit for "the agent has taken N shots at this and none of them moved
+    anything". Samples are windowed by POSITION in the log, not by their `turn`
+    field — turn counters restart at 1 on every reboot and the loops this
+    catches outlive reboots.
+
+    `flat` is dP <= 0 over a COMPLETE window. A partial window (fresh boot,
+    tracker just deployed) is never a stall claim.
+    """
+    w = int(window_turns or dp_window_turns())
+    weights = weights or dp_weights()
+    out = {"ok": False, "windowTurns": w, "samples": 0, "complete": False,
+           "spanTurns": 0, "dP": None, "newTiles": 0, "flat": False,
+           "first": None, "last": None, "pMismatch": 0, "saturated": False,
+           "reason": None}
+    win = [s for s in (samples or []) if isinstance(s, dict) and isinstance(s.get("P"), (int, float))][-w:]
+    if len(win) < 2:
+        out["samples"] = len(win)
+        out["reason"] = ("no progress samples on disk — src/novelty.ts is not "
+                         "running in this deployment" if not win else
+                         "only one progress sample so far")
+        return out
+    first, last = win[0], win[-1]
+    out.update({
+        "ok": True,
+        "samples": len(win),
+        "complete": len(win) >= w,
+        "spanTurns": (last.get("seq") or 0) - (first.get("seq") or 0),
+        "dP": last["P"] - first["P"],
+        "newTiles": sum(int(s.get("newTiles") or 0) for s in win),
+        "first": first["P"], "last": last["P"],
+        "uniqueTiles": last.get("uniqueTiles"),
+        # A saturated tile set (MAX_TILES in novelty.ts) reports zero novelty
+        # for a reason that is NOT a stall; carry the flag so a reader can tell
+        # the two apart.
+        "saturated": any(bool(s.get("saturated")) for s in win),
+        "pMismatch": sum(1 for s in win if composite_from_parts(s, weights) != s["P"]),
+    })
+    out["flat"] = bool(out["complete"] and out["dP"] <= 0 and out["pMismatch"] == 0)
+    if out["pMismatch"]:
+        out["reason"] = (f"{out['pMismatch']} of {len(win)} samples do not match a P "
+                         f"recomputed from their own components with src/novelty.ts's "
+                         f"weights — log and weights disagree, not trusting this axis")
+    elif not out["complete"]:
+        out["reason"] = f"partial window ({len(win)}/{w} samples) — too early to call a stall"
+    return out
+
+
+def dp_evidence(dp, names=None):
+    """One sentence describing why the dP axis called a stall."""
+    tiles = f", {dp['newTiles']} new tiles" if dp.get("newTiles") is not None else ""
+    return (f"composite progress flat over {dp['samples']} turns "
+            f"(dP={dp['dP']}, P={dp['first']}->{dp['last']}{tiles}): no story flag, "
+            f"badge, level, dex entry or unvisited tile gained in the window")
 
 
 def is_gym(mid, names):
@@ -498,8 +641,22 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
 
 
 # ---------------------------------------------------------------- compute/persist
+def dp_axis_enabled(explicit=None):
+    """Is the dP axis allowed to DRIVE `stalled`, or only to report?
+
+    Default OFF (observe-only), per the house shipping order: the signal lands
+    on disk and in the JSON first, and only starts moving `stalled` — and
+    therefore the wq#672 intervention layer and the wq#673 ticket writer —
+    once someone has looked at a week of it. `--dp-axis` or LPP_DP_AXIS=1
+    turns it on; `--no-dp-axis` forces it off regardless of the env.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    return os.environ.get("LPP_DP_AXIS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
-            resume_picks=None, names=None):
+            resume_picks=None, names=None, dp_enabled=None, progress=None):
     sidecars = load_sidecars(base)
     if not sidecars:
         return {"ok": False, "reason": "no checkpoint sidecars on disk"}
@@ -533,6 +690,23 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
         "modeLocation": None,
     }
 
+    # wq#1179: the composite-progress axis, ALWAYS computed and ALWAYS reported.
+    # Whether it may set `stalled` is the flag; whether it is visible is not,
+    # because the whole point of the observe-only stage is having the numbers on
+    # disk before anything acts on them.
+    dp = dp_axis(load_progress(base) if progress is None else progress)
+    enabled = dp_axis_enabled(dp_enabled)
+    st["dP"] = dp
+    st["dPAxisEnabled"] = enabled
+    st["stallAxis"] = "storyScore" if stalled else None
+    if not stalled and enabled and dp["flat"]:
+        # The wall clock has not run out yet, but the agent has taken a full
+        # window of turns and moved NOTHING on any axis it could have moved.
+        # That is the same stall, seen earlier — so it gets the same classifier.
+        stalled = True
+        st["stalled"] = True
+        st["stallAxis"] = "dP"
+
     if stalled:
         if warps is None:
             warps = (load_json(WARP_HISTORY, {}) or {}).get("warps", [])
@@ -551,7 +725,10 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
             warps, resume_picks, names, path_exhausted,
             turn_summaries=load_recent_turn_summaries(base))
         st["mode"] = mode
-        st["modeEvidence"] = evidence
+        # A dP-triggered stall names the signal that fired FIRST, then the mode
+        # evidence — a reader (and wq#673's ticket body) must be able to tell
+        # "flat for 40 turns" from "frozen for 2 hours" at a glance.
+        st["modeEvidence"] = f"{dp_evidence(dp)} | {evidence}" if st["stallAxis"] == "dP" else evidence
         st["modeLocation"] = location_id
 
     return st
@@ -566,14 +743,28 @@ def persist(st, path=STATE):
     os.replace(tmp, path)
 
 
+def dp_one_line(st):
+    """The dP axis as a suffix for the one-liner. Says OFF explicitly while the
+    axis is observe-only, so nobody reads a flat dP as an active detector."""
+    dp = st.get("dP") or {}
+    if not dp.get("ok"):
+        return f" dP=n/a ({dp.get('reason')})"
+    tag = "" if st.get("dPAxisEnabled") else " OBSERVE-ONLY"
+    return (f" dP={dp['dP']} over {dp['samples']}/{dp['windowTurns']} turns "
+            f"(+{dp['newTiles']} tiles){'' if not dp['flat'] else ' FLAT'}{tag}")
+
+
 def one_line(st):
     if not st.get("ok"):
         return f"stuck-mode: DEAD — {st.get('reason')}"
     if not st.get("stalled"):
         return (f"stuck-mode: OK story_score={st.get('storyScore')} "
-                f"frozen={st.get('frozenHours'):.1f}h (< {st.get('windowHours')}h window)")
-    return (f"stuck-mode: STALLED mode={st.get('mode')} story_score={st.get('storyScore')} "
-            f"frozen={st.get('frozenHours'):.1f}h — {st.get('modeEvidence')}")
+                f"frozen={st.get('frozenHours'):.1f}h (< {st.get('windowHours')}h window)"
+                + dp_one_line(st))
+    return (f"stuck-mode: STALLED[{st.get('stallAxis')}] mode={st.get('mode')} "
+            f"story_score={st.get('storyScore')} "
+            f"frozen={st.get('frozenHours'):.1f}h — {st.get('modeEvidence')}"
+            + dp_one_line(st))
 
 
 def main(argv=None):
@@ -583,9 +774,15 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.add_argument("--one-line", action="store_true")
     p.add_argument("--no-persist", action="store_true")
+    # wq#1179: the dP axis reports either way; these only decide whether it may
+    # set `stalled`. Default comes from LPP_DP_AXIS (unset = observe-only).
+    p.add_argument("--dp-axis", dest="dp_axis", action="store_true", default=None,
+                   help="let the composite-progress (dP) axis drive `stalled`")
+    p.add_argument("--no-dp-axis", dest="dp_axis", action="store_false",
+                   help="force the dP axis to observe-only, ignoring LPP_DP_AXIS")
     args = p.parse_args(argv)
 
-    st = compute(window_h=args.window_hours)
+    st = compute(window_h=args.window_hours, dp_enabled=args.dp_axis)
     if not args.no_persist:
         persist(st)
     if args.json:
