@@ -20,6 +20,8 @@ import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
+import { StreamChat } from "./chat";                    // wq#1176
+import { PersonaMemory } from "./persona";              // wq#1176
 import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
@@ -112,6 +114,14 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
 export class Agent {
   hist = new History();
   pad = new Notepad();               // wq#486: structured notes + guidance channel
+  // wq#1176: audience channel + the character behind it. Both are REPLACED by
+  // live_agent with process-lifetime, disk-backed instances (same pattern as
+  // `pad`), so they survive gameplay continues and service restarts. The
+  // defaults here keep probes and run_agent working with no wiring at all.
+  chat = new StreamChat({ ring: CFG.chat.ring, minIntervalMs: CFG.chat.minIntervalMs });
+  persona = new PersonaMemory();
+  /** wq#1176: a refused SAY is reported once per silent stretch, not per turn. */
+  private sayRefusalNotified = false;
   turn = 0;
   noActStreak = 0;
   // wq#472: planned deterministic turns remaining before the next brain call.
@@ -956,13 +966,98 @@ export class Agent {
           // "(4,7)" written inside the mart is stored as "(4,7 on map67)", so
           // a note replayed on another map either reads correctly or, pasted
           // verbatim into goto(), carries the map id the refusal needs.
-          return this.pad.note(scopeNoteCoords(args.join(","), this.reader.read().map));
+          const raw = args.join(",");
+          const res = this.pad.note(scopeNoteCoords(raw, this.reader.read().map));
+          // wq#1176: a note is Lumen talking to himself, and a self-fact stated
+          // there is as canonical as one said on stream — the store is about
+          // WHO HE IS, not about which channel carried the sentence. Only the
+          // note text that actually landed is mined (a rejected note is not
+          // something he said).
+          if (res.startsWith("note saved") || res.startsWith("PINNED")) {
+            const notice = this.rememberSelf(raw, "notepad");
+            if (notice) return `${res}\n${notice}`;
+          }
+          return res;
         }
         default: return `unknown tool: ${tool}`;
       }
     } catch (e: any) {
       return `tool error: ${String(e?.message ?? e).slice(0, 120)}`;
     }
+  }
+
+  // ── wq#1176 streamer chat + persona memory ─────────────────────────────────
+
+  /** Canonical self-facts for the prompt. Empty string when the feature is off
+   *  or nothing has been said yet, which buildMessages renders as no block at
+   *  all — an empty PERSONA header would read as "you have no self". */
+  private recallPersona(): string {
+    if (!CFG.persona.enabled) return "";
+    try { return this.persona.recall(CFG.persona.recallBudget); } catch { return ""; }
+  }
+
+  /**
+   * Mine a sentence Lumen just produced for self-facts and record them.
+   * Returns the "!" notice for the brain when it contradicted itself, "" when
+   * there is nothing to report. Never throws: a persona failure must not cost
+   * a game turn.
+   */
+  private rememberSelf(text: string, platform: string): string {
+    if (!CFG.persona.enabled || !text.trim()) return "";
+    try {
+      const events = this.persona.observe(text, platform);
+      for (const e of events) {
+        // Reaffirmations are the common case and are not worth an event each;
+        // a NEW canonical fact and a CONTRADICTION are both worth counting.
+        if (e.outcome === "reaffirmed") continue;
+        this.bus.emit("persona", {
+          outcome: e.outcome, key: e.key, value: e.value,
+          canonical: e.fact.value, platform, src: "brain",
+        });
+      }
+      return PersonaMemory.conflictNotice(events);
+    } catch { return ""; }
+  }
+
+  /**
+   * The optional SAY: line. One-way by construction: this posts to the audience
+   * panel and returns feedback to the BRAIN, and there is no path by which an
+   * audience message reaches the prompt (see chat.ts).
+   *
+   * A refusal is reported rather than swallowed — silently dropping the line
+   * would teach the brain that SAY does nothing, and it would either stop using
+   * it or spam it. Both are worse than one line of feedback.
+   */
+  private postSay(text: string): string {
+    const clean = StreamChat.clean(text);
+    if (!clean) return "";
+    if (!CFG.chat.enabled) return "";
+    let posted: string | null = null;
+    let notice = "";
+    try {
+      const r = this.chat.say(clean);
+      if (r.ok && r.message) {
+        posted = r.message.text;
+        this.sayRefusalNotified = false;
+        // `style`, not `kind`: the bus envelope OWNS `kind` (wq#522), and a
+        // payload key of that name would be silently overwritten.
+        this.bus.emit("chat", { id: r.message.id, text: r.message.text, style: "say", src: "brain" });
+      } else if (!this.sayRefusalNotified) {
+        // ONCE per silent stretch. Turns are far faster than the chat interval,
+        // so a notice on every refusal would put a harness line in most turn
+        // summaries — the brain needs to learn the rule, not be reminded of it
+        // forty times between two spoken lines.
+        this.sayRefusalNotified = true;
+        notice = `! CHAT: your SAY line was not posted (${r.reason}). Keep playing; say something later.`;
+      }
+    } catch { return ""; }
+    // Persona mining happens only on a line the audience actually saw. A fact
+    // nobody was told is not a fact he has to live up to.
+    if (posted) {
+      const conflict = this.rememberSelf(posted, CFG.persona.platform);
+      if (conflict) notice = notice ? `${notice}\n${conflict}` : conflict;
+    }
+    return notice;
   }
 
   /**
@@ -1331,10 +1426,14 @@ export class Agent {
       act = `DET:${planned.kind}`;
       think = "[planned deterministic turn - no brain call (wq#472)]";
     } else {
-      const r0 = await this.brain.complete(buildMessages(this.hist, this.pad.renderNotes(), stateBlock, this.pad.renderGuidance()));
+      const r0 = await this.brain.complete(buildMessages(this.hist, this.pad.renderNotes(), stateBlock, this.pad.renderGuidance(), this.recallPersona()));
       let text = r0.text;
       think = (text.match(/THINK:\s*(.+)/i)?.[1] ?? "").slice(0, 200);
       act = text.match(/ACT:\s*(.+)/i)?.[1] ?? "";
+      // wq#1176: the audience line is parsed from the SAME reply, before the
+      // ACT line is dispatched, so a refused or contradictory SAY is reported
+      // in this turn's result rather than a turn late.
+      const sayNotice = this.postSay(text.match(/SAY:\s*(.+)/i)?.[1] ?? "");
 
       // The reasoning model sometimes spends its whole budget narrating and never
       // emits an ACT line. Retry with the actRetry profile - a DIFFERENT, cheap,
@@ -1343,7 +1442,7 @@ export class Agent {
       // doing nothing.
       if (!act) {
         const nudge = stateBlock + "\n\nYou did not give an ACT line last time. Reply with ONLY:\nACT: <tool>(<args>)";
-        const retry = await this.brain.complete(buildMessages(this.hist, this.pad.renderNotes(), nudge, this.pad.renderGuidance()), CFG.profiles.actRetry);
+        const retry = await this.brain.complete(buildMessages(this.hist, this.pad.renderNotes(), nudge, this.pad.renderGuidance(), this.recallPersona()), CFG.profiles.actRetry);
         act = retry.text.match(/ACT:\s*(.+)/i)?.[1] ?? "";
         if (act) think = (think || "retry") + " [ACT recovered via actRetry model]";
       }
@@ -1390,6 +1489,10 @@ export class Agent {
       } else {
         this.noiseStreak = 0;
       }
+      // wq#1176: chat feedback rides the turn result (so it reaches history and
+      // the next prompt) but is appended AFTER the noise-storm test, which
+      // classifies TOOL results — a rate-limit refusal is not a bad tool call.
+      if (sayNotice) result += `\n${sayNotice}`;
       // wq#472: a brain-driven turn just happened - refill the planned-auto
       // budget. ratio=0 keeps this at 0 -> plannedAuto never gates in.
       this.autoBudget = CFG.autoTurnRatio;
