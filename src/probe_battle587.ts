@@ -38,7 +38,11 @@ import { readdirSync, readFileSync, mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-const MOVES: any = (MV as any).MOVES;
+// wq#1180 retired the hand-typed MOVES record in favour of the ROM-backed
+// moveMeta() accessor. Resolved dynamically, like everything else here, so this
+// probe still runs against an origin/main checkout in its RED mode.
+const meta = (id: number): any =>
+  (MV as any).moveMeta ? (MV as any).moveMeta(id) : (MV as any).MOVES?.[id];
 const pickBestMove: ((m: number[], p: number[]) => number) | undefined = (MV as any).pickBestMove;
 const mistyDamageLine: ((m: number[]) => string) | undefined = (GD as any).mistyDamageLine;
 
@@ -61,13 +65,13 @@ console.log(`== probe_battle587 (${RED ? "RED: expecting the OLD gaps" : "GREEN"
 
 // ── P. the table + picker layer (pure) ──────────────────────────────────
 if (RED) {
-  chk("R-P1 old MOVES has no lockIn on RAGE", MOVES[99].lockIn === undefined);
+  chk("R-P1 old MOVES has no lockIn on RAGE", meta(99)?.lockIn === undefined);
   chk("R-P2 pickBestMove does not exist yet", pickBestMove === undefined);
   chk("R-P3 guidance source still recommends the strongest non-Fire move (= RAGE here)",
       readFileSync("src/guidance.ts", "utf8").includes("non-Fire move"));
 } else {
-  chk("P1 RAGE carries lockIn", MOVES[99].lockIn === true);
-  chk("P2 BIDE and DIG carry lockIn too", MOVES[117].lockIn === true && MOVES[91].lockIn === true);
+  chk("P1 RAGE carries lockIn", meta(99).lockIn === true);
+  chk("P2 BIDE and DIG carry lockIn too", meta(117).lockIn === true && meta(91).lockIn === true);
   const pk = pickBestMove!;
   chk("P3 Ember beats Rage when both have PP (the normal case, unchanged)",
       pk(CHARMELEON_SET, [10, 10, 10, 10]) === 2);

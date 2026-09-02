@@ -15,7 +15,8 @@ import { Navigator } from "../nav";
 import { EventBus } from "../events";
 import { Screen } from "../screen";
 import { Sync } from "../sync";
-import { moveLabel } from "../moves";
+import { installRomMoves, moveLabel } from "../moves";
+import { summarizeRomTables } from "../romtables";   // wq#1180
 import { writeIdentity } from "./identity";
 import { LinkBattleSession, BattleSide, BattleView } from "./battle";
 import { DuelBrain, duelProfile } from "./duel";
@@ -26,6 +27,10 @@ function side(tag: string): BattleSide {
   const emu = new Emulator(romPath("pokeblue.gb"));
   const sym = new SymbolTable(romPath("pokeblue.sym"));
   const rom = new Rom(romPath("pokeblue.gb"));
+  // wq#1180: the duel driver never builds an Agent, so it has to install the
+  // ROM move table itself or every moveLabel() below falls back to the 25-move
+  // golden set — which is exactly the "MOVE143" output this ticket removed.
+  console.log(summarizeRomTables(installRomMoves(rom, sym)));
   const ebus = new EventBus(linkEventsDir(), `duel-${tag}-${Date.now()}`);
   const map = new MapModel(emu, sym, rom);
   const scr = new Screen(emu, sym);
