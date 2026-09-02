@@ -20,7 +20,6 @@ import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
-import { StreamChat } from "./chat";                    // wq#1176
 import { PersonaMemory } from "./persona";              // wq#1176
 import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
@@ -111,14 +110,14 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
 export class Agent {
   hist = new History();
   pad = new Notepad();               // wq#486: structured notes + guidance channel
-  // wq#1176: audience channel + the character behind it. Both are REPLACED by
-  // live_agent with process-lifetime, disk-backed instances (same pattern as
-  // `pad`), so they survive gameplay continues and service restarts. The
-  // defaults here keep probes and run_agent working with no wiring at all.
-  chat = new StreamChat({ ring: CFG.chat.ring, minIntervalMs: CFG.chat.minIntervalMs });
+  // wq#1176: the character behind the stream. REPLACED by live_agent with a
+  // process-lifetime, disk-backed instance (same pattern as `pad`), so it
+  // survives gameplay continues and service restarts. The default here keeps
+  // probes and run_agent working with no wiring at all.
+  //
+  // There is no `chat` here any more: wq#1192 moved the audience channel out to
+  // streamer.ts, which owns the transport directly. The agent does not speak.
   persona = new PersonaMemory();
-  /** wq#1176: a refused SAY is reported once per silent stretch, not per turn. */
-  private sayRefusalNotified = false;
   turn = 0;
   noActStreak = 0;
   // wq#472: planned deterministic turns remaining before the next brain call.
@@ -924,7 +923,15 @@ export class Agent {
     }
   }
 
-  // ── wq#1176 streamer chat + persona memory ─────────────────────────────────
+  // ── wq#1176 persona memory ─────────────────────────────────────────────────
+  //
+  // The agent no longer SPEAKS (wq#1192 moved the audience channel out to
+  // streamer.ts, off the gameplay model and off the gameplay clock). It still
+  // owns persona because the notepad is a self-disclosure surface: `note(...)`
+  // is the brain writing about itself, and what it writes there has to agree
+  // with what the streamer has already told people. `chat` survives on the
+  // class only so live_agent has one place to install the process-lifetime
+  // instance both surfaces share.
 
   /** Canonical self-facts for the prompt. Empty string when the feature is off
    *  or nothing has been said yet, which buildMessages renders as no block at
@@ -955,47 +962,6 @@ export class Agent {
       }
       return PersonaMemory.conflictNotice(events);
     } catch { return ""; }
-  }
-
-  /**
-   * The optional SAY: line. One-way by construction: this posts to the audience
-   * panel and returns feedback to the BRAIN, and there is no path by which an
-   * audience message reaches the prompt (see chat.ts).
-   *
-   * A refusal is reported rather than swallowed — silently dropping the line
-   * would teach the brain that SAY does nothing, and it would either stop using
-   * it or spam it. Both are worse than one line of feedback.
-   */
-  private postSay(text: string): string {
-    const clean = StreamChat.clean(text);
-    if (!clean) return "";
-    if (!CFG.chat.enabled) return "";
-    let posted: string | null = null;
-    let notice = "";
-    try {
-      const r = this.chat.say(clean);
-      if (r.ok && r.message) {
-        posted = r.message.text;
-        this.sayRefusalNotified = false;
-        // `style`, not `kind`: the bus envelope OWNS `kind` (wq#522), and a
-        // payload key of that name would be silently overwritten.
-        this.bus.emit("chat", { id: r.message.id, text: r.message.text, style: "say", src: "brain" });
-      } else if (!this.sayRefusalNotified) {
-        // ONCE per silent stretch. Turns are far faster than the chat interval,
-        // so a notice on every refusal would put a harness line in most turn
-        // summaries — the brain needs to learn the rule, not be reminded of it
-        // forty times between two spoken lines.
-        this.sayRefusalNotified = true;
-        notice = `! CHAT: your SAY line was not posted (${r.reason}). Keep playing; say something later.`;
-      }
-    } catch { return ""; }
-    // Persona mining happens only on a line the audience actually saw. A fact
-    // nobody was told is not a fact he has to live up to.
-    if (posted) {
-      const conflict = this.rememberSelf(posted, CFG.persona.platform);
-      if (conflict) notice = notice ? `${notice}\n${conflict}` : conflict;
-    }
-    return notice;
   }
 
   /**
@@ -1245,10 +1211,6 @@ export class Agent {
       let text = r0.text;
       think = (text.match(/THINK:\s*(.+)/i)?.[1] ?? "").slice(0, 200);
       act = text.match(/ACT:\s*(.+)/i)?.[1] ?? "";
-      // wq#1176: the audience line is parsed from the SAME reply, before the
-      // ACT line is dispatched, so a refused or contradictory SAY is reported
-      // in this turn's result rather than a turn late.
-      const sayNotice = this.postSay(text.match(/SAY:\s*(.+)/i)?.[1] ?? "");
 
       // The reasoning model sometimes spends its whole budget narrating and never
       // emits an ACT line. Retry with the actRetry profile - a DIFFERENT, cheap,
@@ -1304,10 +1266,6 @@ export class Agent {
       } else {
         this.noiseStreak = 0;
       }
-      // wq#1176: chat feedback rides the turn result (so it reaches history and
-      // the next prompt) but is appended AFTER the noise-storm test, which
-      // classifies TOOL results — a rate-limit refusal is not a bad tool call.
-      if (sayNotice) result += `\n${sayNotice}`;
       // wq#472: a brain-driven turn just happened - refill the planned-auto
       // budget. ratio=0 keeps this at 0 -> plannedAuto never gates in.
       this.autoBudget = CFG.autoTurnRatio;

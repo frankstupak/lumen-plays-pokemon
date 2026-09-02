@@ -10,7 +10,7 @@
 // minute, so an unthrottled line-per-turn is a wall of text nobody can read on
 // a stream. minIntervalMs spaces them; refusals are cheap and reported back to
 // the brain rather than silently swallowed.
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, appendFileSync } from "fs";
 import { dirname } from "path";
 
 export const MAX_TEXT = 240;
@@ -43,12 +43,27 @@ export class StreamChat {
   private nextId = 1;
   private lastSayAt = 0;
   private path: string | null = null;
+  private logPath: string | null = null;
   /** Injected so probes can drive the rate limiter without sleeping. */
   now: () => number = () => Date.now();
 
   constructor(opts: ChatOptions = {}) {
     this.ring = Math.max(1, opts.ring ?? 60);
     this.minIntervalMs = Math.max(0, opts.minIntervalMs ?? 45_000);
+  }
+
+  /**
+   * wq#1192: the append-only transcript, separate from `bind`'s ring.
+   *
+   * The bound state file is a RING — it is rewritten whole on every line and
+   * forgets past `ring`, which is right for an overlay and wrong for a record.
+   * Everything Lumen has ever said is the training corpus for who he is
+   * (persona extraction, wq#1191) and the only way to answer "did he already
+   * tell this story", so it also goes somewhere that only ever grows.
+   */
+  bindLog(path: string): void {
+    this.logPath = path;
+    try { mkdirSync(dirname(path), { recursive: true }); } catch { /* append will no-op */ }
   }
 
   bind(path: string): void {
@@ -105,7 +120,13 @@ export class StreamChat {
     this.messages.push(m);
     while (this.messages.length > this.ring) this.messages.shift();
     this.save();
+    this.append(m);
     return m;
+  }
+
+  private append(m: ChatMessage): void {
+    if (!this.logPath) return;
+    try { appendFileSync(this.logPath, JSON.stringify(m) + "\n"); } catch { /* the record is best-effort; a full disk must not silence the stream */ }
   }
 
   /** Newest last, oldest first — the overlay reverses for display. */

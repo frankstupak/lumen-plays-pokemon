@@ -20,6 +20,7 @@ import { pickResume } from "./resume";
 import { Notepad } from "./notepad";   // wq#486
 import { StreamChat } from "./chat";       // wq#1176
 import { PersonaMemory } from "./persona"; // wq#1176
+import { Streamer, gatewayLLM } from "./streamer";   // wq#1192
 import { makeBorrowGuard } from "./borrow_guard";   // wq#488
 import { ceruleanGuidance, hasTypeCounter } from "./guidance";   // wq#478, wq#696
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
@@ -172,10 +173,26 @@ stream.names = () => ({
 // the stream, so it stays in RUNTIME.
 const chat = new StreamChat({ ring: CFG.chat.ring, minIntervalMs: CFG.chat.minIntervalMs });
 chat.bind(`${RUNTIME}/chat.json`);
+chat.bindLog(CFG.chat.log || `${RUNTIME}/chat.jsonl`);   // wq#1192: append-only transcript
 const persona = new PersonaMemory();
 if (CFG.persona.enabled) persona.bind(CFG.persona.path);
 stream.chat = () => chat.toJSON();
 stream.persona = () => ({ ...persona.toJSON(), stats: persona.stats() });
+
+// wq#1192: the generator. It is started ONCE, here, and never rebuilt — a
+// gameplay continue tears down the Agent, and a streamer owned by the Agent
+// would go quiet for the whole restart, which is precisely when a viewer is
+// staring at a frozen frame wondering whether it died. It reads the bus
+// (state + events) and writes the chat transport; it holds no reference to the
+// Agent in either direction, so nothing it does can cost a turn.
+const streamer = new Streamer({
+  chat, persona, llm: gatewayLLM,
+  emit: (kind, data) => bus.emit(kind as any, data),
+  mapName: id => gameNames.mapName(id),
+});
+bus.on(e => streamer.observe(e));
+streamer.start();
+stream.streamer = () => streamer.stats();
 
 // Milestone + loop tracking ride the same state_read the panel already gets,
 // so the panel can never disagree with the game about where the player is.
@@ -562,7 +579,6 @@ function ceruleanApproachPack(map: number): string {
     const brain = new Brain(bus);
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
     agent.pad = pad;                                              // wq#486: shared, persisted
-    agent.chat = chat;                                            // wq#1176: shared, persisted
     agent.persona = persona;                                      // wq#1176: cross-platform store
     // wq#514: corridor guidance is REFRESHED EVERY TURN and selected by a
     // RAM-verified phase, replacing the wq#476 boot pin. Pinning once at boot

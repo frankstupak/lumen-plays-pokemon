@@ -354,6 +354,10 @@ export class StreamServer {
   // Null-safe: an unwired server serves an empty panel rather than 500ing.
   chat: (() => object) | null = null;
   persona: (() => object) | null = null;
+  // wq#1192: generator counters (lines, off-topic share, screened, failures).
+  // The off-topic share is the one number that says whether the channel still
+  // has a personality or has quietly decayed into a walkthrough.
+  streamer: (() => object) | null = null;
   /** Last geometry the kiosk reported about itself (see the beacon in PAGE).
    *  Kept so the layout can be checked against the tablet's REAL viewport. */
   lastViewport: object | null = null;
@@ -413,6 +417,18 @@ export class StreamServer {
         }
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(this.persona ? this.persona() : { facts: [], stats: { facts: 0 } }));
+        return;
+      }
+      // wq#1192: generator health. GET-only for the same reason as the two
+      // above — nothing outside the harness gets a write path to the channel.
+      if (req.url?.startsWith("/streamer.json")) {
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json", "Allow": "GET" });
+          res.end(JSON.stringify({ error: "read-only" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(this.streamer ? this.streamer() : { lines: 0, offTopic: 0, offTopicRate: 0, skipped: 0, failures: 0, model: null }));
         return;
       }
       // wq#503: static-per-ROM name tables, fetched once per page load.

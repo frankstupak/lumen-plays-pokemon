@@ -76,7 +76,8 @@ src/
   catch_policy.ts   wild-battle catch policy
   recovery.ts       whiteout and story-regression recovery
   stream.ts         live kiosk server
-  chat.ts           streamer chat, one-way (Lumen -> audience)
+  chat.ts           chat transport: rate limit, ring, append-only log
+  streamer.ts       the chat generator: own clock, cheap rung, 60/40 topic mix
   persona.ts        canonical self-facts, shared across every platform
   persona_cli.ts    the same store from any process: recall / ask / state
   link/             Game Boy link cable over TCP (multiplayer work)

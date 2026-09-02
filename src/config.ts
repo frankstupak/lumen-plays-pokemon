@@ -154,15 +154,65 @@ export const CFG = {
     breakerCooldownMs: envN("LPP_BRAIN_BREAKER_COOLDOWN_MS", 600_000),
   },
   // wq#1176 STREAMER CHAT (one-way: Lumen -> audience; there is no inbound
-  // path, see chat.ts). The brain speaks by appending an optional SAY: line to
-  // its reply, so a chat line costs NO game turn — turns are the scarce
-  // resource here and an audience feature must not compete with gameplay for
-  // them. minIntervalMs is what keeps a 25x-realtime emulator from producing a
-  // wall of text: it spaces the lines the viewer actually sees.
+  // path, see chat.ts). This block is the TRANSPORT only — the ring the overlay
+  // reads, the append-only log, and a rate-limit backstop. Who speaks and when
+  // is CFG.streamer.
+  //
+  // minIntervalMs is deliberately BELOW the streamer's own floor
+  // (streamer.eventMinGapMs). Cadence is a policy the generator owns; this
+  // limiter exists to catch a bug that would otherwise put a wall of text on a
+  // live stream, not to shape the pacing. Set it above the streamer floor and
+  // it silently starts eating event-triggered lines.
   chat: {
-    enabled: envN0("LPP_CHAT_ENABLE", 1) > 0,
+    enabled: envN0("LPP_CHAT_ENABLE", 1) > 0,           // master kill-switch for anything spoken
     ring: envN("LPP_CHAT_RING", 60),                    // messages kept for the overlay
-    minIntervalMs: envN("LPP_CHAT_MIN_INTERVAL_MS", 45_000),
+    minIntervalMs: envN("LPP_CHAT_MIN_INTERVAL_MS", 20_000),
+    log: envS("LPP_CHAT_LOG", ""),                      // append-only chat.jsonl; "" = derive from RUNTIME
+  },
+  // wq#1192 STREAMER — the chat generator, independent of gameplay.
+  //
+  // THREE CONSTRAINTS SHAPE EVERY VALUE HERE, and all three are why the
+  // previous attempt (a SAY: line on the gameplay completion) was reworked:
+  //
+  // 1. CADENCE IS WALL-CLOCK, NOT TURNS. Deterministic turns (nav, dialog,
+  //    battle scripts) can run for minutes without one LLM call. Chat driven by
+  //    the gameplay brain goes silent for exactly those stretches, which are the
+  //    stretches a viewer is most likely to be watching. A timer cannot go
+  //    silent, so the timer is the source of truth and game events only pull the
+  //    next line EARLIER.
+  // 2. THE MODEL IS THE CHEAP RUNG, ALWAYS. Chat is a nice-to-have riding on a
+  //    budget that exists to finish the game. It gets its own single-shot call
+  //    on a fast cheap model with no fallback ladder — a chat line is never
+  //    worth escalating, and a failed one is worth exactly nothing. There is no
+  //    path from here to CFG.profiles.
+  // 3. FAILURE IS DECOUPLED. Nothing in this path can cost a game turn: the
+  //    generator holds no lock the agent wants, and its errors are swallowed
+  //    into the next tick.
+  streamer: {
+    enabled: envN0("LPP_STREAMER_ENABLE", 1) > 0,
+    model: envS("LPP_STREAMER_MODEL", "deepseek-v4-flash"),
+    timeoutMs: envN("LPP_STREAMER_TIMEOUT_MS", 20_000),
+    maxTokensOut: envN("LPP_STREAMER_MAX_TOKENS", 160),
+    temperature: Number(envS("LPP_STREAMER_TEMP", "0.9")),
+    // Jittered so the stream does not tick like a metronome. Spec: 60-120s.
+    minIntervalMs: envN("LPP_STREAMER_MIN_MS", 60_000),
+    maxIntervalMs: envN("LPP_STREAMER_MAX_MS", 120_000),
+    // Floor for an EVENT-triggered line. Badges, white-outs and battle
+    // transitions cluster (a gym fight ends, a badge lands, the map changes,
+    // all inside 10s), so without a floor one interesting moment becomes four
+    // lines nobody can read.
+    eventMinGapMs: envN("LPP_STREAMER_EVENT_GAP_MS", 25_000),
+    // Share of lines that are NOT about the game. Frank's brief: a real
+    // streamer with a life, roughly 60/40.
+    offTopicRate: Number(envS("LPP_STREAMER_OFFTOPIC", "0.4")),
+    recentLines: envN("LPP_STREAMER_RECENT", 10),       // shown to the model so it does not repeat itself
+    // Extra strings the guardrail refuses on top of the structural patterns
+    // (IPs, tokens, paths, hostnames). Env-only: a deny list checked into the
+    // repo is itself a disclosure of the thing it is protecting.
+    denyTerms: envList("LPP_STREAMER_DENY", []),
+    // Touch this file to silence chat on a LIVE stream without restarting the
+    // agent. Checked every tick, so it takes effect within a second.
+    killFile: envS("LPP_STREAMER_KILLFILE", "/home/lumen/pokemon/runtime/chat.off"),
   },
   // wq#1176 PERSONA MEMORY. `path` is the cross-platform contract: every
   // surface that speaks as Lumen (this agent, the streamer chat, a Messenger
