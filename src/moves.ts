@@ -9,14 +9,23 @@
 export const MOVES: Record<number, { name: string; type: string; power: number; lockIn?: boolean }> = {
   1:  { name: "POUND",         type: "NORMAL",  power: 40 },
   10: { name: "SCRATCH",       type: "NORMAL",  power: 40 },
+  16: { name: "GUST",          type: "NORMAL",  power: 40 },   // Gen 1: Normal, not Flying
+  17: { name: "WING ATTACK",   type: "FLYING",  power: 35 },
+  30: { name: "HORN ATTACK",   type: "NORMAL",  power: 65 },
   33: { name: "TACKLE",        type: "NORMAL",  power: 35 },
   28: { name: "SAND-ATTACK",   type: "NORMAL",  power: 0 },
   31: { name: "FURY ATTACK",   type: "NORMAL",  power: 15 },
   40: { name: "POISON STING",  type: "POISON",  power: 15 },
   43: { name: "LEER",          type: "NORMAL",  power: 0 },
+  44: { name: "BITE",          type: "NORMAL",  power: 60 },   // Gen 1: Normal, not Dark
   45: { name: "GROWL",         type: "NORMAL",  power: 0 },
+  48: { name: "SUPERSONIC",    type: "NORMAL",  power: 0 },
   52: { name: "EMBER",         type: "FIRE",    power: 40 },
   55: { name: "WATER GUN",     type: "WATER",   power: 40 },
+  // wq#1181: Misty's Starmie wins the FIGHT_LOSS_LOOP fight with BUBBLEBEAM, and
+  // an undecoded foe move makes the winnability verdict low-confidence — which
+  // bars it from forcing anything. The foes we keep losing to need entries.
+  61: { name: "BUBBLEBEAM",    type: "WATER",   power: 65 },
   64: { name: "PECK",          type: "FLYING",  power: 35 },
   71: { name: "ABSORB",        type: "GRASS",   power: 20 },
   74: { name: "GROWTH",        type: "NORMAL",  power: 0 },
@@ -26,12 +35,17 @@ export const MOVES: Record<number, { name: string; type: string; power: number; 
   81: { name: "STRING SHOT",   type: "BUG",     power: 0 },
   91: { name: "DIG",           type: "GROUND",  power: 100, lockIn: true },  // turn 2 auto-executes, no menu
   93: { name: "CONFUSION",     type: "PSYCHIC", power: 50 },
+  84: { name: "THUNDERSHOCK",  type: "ELECTRIC", power: 40 },
+  86: { name: "THUNDER WAVE",  type: "ELECTRIC", power: 0 },
   98: { name: "QUICK ATTACK",  type: "NORMAL",  power: 40 },
   99: { name: "RAGE",          type: "NORMAL",  power: 20,  lockIn: true },  // locks until the battle ENDS
+  105:{ name: "RECOVER",       type: "NORMAL",  power: 0 },
   106:{ name: "HARDEN",        type: "NORMAL",  power: 0 },
   111:{ name: "DEFENSE CURL",  type: "NORMAL",  power: 0 },
   116:{ name: "FOCUS ENERGY",  type: "NORMAL",  power: 0 },
   117:{ name: "BIDE",          type: "NORMAL",  power: 0,   lockIn: true },  // 2-3 menu-less storing turns
+  129:{ name: "SWIFT",         type: "NORMAL",  power: 60 },
+  141:{ name: "LEECH LIFE",    type: "BUG",     power: 20 },
 };
 
 /** wq#587: ONE picker for every deterministic fight path (unwedge,

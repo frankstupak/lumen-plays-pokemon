@@ -23,6 +23,7 @@ import { StateReader, PartyMon } from "./state";
 import { ITEM } from "./items";
 import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
 import { MOVES } from "./moves";
+import { GateConfig, GrindState, GrindConfig, LossLedger, grindStatus } from "./ledger";
 
 // Story flag bit indices (see src/state.ts STORY_FLAGS for derivation)
 const F_BEAT_BROCK = 0x077;
@@ -255,4 +256,30 @@ export function mistyGymEntryRefusal(emu: Emulator, sym: SymbolTable, reader: St
     `all-Water gym regardless of level (Ember is resisted; Rage locks you in for 20 base power). ` +
     `GRIND Route 24 (map35) + Route 25 (map36) first and catch a BELLSPROUT/ODDISH (Grass counter) ` +
     `or GEODUDE (Rock counter) in the grass there before trying Misty again (wq#674/#677).`;
+}
+
+/** wq#1181 (roadmap item 6): the GENERALIZED gate. mistyGymEntryRefusal above is
+ *  one leader with hardcoded thresholds; this one refuses re-entry into ANY
+ *  engagement the loss ledger says we keep losing, keyed by a caller-chosen
+ *  string. Returns the refusal line, or null when entry is fine.
+ *
+ *  It cannot become permanent: LossLedger.gate() expires on time, on progress,
+ *  and on the arm cap (see ledger.ts). This function only renders the verdict. */
+export function engagementRefusal(ledger: LossLedger, key: string, label: string,
+                                  now: number, sig: string, cfg: GateConfig): string | null {
+  const g = ledger.gate(key, now, sig, cfg);
+  if (!g.blocked) return null;
+  return `refused - ENGAGEMENT GATE on ${label}: ${g.reason}. Walking back in loses again and ` +
+    `costs the whiteout tax (half your money, a walk back from the center). GRIND instead: ` +
+    `beat route trainers, walk the grass for a second body, then return. The gate lifts by ` +
+    `itself when you level up, add a party member, or when it times out (wq#1181).`;
+}
+
+/** wq#1181: the notepad line for an active grind. The grind governor is the
+ *  bounded remedy a gate prescribes — this is how the brain sees its finish
+ *  line and its deadline. */
+export function grindGuidance(g: GrindState | null, now: number, level: number,
+                              partyCount: number, cfg: GrindConfig): string {
+  if (!g) return "";
+  return grindStatus(g, now, level, partyCount, cfg).line;
 }

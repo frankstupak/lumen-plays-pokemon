@@ -26,7 +26,11 @@ import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
 import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
-import { MISTY_MIN_LEVEL, mistyGymEntryRefusal } from "./guidance";        // wq#516/#674
+import { MISTY_MIN_LEVEL, mistyGymEntryRefusal,
+         engagementRefusal, grindGuidance } from "./guidance";             // wq#516/#674/#1181
+import { LossLedger, GateConfig, GrindConfig, GrindState,
+         engagementKey, progressSig, startGrind, grindStatus } from "./ledger";   // wq#1181
+import { BlackoutDetector } from "./blackout";                                    // wq#1181
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock } from "./softlock";
 import { RecoveryTracker } from "./recovery";
@@ -183,6 +187,28 @@ export class Agent {
   // observe(). wq#724 wired ban consumption but never rendered this, so the
   // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
   private supervisorPin = "";
+  // wq#1181 (roadmap item 6): loss ledger + grind governor. The ledger persists
+  // to runtime/loss_ledger.json so a gate survives the agent reboot that a
+  // whiteout usually triggers — a gate that forgets across the very event it
+  // exists to stop is no gate at all.
+  private ledger = new LossLedger();
+  private ledgerFile = "";
+  private grind: GrindState | null = null;
+  // The engagement currently in flight, and the last one seen. `lost` is latched
+  // mid-battle (every party slot at 0 HP) because by the time the battle ends
+  // the game has already whited us out and healed the party.
+  // The loss signal is wq#547's BlackoutDetector (halved purse + a corroborator),
+  // NOT an all-fainted party read: wq#547 measured 1285 state_reads carrying
+  // party data and found the all-fainted window in ZERO of them, because Red
+  // heals and warps you inside one poll interval. In Gen 1 every battle loss
+  // ends that way, so a blackout IS the loss — it just lands a turn or two after
+  // the battle, which is why the engagement is remembered past its own end.
+  private blackout = new BlackoutDetector();
+  private engagement: { key: string; label: string; at: number } | null = null;
+  private pendingWin: { key: string; turn: number } | null = null;
+  private static readonly BLACKOUT_ATTRIB_MS = 10 * 60_000;
+  /** Turns a battle must survive un-blacked-out before it counts as a win. */
+  private static readonly WIN_CONFIRM_TURNS = 2;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -193,6 +219,114 @@ export class Agent {
     public items: Items = new Items(emu, sym, scr, sync, dlg, nav, map, bat),
     public heal: Heal = new Heal(emu, sym, scr, sync, dlg, nav, reader, bat, bus)) {
     this.loadSupervisorBans();
+    this.loadLedger();
+  }
+
+  /** wq#1181: the ledger lives beside the supervisor directive, under runtime/. */
+  private loadLedger(): void {
+    if (!CFG.lossLedger.enabled) return;
+    try {
+      this.ledgerFile = join(this.checkpointDir, "..", "runtime", "loss_ledger.json");
+      this.ledger = LossLedger.load(this.ledgerFile);
+      this.ledger.prune(Date.now());
+    } catch { /* a bookkeeping failure must never break boot */ }
+  }
+
+  private gateCfg(): GateConfig {
+    const c = CFG.lossLedger;
+    return { after: c.gateAfter, ttlMs: c.gateTtlMs, maxArms: c.gateMaxArms, windowMs: c.gateWindowMs };
+  }
+  private grindCfg(): GrindConfig {
+    return { levels: CFG.lossLedger.grindLevels, maxMs: CFG.lossLedger.grindMaxMs };
+  }
+
+  /** wq#1181: the signature every armed gate is measured against. Anything a
+   *  grind can move belongs here — a change in ANY of these releases the gate. */
+  private currentSig(st?: GameState): string {
+    const s = st ?? this.reader.read();
+    return progressSig({
+      level: s.party[0]?.level ?? 0,
+      partyCount: s.partyCount,
+      badges: s.badgeCount,
+      events: this.reader.eventCount(),
+    });
+  }
+
+  /** wq#1181: is re-entering `destMap` gated by the loss ledger? Rendered text
+   *  or null. Also the ONE place the gate's expiry runs at a door. */
+  private engagementGate(destMap: number): string | null {
+    if (!CFG.lossLedger.enabled) return null;
+    const key = engagementKey.trainerMap(destMap);
+    const label = `${this.mapLabel(destMap) ?? `map${destMap}`} (map${destMap})`;
+    const ref = engagementRefusal(this.ledger, key, label, Date.now(),
+                                  this.currentSig(), this.gateCfg());
+    if (ref) this.bus.emit("tool_call", { tool: "engagement_gate_refused", src: "harness", key, label });
+    return ref;
+  }
+
+  /**
+   * wq#1181 (roadmap item 6): turn the battles we live through into a ledger.
+   * Runs every turn beside trackBattleLock.
+   *
+   * Losing is a blackout arriving a turn or two after the battle (see the field
+   * comment above), so a battle end is not settled on the spot: it becomes a
+   * PENDING win that only banks once WIN_CONFIRM_TURNS pass with no blackout
+   * attributed to it. Banking it immediately would reset the loss run that the
+   * blackout is about to add to, and the gate would never arm.
+   */
+  private trackEngagement(st: GameState): void {
+    if (!CFG.lossLedger.enabled) return;
+    const now = Date.now();
+    const hit = this.blackout.observe(st);
+
+    if (this.bat.active()) {
+      // A fresh battle while a win is still pending settles that win: play only
+      // continues into another fight if the last one did not black us out.
+      if (!this.engagement || this.pendingWin) {
+        if (this.pendingWin) { this.ledger.noteWin(this.pendingWin.key, now); this.pendingWin = null; }
+        const trainer = this.bat.state().inBattle === 2;
+        const key = trainer ? engagementKey.trainerMap(st.map) : engagementKey.wildMap(st.map);
+        this.engagement = { key, at: now, label: `${this.mapLabel(st.map) ?? `map${st.map}`} (map${st.map})` };
+      }
+    } else if (this.engagement && !this.pendingWin) {
+      this.pendingWin = { key: this.engagement.key, turn: this.turn };
+    }
+
+    const e = this.engagement;
+    if (hit && e && now - e.at <= Agent.BLACKOUT_ATTRIB_MS) {
+      this.recordLoss(e.key, e.label, st, now);
+      this.engagement = null;
+      this.pendingWin = null;
+    } else if (this.pendingWin && this.turn - this.pendingWin.turn >= Agent.WIN_CONFIRM_TURNS) {
+      this.ledger.noteWin(this.pendingWin.key, now);
+      this.ledger.save(this.ledgerFile);
+      this.pendingWin = null;
+      this.engagement = null;
+    }
+    this.checkGrind(st, now);
+  }
+
+  /** wq#1181: one loss into the ledger, plus the grind a fresh gate prescribes. */
+  private recordLoss(key: string, label: string, st: GameState, now: number): void {
+    const wasGated = this.ledger.gate(key, now, "", this.gateCfg()).blocked;
+    const entry = this.ledger.noteLoss(key, now, this.currentSig(st), this.gateCfg());
+    this.bus.emit("tool_call", { tool: "engagement_loss", src: "harness",
+      key, label, total: entry.totalLosses, gated: entry.gateUntil > 0 });
+    if (!wasGated && entry.gateUntil > 0) {
+      this.grind = startGrind(key, now, st.party[0]?.level ?? 0, st.partyCount);
+      this.bus.emit("tool_call", { tool: "grind_started", src: "harness", key });
+    }
+    this.ledger.save(this.ledgerFile);
+  }
+
+  /** wq#1181: the grind governor's own expiry — a grind that never ends is the
+   *  same turn-waste as the loop it replaced. */
+  private checkGrind(st: GameState, now: number): void {
+    if (!this.grind) return;
+    const s = grindStatus(this.grind, now, st.party[0]?.level ?? 0, st.partyCount, this.grindCfg());
+    if (!s.done) return;
+    this.bus.emit("tool_call", { tool: "grind_done", src: "harness", key: this.grind.key, why: s.reason });
+    this.grind = null;
   }
 
   /** wq#724: read the supervisor directive at boot and enforce map bans. */
@@ -341,6 +475,28 @@ export class Agent {
       }
       const lock = assessBattleLock(this.btTurns, this.btStall, !trainer);
       if (lock.directive) block += `\n${lock.directive}`;
+      // wq#1181 (roadmap item 5): the winnability verdict. ADVISORY by default —
+      // this line and the event below are the whole effect until
+      // LPP_WINNABILITY_FORCE=1 (see CFG.winnability for the soak rationale).
+      const wv = this.winnabilityNow(b);
+      if (wv && wv.verdict !== "unknown") {
+        block += `\n${wv.line}`;
+        if (wv.verdict === "flee") {
+          // The soak's raw material: every flee verdict is logged with its
+          // numbers, so a week of events answers "would forcing have been
+          // right?" before CFG.winnability.force is ever turned on.
+          this.bus.emit("tool_call", { tool: "winnability", src: "harness",
+            verdict: wv.verdict, confidence: wv.confidence, reason: wv.reason,
+            trainer, koFoe: wv.turnsToKOFoe, koMe: wv.turnsToKOMe,
+            forced: CFG.winnability.force && wv.confidence === "high" && !trainer });
+          if (wv.confidence === "high")
+            block += trainer
+              ? `\n! UNWINNABLE - a trainer battle has no exit; use items or expect to lose`
+              : CFG.winnability.force
+                ? `\n! UNWINNABLE - the harness will flee this encounter`
+                : `\n! UNWINNABLE - flee() now; fighting it through costs the whiteout tax`;
+        }
+      }
       block += `\nBAG ${this.items.bagLine()}`;
       return block;
     }
@@ -350,6 +506,14 @@ export class Agent {
     // written to runtime/supervisor_directive.json and never read (wq#724 wired
     // ban enforcement but not this). Prefixed "!!" so it reads as high-priority.
     if (this.supervisorPin) block += `\n!! ${this.supervisorPin}`;
+
+    // wq#1181 (roadmap item 6): the grind governor's finish line and deadline,
+    // so the brain can see what would end the gate it is sitting behind.
+    if (this.grind) {
+      const line = grindGuidance(this.grind, Date.now(), st.party[0]?.level ?? 0,
+                                 st.partyCount, this.grindCfg());
+      if (line) block += `\n!! ${line}`;
+    }
 
     const inCenter = this.emu.mem()[this.sym.addr("wCurMapTileset")] === 6;  // POKECENTER tileset
     const lead = st.party[0];
@@ -579,6 +743,13 @@ export class Agent {
                 const ref = mistyGymEntryRefusal(this.emu, this.sym, this.reader);
                 if (ref) return `goto: ${ref}`;
               }
+              // wq#1181: the generalized ledger gate on the same door — the
+              // Misty gate covers one leader's readiness, this one covers "we
+              // have already lost in there twice".
+              if (w && w.destMap !== undefined) {
+                const gref = this.engagementGate(w.destMap);
+                if (gref) return `goto: ${gref}`;
+              }
             }
           }
           const r = await this.nav.goto(tx, ty);
@@ -672,6 +843,12 @@ export class Agent {
             return `enter_warp: refused — ${label} (map${w.destMap}) is BANNED by the ` +
               `stuck supervisor (navigation loop detected). Pick a different destination ` +
               `or pursue a different objective. The ban lifts when story progress advances.`;
+          }
+          // wq#1181: generalized engagement gate — refuse re-entry into any map
+          // whose trainers have beaten us twice, until the ledger's gate expires.
+          if (w.destMap !== undefined) {
+            const gref = this.engagementGate(w.destMap);
+            if (gref) return `enter_warp: ${gref}`;
           }
           // wq#674: the door tile you just warped IN on is ALSO the warp back
           // out (true of every gym/building entrance) - firing enter_warp on
@@ -998,6 +1175,18 @@ export class Agent {
       const st = this.reader.read();
       const balls = this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL) + this.items.count(ITEM.ULTRA_BALL);
       const usable = b.moves.map((m, i) => (m && (b.pp[i] & 0x3f) > 0) ? i : -1).filter(i => i >= 0);
+      // wq#1181 (roadmap item 5): a WILD fight the calc says we cannot win is
+      // fled outright, ahead of every other transit rule — including the XP
+      // grind, which is exactly the setting that walks a losing matchup into a
+      // whiteout. Guarded three ways: the feature flag, the soak flag
+      // (CFG.winnability.force, OFF by default), and a high-confidence verdict.
+      const wv = wild ? this.winnabilityNow(b) : null;
+      if (wv && wv.verdict === "flee" && wv.confidence === "high" && CFG.winnability.force) {
+        this.bus.emit("tool_call", { tool: "flee", args: [], src: "winnability", why: wv.reason });
+        const r = await this.bat.flee();
+        this.transit.noteFlee(r);
+        return { kind: "flee", result: `flee unwinnable -> ${r} (${wv.reason})` };
+      }
       const d = this.transit.battleStep({
         wild,
         hpFrac: b.myMaxHp > 0 ? b.myHp / b.myMaxHp : 1,
@@ -1051,6 +1240,26 @@ export class Agent {
     return { kind: "resume", result: `goto(${goal.x},${goal.y}) resumed [${goal.attempts}/${CFG.transitResumeCap}] -> ${r} now ${JSON.stringify(this.nav.posChecked())}` };
   }
 
+  /** wq#1181: HP the bag can put back mid-battle. Deliberately an OVER-estimate
+   *  (full stock, ignoring turns spent using it): it biases the verdict toward
+   *  "fight", and the only action the verdict may force is a flee. */
+  private bagHealHp(maxHp: number): number {
+    try {
+      return this.items.count(ITEM.POTION) * 20
+        + this.items.count(ITEM.SUPER_POTION) * 50
+        + this.items.count(ITEM.HYPER_POTION) * 200
+        + (this.items.count(ITEM.MAX_POTION) + this.items.count(ITEM.FULL_RESTORE)) * maxHp;
+    } catch { return 0; }
+  }
+
+  /** wq#1181: the verdict for the battle on screen, or null when the feature is
+   *  off. Pure arithmetic — no ROM read, no model call. */
+  private winnabilityNow(b: ReturnType<Battle["state"]>) {
+    if (!CFG.winnability.enabled) return null;
+    try { return this.bat.winnability(b, this.bagHealHp(b.myMaxHp)); }
+    catch { return null; }
+  }
+
   /** wq#423: per-battle counters. HP-only signature: PP is deliberately
    *  excluded so a move that fires but never lands (Normal vs Ghost) still
    *  reads as a stall. Reset the moment the battle is over. */
@@ -1098,6 +1307,7 @@ export class Agent {
     await this.sync.settle();
     this.trackBattleLock();
     const before = this.reader.read();
+    this.trackEngagement(before);   // wq#1181: loss ledger + grind governor
     let stateBlock = this.observe();
     this.bus.emit("state_read", before as unknown as object);
 

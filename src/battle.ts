@@ -11,6 +11,10 @@ import { Screen } from "./screen";
 import { Sync } from "./sync";
 import { Dialog } from "./dialog";
 import { EventBus } from "./events";
+import { SideStats, Winnability, combatant, moveInfos,
+         winnability as assessWinnability } from "./calc";
+
+const NO_STATS: SideStats = { attack: 0, defense: 0, speed: 0, special: 0, type1: -1, type2: -1 };
 
 export interface BattleState {
   inBattle: number;             // 0 none, 1 wild, 2 trainer
@@ -18,6 +22,11 @@ export interface BattleState {
   foeSpecies: number; foeLevel: number; foeHp: number; foeMaxHp: number;
   moves: number[]; pp: number[];
   atMainMenu: boolean;
+  // wq#1181 winnability inputs. Zeroed (NO_STATS / []) when the symbols are
+  // missing, which calc.winnability reports as verdict "unknown" rather than
+  // guessing — a missing decode must never force a flee.
+  myStats: SideStats; foeStats: SideStats;
+  foeMoves: number[];
 }
 
 export class Battle {
@@ -30,9 +39,28 @@ export class Battle {
     return (m[a] << 8) | m[a + 1];
   }
 
+  /** wq#1181: stat/type block for one side. A missing symbol degrades the whole
+   *  side to zeros — the verdict then reads "unknown" and nothing is forced. */
+  private sideStats(prefix: "wBattleMon" | "wEnemyMon"): SideStats {
+    try {
+      const m = this.emu.mem();
+      const t = this.sym.addr(`${prefix}Type1`);
+      return {
+        attack: this.r16(`${prefix}Attack`), defense: this.r16(`${prefix}Defense`),
+        speed: this.r16(`${prefix}Speed`), special: this.r16(`${prefix}Special`),
+        type1: m[t], type2: m[t + 1],
+      };
+    } catch { return { ...NO_STATS }; }
+  }
+
   state(): BattleState {
     const m = this.emu.mem();
     const mv = this.sym.addr("wBattleMonMoves"), pp = this.sym.addr("wBattleMonPP");
+    let foeMoves: number[] = [];
+    try {
+      const fm = this.sym.addr("wEnemyMonMoves");
+      foeMoves = [0, 1, 2, 3].map(i => m[fm + i]);
+    } catch { /* symbol absent: verdict falls back to an assumed foe attack */ }
     return {
       inBattle: this.r("wIsInBattle"),
       mySpecies: this.r("wBattleMonSpecies"), myLevel: this.r("wBattleMonLevel"),
@@ -42,7 +70,31 @@ export class Battle {
       moves: [0, 1, 2, 3].map(i => m[mv + i]),
       pp: [0, 1, 2, 3].map(i => m[pp + i]),
       atMainMenu: this.atMainMenu(),
+      myStats: this.sideStats("wBattleMon"), foeStats: this.sideStats("wEnemyMon"),
+      foeMoves,
     };
+  }
+
+  /**
+   * wq#1181 (roadmap item 5): should we be in this fight at all?
+   *
+   * Pure arithmetic over the state above — no ROM read, no model call. The
+   * verdict is ADVISORY by default (CFG.winnability.force); the caller decides
+   * whether to act on it, and only a high-confidence "flee" in a WILD battle is
+   * ever allowed to force one.
+   *
+   * `healHp` is how much HP the bag can restore mid-battle, so a fight that is
+   * only winnable through potions reads as winnable.
+   */
+  winnability(st: BattleState = this.state(), healHp = 0): Winnability {
+    return assessWinnability({
+      me: combatant(st.myLevel, st.myHp, st.myMaxHp, st.myStats),
+      foe: combatant(st.foeLevel, st.foeHp, st.foeMaxHp, st.foeStats),
+      myMoves: moveInfos(st.moves, st.pp),
+      foeMoves: moveInfos(st.foeMoves),
+      wild: st.inBattle !== 2,
+      healHp,
+    });
   }
 
   active(): boolean { return this.r("wIsInBattle") !== 0; }

@@ -93,6 +93,31 @@ export const CFG = {
   // wq#487: when an XP grind is the point (pre-gym levelling), transit must NOT
   // flee. Off by default; LPP_XP_GRIND=1 turns encounters back into content.
   xpGrind: envN0("LPP_XP_GRIND", 0) > 0,
+  // wq#1181 (roadmap item 5) WINNABILITY VERDICT: src/calc.ts scores the fight
+  // on screen from live battle RAM and says fight/flee. `force` is the whole
+  // risk surface — with it OFF the verdict is a line in the state block and an
+  // event and nothing else, which is the SOAK posture the ticket asks for
+  // (Fable: Medium risk). Flip LPP_WINNABILITY_FORCE=1 only after a week of
+  // advisory data shows the verdict agreeing with reality; even then it forces
+  // only a WILD flee, and only on a high-confidence verdict.
+  winnability: {
+    enabled: envN0("LPP_WINNABILITY", 1) > 0,
+    force: envN0("LPP_WINNABILITY_FORCE", 0) > 0,
+  },
+  // wq#1181 (roadmap item 6) LOSS LEDGER + ENGAGEMENT GATES. Generalizes the
+  // hardcoded Misty gate: any engagement lost `gateAfter` times arms a gate that
+  // refuses re-entry. EVERY number here is an expiry — wq#517's lesson is that a
+  // gate which can only be released by the thing it blocks is permanent.
+  lossLedger: {
+    enabled: envN0("LPP_LOSS_LEDGER", 1) > 0,
+    gateAfter: envN("LPP_GATE_AFTER", 2),
+    gateTtlMs: envN("LPP_GATE_TTL_MS", 45 * 60_000),
+    gateMaxArms: envN("LPP_GATE_MAX_ARMS", 3),
+    gateWindowMs: envN("LPP_GATE_WINDOW_MS", 3 * 60 * 60_000),
+    // grind governor: the bounded remedy a gate prescribes.
+    grindLevels: envN("LPP_GRIND_LEVELS", 2),
+    grindMaxMs: envN("LPP_GRIND_MAX_MS", 60 * 60_000),
+  },
   // wq#476: per-map good-run STEP estimates (manhattan-delta proxy summed over
   // state_reads; see watchdog in live_agent.ts). Soft alarm at 2x = notepad
   // warning + turn_summary; hard at 3x = designed continue (exit(3) -> resume
