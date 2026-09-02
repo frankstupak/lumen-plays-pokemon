@@ -145,7 +145,11 @@ fail-closed on partial/unverifiable windows, observe-only default vs
   called a stall and classified like any other. It is why the axis ships
   observe-only: the gate that should suppress it (`inBattle`, or an XP-rate
   term) belongs with the battle work in items 5-6 of the improvement plan, not
-  in a detector that cannot yet see a fight's shape.
+  in a detector that cannot yet see a fight's shape. Items 5-6 landed in
+  wq#1181 (`docs/FIGHT_GATES.md`) and now emit the two signals that gate would
+  need — a per-battle-turn `winnability` verdict and a `fight_ledger` outcome
+  record — but this module does not consume them yet, so the false-positive
+  path above is unchanged.
 - `OBJECTIVE_UNREACHABLE` degrades to "never selected" (not a crash) if
   `lpp_frontier` fails to import, matching `lpp-sentinel`'s own
   `frontier_unavailable` precedent of reporting failure loudly rather than

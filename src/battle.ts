@@ -11,6 +11,7 @@ import { Screen } from "./screen";
 import { Sync } from "./sync";
 import { Dialog } from "./dialog";
 import { EventBus } from "./events";
+import { Combatant, Winnability, winnability, WinnabilityOpts } from "./calc";
 
 export interface BattleState {
   inBattle: number;             // 0 none, 1 wild, 2 trainer
@@ -19,6 +20,12 @@ export interface BattleState {
   moves: number[]; pp: number[];
   atMainMenu: boolean;
 }
+
+/** wq#1181: the identity a fight is recorded under in the loss ledger.
+ *  wCurOpponent >= FIRST_TRAINER_CLASS means a trainer (class = value - 200);
+ *  below that it is a wild species id. wTrainerNo separates the individual
+ *  trainers of one class on one map. */
+export interface FightId { opponent: number; trainerNo: number; trainer: boolean }
 
 export class Battle {
   constructor(private emu: Emulator, private sym: SymbolTable, private scr: Screen,
@@ -46,6 +53,84 @@ export class Battle {
   }
 
   active(): boolean { return this.r("wIsInBattle") !== 0; }
+
+  // ---- wq#1181: winnability inputs -----------------------------------------
+  // Everything below reads RAM that Gen 1 has already normalised: wBattleMon* /
+  // wEnemyMon* hold the EFFECTIVE stats after stat stages and badge boosts
+  // (CalculateModifiedStats / ApplyBadgeStatBoosts), and the type bytes come
+  // straight from the loaded mon, so no species table is needed. Every read is
+  // wrapped: a missing symbol or a mid-load frame must degrade the verdict, not
+  // take the turn down.
+
+  private safe(name: string, wide = false): number {
+    try { return wide ? this.r16(name) : this.r(name); } catch { return 0; }
+  }
+
+  /** Both sides of the current exchange, or null when no battle is loaded. */
+  combatants(): { me: Combatant; foe: Combatant } | null {
+    if (!this.active()) return null;
+    try {
+      const m = this.emu.mem();
+      const mv = this.sym.addr("wBattleMonMoves"), pp = this.sym.addr("wBattleMonPP");
+      const fmv = this.sym.addr("wEnemyMonMoves"), fpp = this.sym.addr("wEnemyMonPP");
+      const me: Combatant = {
+        species: this.safe("wBattleMonSpecies"), level: this.safe("wBattleMonLevel"),
+        hp: this.safe("wBattleMonHP", true), maxHp: this.safe("wBattleMonMaxHP", true),
+        atk: this.safe("wBattleMonAttack", true), def: this.safe("wBattleMonDefense", true),
+        spc: this.safe("wBattleMonSpecial", true), speed: this.safe("wBattleMonSpeed", true),
+        type1: this.safe("wBattleMonType1"), type2: this.safe("wBattleMonType2"),
+        status: this.safe("wBattleMonStatus"),
+        moves: [0, 1, 2, 3].map(i => ({ id: m[mv + i], pp: m[pp + i] & 0x3f })),
+      };
+      // The foe's PP is readable too, but a foe never runs a set dry inside the
+      // horizon this verdict covers, so its moves are treated as always usable
+      // (pp 1) rather than trusting a byte that is 0 for an unrevealed slot.
+      const foe: Combatant = {
+        species: this.safe("wEnemyMonSpecies"), level: this.safe("wEnemyMonLevel"),
+        hp: this.safe("wEnemyMonHP", true), maxHp: this.safe("wEnemyMonMaxHP", true),
+        atk: this.safe("wEnemyMonAttack", true), def: this.safe("wEnemyMonDefense", true),
+        spc: this.safe("wEnemyMonSpecial", true), speed: this.safe("wEnemyMonSpeed", true),
+        type1: this.safe("wEnemyMonType1"), type2: this.safe("wEnemyMonType2"),
+        status: this.safe("wEnemyMonStatus"),
+        moves: [0, 1, 2, 3].map(i => ({ id: m[fmv + i], pp: Math.max(1, m[fpp + i] & 0x3f) })),
+      };
+      if (me.maxHp <= 0 || foe.maxHp <= 0) return null;   // mid-load frame
+      return { me, foe };
+    } catch { return null; }
+  }
+
+  /** Who this fight is against, for the loss ledger (wq#1181 item 6). */
+  fightId(): FightId {
+    const opponent = this.safe("wCurOpponent");
+    return { opponent, trainerNo: this.safe("wTrainerNo"), trainer: this.r("wIsInBattle") === 2 };
+  }
+
+  /** Unfainted mons the foe still has. Wild battles are always 1. The enemy
+   *  party is six 44-byte structs at wEnemyMon1 with HP at offset 1 (big
+   *  endian), the same layout wPartyMon1 uses. */
+  foeRemaining(): number {
+    if (this.r("wIsInBattle") !== 2) return 1;
+    try {
+      const m = this.emu.mem();
+      const n = Math.min(6, Math.max(0, this.safe("wEnemyPartyCount")));
+      const base = this.sym.addr("wEnemyMon1"), stride = 44;
+      let alive = 0;
+      for (let i = 0; i < n; i++) {
+        const a = base + i * stride + 1;
+        if (((m[a] << 8) | m[a + 1]) > 0) alive++;
+      }
+      return Math.max(1, alive);
+    } catch { return 1; }
+  }
+
+  /** wq#1181: the winnability verdict for the current exchange, or null when
+   *  no battle is loaded. Pure arithmetic over the reads above — no menu input,
+   *  no frames, safe to call every turn. */
+  winnability(opts: WinnabilityOpts = {}): Winnability | null {
+    const c = this.combatants();
+    if (!c) return null;
+    return winnability(c.me, c.foe, { foeRemaining: this.foeRemaining(), ...opts });
+  }
 
   /** Cursor rendered in the bottom-right quadrant = the FIGHT/ITEM grid */
   atMainMenu(): boolean {

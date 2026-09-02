@@ -18,6 +18,10 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
                    // it. It exists so a stall can be seen in TURNS ("dP == 0
                    // over 40 turns") instead of only in wall hours, which is
                    // what every prior axis was limited to.
+  | "winnability"  // wq#1181: per-battle-turn damage-calc verdict, plus the
+                   // action it WITHHELD while advisory-only. The soak week's
+                   // evidence for whether LPP_WINNABILITY_FORCE=1 is safe.
+  | "fight_ledger" // wq#1181: fight outcome recorded, gate opened/fired/lifted.
   | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
                    // nav.goto. The turn-level log records position ONCE PER TURN,
                    // POST-ACTION, which makes every decision inside a journey

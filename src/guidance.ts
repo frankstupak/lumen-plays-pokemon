@@ -23,6 +23,7 @@ import { StateReader, PartyMon } from "./state";
 import { ITEM } from "./items";
 import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
 import { MOVES } from "./moves";
+import { GateDecision, GrindVerdict, GATE_LEVEL_RISE } from "./ledger";
 
 // Story flag bit indices (see src/state.ts STORY_FLAGS for derivation)
 const F_BEAT_BROCK = 0x077;
@@ -255,4 +256,45 @@ export function mistyGymEntryRefusal(emu: Emulator, sym: SymbolTable, reader: St
     `all-Water gym regardless of level (Ember is resisted; Rage locks you in for 20 base power). ` +
     `GRIND Route 24 (map35) + Route 25 (map36) first and catch a BELLSPROUT/ODDISH (Grass counter) ` +
     `or GEODUDE (Rock counter) in the grass there before trying Misty again (wq#674/#677).`;
+}
+
+// ---------------------------------------------------------------------------
+// wq#1181 (roadmap item 6): the GENERALIZED versions of the two things above.
+//
+// mistyGymEntryRefusal is hand-coded for one gym: its thresholds, its species
+// list, its map id. The loss ledger (ledger.ts) produces the same shape of
+// refusal for ANY fight the agent has actually lost, from data, with expiry.
+// The Misty gate stays where it is — it is a proven, stage-specific belt that
+// fires BEFORE a first loss is ever recorded — and these render the general
+// mechanism that covers every gym after it. No new per-gym code from here on.
+
+/** The enter_warp refusal for a live loss gate. Always states BOTH what opens
+ *  the gate and when it gives up: a refusal the brain cannot see an exit from
+ *  is how wq#517 wedged. */
+export function engagementGateLine(d: GateDecision, label: string): string {
+  const mins = Math.max(1, Math.round((d.msLeft ?? 0) / 60000));
+  return `refused - LOSS GATE on ${label}: ${d.reason}. ` +
+    `Re-entry opens when party levelSum reaches ${d.needLevelSum} (+${GATE_LEVEL_RISE} from the loss), ` +
+    `or automatically in ${mins} min, or after ${d.firesLeft} more refusals. ` +
+    `Losing the same fight again costs half your money and respawns you at the centre - ` +
+    `GRIND first (route grass and trainers near here), heal, then come back.`;
+}
+
+/** Fired for a few turns after a loss gate expires. The lift is the moment
+ *  grinding stops being justified, and the agent has to be told outright —
+ *  the live failure this whole item exists for is an agent that kept doing the
+ *  thing it was told to do long after the reason had gone. */
+export function gateLiftedLine(label: string, reason: string): string {
+  return `LOSS GATE LIFTED on ${label}: ${reason}. Stop grinding - heal, then go and fight it.`;
+}
+
+/** Per-turn pressure line for the grind governor. Escalates with how long the
+ *  grind has been unjustified, because a single quiet line is what the live
+ *  agent already ignored for two days (wq#532: prose alone is not a rule — the
+ *  gate above is the rule; this is the part that tells it where to go). */
+export function grindPressure(g: GrindVerdict, unjustifiedTurns: number, objective: string): string | null {
+  if (g.justified) return null;
+  const urgency = unjustifiedTurns >= 20 ? "!! " : unjustifiedTurns >= 10 ? "! " : "";
+  return `${urgency}GRIND NOT JUSTIFIED (${unjustifiedTurns} turns): ${g.reason}. ` +
+    `Stop grinding and pursue the story objective: ${objective}`;
 }
