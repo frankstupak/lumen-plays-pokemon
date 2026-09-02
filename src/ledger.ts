@@ -28,6 +28,7 @@
 // a gate without an expiry.
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
+import { CENTER_MAPS } from "./centers";
 
 /** levelSum points that must accumulate after a loss before re-entry opens.
  *  levelSum (novelty.ts) is the sum over the party, so this is "three levels
@@ -136,6 +137,53 @@ export function gateLift(g: GateRecord, c: GateCtx): string | null {
   if (g.fires >= GATE_MAX_FIRES)
     return `gate refused ${g.fires} times without steering the run (anti-wedge cap)`;
   return null;
+}
+
+/** What openFight() captured while the fight was still loaded. */
+export interface FightBefore { map: number; money: number }
+/** What the read after the fight sees. */
+export interface FightAfter {
+  map: number; money: number; party: { hp: number; maxHp: number }[];
+}
+
+/**
+ * wq#1246: did the fight that just ended go badly? Pure, so the probe can walk
+ * the heuristic itself rather than only the ledger it feeds — the gap wq#1244
+ * found was that every check called record() directly and nothing exercised the
+ * inference that decides WHAT to record.
+ *
+ * The loss signature is the white-out's durable consequences (blackout.ts,
+ * wq#547): the party is fainted for less than one poll interval, so the money
+ * halving plus a Centre/restored corroborator is what fires.
+ *
+ * THE $0 PURSE. Red halves the purse with floor rounding, so a run of losses
+ * converges exactly to zero (3000...5, 2, 1, 0) and stays there. blackout.ts
+ * requires `before > 0` because it runs over a state_read STREAM, where a broke
+ * player standing in a Centre would otherwise report a white-out every turn.
+ * That guard was carried here unchanged, and here it is a hole: this runs once
+ * per fight, from a purse captured while the fight was loaded, and once the
+ * purse is 0 it made every later loss unrecordable — the gate stopped engaging
+ * in exactly the long-run degraded state it exists for.
+ *
+ * At $0 the purse cannot move, so the TELEPORT carries the verdict instead: a
+ * white-out drops the player at a Pokemon Center that is not where the fight
+ * was, with the party healed, while a win leaves them standing on the fight map
+ * with prize money in hand. Both halves of that (the warp AND the full party)
+ * are required, because a heal the agent walked to itself is the one thing that
+ * could imitate it, and it cannot imitate it in the few turns of grace the
+ * caller allows. Known gap, deliberately not chased: a player who has never
+ * used a Centre respawns at home instead, which is unreachable with a $0 purse
+ * (the game starts at $3000).
+ */
+export function fightWasLost(before: FightBefore, after: FightAfter): boolean {
+  const alive = after.party.length > 0 && after.party.every(p => p.maxHp > 0);
+  const restored = alive && after.party.every(p => p.hp === p.maxHp);
+  const wiped = alive && after.party.every(p => p.hp <= 0);
+  const atCenter = CENTER_MAPS.has(after.map);
+  const halved = before.money > 0 && after.money <= Math.floor(before.money / 2);
+  const brokeWarp = before.money === 0 && after.money === 0 &&
+    atCenter && after.map !== before.map && restored;
+  return wiped || (halved && (atCenter || restored)) || brokeWarp;
 }
 
 export interface LedgerOpts {

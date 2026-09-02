@@ -17,6 +17,7 @@ process.env.LPP_FIGHT_LEDGER = `/tmp/ledger1181-${TAG}.json`;
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import {
+  FightAfter, fightWasLost,
   FightLedger, FightRecord, GateCtx, gateLift, grindJustified, fightKey, ledgerFile,
   loadLedger, GATE_LEVEL_RISE, GATE_TTL_MS, GATE_MAX_FIRES, KEEP_RECORDS,
   GRIND_WINDOW_TURNS, GRIND_MIN_LEVEL_GAIN, LIFT_RENDERS,
@@ -259,6 +260,57 @@ console.log("\n=== G. every refusal states its exits (a rule with no exit wedges
   chk("G12 the lift line is bounded, not wallpaper", renders === LIFT_RENDERS,
       `${renders} renders`);
   clean();
+}
+
+// ------------------------------------------------- H. the loss heuristic itself
+// wq#1246: sections A-G all hand FightLedger a FightRecord that already says
+// "loss", so none of them touch the inference that decides WHAT to record —
+// which is where the bug was. The heuristic is pure now, so this walks it.
+console.log("\n=== H. what counts as a loss (wq#1246: the $0 purse) ===");
+{
+  const GYM = 65, CENTER = 64, ROUTE = 15;      // 64 = Cerulean Pokecenter
+  const full = [{ hp: 30, maxHp: 30 }, { hp: 22, maxHp: 22 }];
+  const hurt = [{ hp: 4, maxHp: 30 }, { hp: 22, maxHp: 22 }];
+  const dead = [{ hp: 0, maxHp: 30 }, { hp: 0, maxHp: 22 }];
+  const lost = (money: number, after: Partial<FightAfter>) =>
+    fightWasLost({ map: GYM, money },
+      { map: CENTER, money: 0, party: full, ...after });
+
+  chk("H1 the canonical loss: purse halved, warped to a Centre, party healed",
+      lost(3000, { money: 1500 }));
+  chk("H2 a LOSS AT $0 IS STILL A LOSS (the wq#1244 contradiction)",
+      lost(0, { money: 0 }));
+  chk("H3 the last halving before $0 still reads as one", lost(1, { money: 0 }));
+  chk("H4 an all-fainted read is a loss whatever the purse says",
+      lost(0, { map: GYM, party: dead }));
+
+  chk("H5 a broke WIN on the fight map is not a loss",
+      !lost(0, { map: GYM, party: hurt }));
+  chk("H6 nor is a flawless broke win — no warp, no loss",
+      !lost(0, { map: GYM }));
+  chk("H7 nor a broke win walked one map over at full HP",
+      !lost(0, { map: ROUTE }));
+  chk("H8 nor a broke agent standing in the Centre it has not healed at yet",
+      !lost(0, { party: hurt }));
+  chk("H9 prize money rules out the loss it would otherwise look like",
+      !lost(0, { money: 96 }));
+  chk("H10 a purse halved with nothing corroborating it is a mart run",
+      !lost(3000, { map: ROUTE, money: 1500, party: hurt }));
+  // A mid-load read (partyCount 0) cannot corroborate anything, so it can only
+  // ever be carried by evidence that does not need the party: the halving.
+  chk("H11 a read with no party cannot stand in for the healed party at $0",
+      !lost(0, { party: [] }));
+  chk("H12 but a halving at a Centre is still evidence without it",
+      lost(3000, { money: 1500, party: [] }));
+
+  // The heuristic must not drift back into agent.ts, where nothing tests it.
+  const agentSrc = readFileSync("src/agent.ts", "utf8");
+  chk("H13 resolveFight delegates the verdict rather than re-deriving it",
+      /const lost = fightWasLost\(\{ map: f\.map, money: f\.money \}, st\)/.test(agentSrc));
+  chk("H14 and keeps no money-halving expression of its own",
+      !/Math\.floor\(f\.money/.test(agentSrc));
+  chk("H15 the verdict still gets grace turns before it is believed",
+      /if \(!lost && !final && f\.grace < 3\)/.test(agentSrc));
 }
 
 console.log(`\nprobe_ledger1181: ${pass} passed, ${fail} failed`);

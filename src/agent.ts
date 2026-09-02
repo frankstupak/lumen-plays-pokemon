@@ -30,12 +30,11 @@ import { MISTY_MIN_LEVEL, mistyGymEntryRefusal,
          engagementGateLine, grindPressure, gateLiftedLine } from "./guidance";  // wq#516/#674/#1181
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock, assessWinnability } from "./softlock";
-import { FightLedger, grindJustified, GateCtx } from "./ledger";   // wq#1181 item 6
+import { FightLedger, fightWasLost, grindJustified, GateCtx } from "./ledger";   // wq#1181 item 6
 import { Winnability } from "./calc";                              // wq#1181 item 5
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
-import { CENTER_MAPS } from "./centers";
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
@@ -1187,20 +1186,18 @@ export class Agent {
    *
    * The loss signature is the white-out, not "party was fainted": the fainted
    * window closes inside one poll interval and is unobservable at one read per
-   * turn (blackout.ts measured 0 sightings in 1285 reads). Money halving plus a
-   * Centre/restored corroborator is what fires, and it is given a few turns of
-   * grace because the halving lands behind the white-out dialog.
+   * turn (blackout.ts measured 0 sightings in 1285 reads). fightWasLost()
+   * (ledger.ts) owns which consequences count — including the $0 purse a run of
+   * losses converges to (wq#1246) — and it is given a few turns of grace here
+   * because those consequences land behind the white-out dialog.
    */
   private resolveFight(final = false): void {
     const f = this.btId;
     if (!f) return;
     try {
       const st = this.reader.read();
-      const halved = f.money > 0 && st.money <= Math.floor(f.money / 2);
-      const restored = st.party.length > 0 && st.party.every(p => p.maxHp > 0 && p.hp === p.maxHp);
-      const wiped = st.party.length > 0 && st.party.every(p => p.maxHp > 0 && p.hp <= 0);
-      const lost = wiped || (halved && (CENTER_MAPS.has(st.map) || restored));
-      if (!lost && !final && f.grace < 3) { f.grace++; return; }   // the halving lags the fight
+      const lost = fightWasLost({ map: f.map, money: f.money }, st);
+      if (!lost && !final && f.grace < 3) { f.grace++; return; }   // the consequences lag the fight
       this.ledger.record({
         ts: Date.now(), turn: this.turn, outcome: lost ? "loss" : "win",
         opponent: f.opponent, trainerNo: f.trainerNo, map: f.map,
