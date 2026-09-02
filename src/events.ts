@@ -18,6 +18,10 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
                    // it. It exists so a stall can be seen in TURNS ("dP == 0
                    // over 40 turns") instead of only in wall hours, which is
                    // what every prior axis was limited to.
+  | "chat"         // wq#1176: a line Lumen spoke to the stream audience (one-way)
+  | "persona"      // wq#1176: a self-fact became canonical, was reaffirmed, or was
+                   // contradicted. Structured so a contradiction is countable rather
+                   // than something a human has to notice in the chat panel.
   | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
                    // nav.goto. The turn-level log records position ONCE PER TURN,
                    // POST-ACTION, which makes every decision inside a journey
