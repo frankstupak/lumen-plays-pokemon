@@ -912,7 +912,7 @@ export class Agent {
           // note text that actually landed is mined (a rejected note is not
           // something he said).
           if (res.startsWith("note saved") || res.startsWith("PINNED")) {
-            const notice = this.rememberSelf(raw, "notepad");
+            const notice = await this.rememberSelf(raw, "notepad");
             if (notice) return `${res}\n${notice}`;
           }
           return res;
@@ -939,15 +939,21 @@ export class Agent {
    * Returns the "!" notice for the brain when it contradicted itself, "" when
    * there is nothing to report. Never throws: a persona failure must not cost
    * a game turn.
+   *
+   * wq#1191: awaited because extraction is a model call on the cheap rung. It
+   * runs on lines Lumen SPEAKS (a SAY, a note), not on every turn, and the
+   * extractor is deadline-bounded — see persona_llm.ts.
    */
-  private rememberSelf(text: string, platform: string): string {
+  private async rememberSelf(text: string, platform: string): Promise<string> {
     if (!CFG.persona.enabled || !text.trim()) return "";
     try {
-      const events = this.persona.observe(text, platform);
+      const events = await this.persona.observe(text, platform);
       for (const e of events) {
         // Reaffirmations are the common case and are not worth an event each;
         // a NEW canonical fact and a CONTRADICTION are both worth counting.
         if (e.outcome === "reaffirmed") continue;
+        // "updated" is a change of mind: a new valid-from in lumen_state, not a
+        // conflict. Worth an event (the overlay shows it), no notice.
         this.bus.emit("persona", {
           outcome: e.outcome, key: e.key, value: e.value,
           canonical: e.fact.value, platform, src: "brain",
@@ -966,7 +972,7 @@ export class Agent {
    * would teach the brain that SAY does nothing, and it would either stop using
    * it or spam it. Both are worse than one line of feedback.
    */
-  private postSay(text: string): string {
+  private async postSay(text: string): Promise<string> {
     const clean = StreamChat.clean(text);
     if (!clean) return "";
     if (!CFG.chat.enabled) return "";
@@ -992,7 +998,7 @@ export class Agent {
     // Persona mining happens only on a line the audience actually saw. A fact
     // nobody was told is not a fact he has to live up to.
     if (posted) {
-      const conflict = this.rememberSelf(posted, CFG.persona.platform);
+      const conflict = await this.rememberSelf(posted, CFG.persona.platform);
       if (conflict) notice = notice ? `${notice}\n${conflict}` : conflict;
     }
     return notice;
@@ -1248,7 +1254,7 @@ export class Agent {
       // wq#1176: the audience line is parsed from the SAME reply, before the
       // ACT line is dispatched, so a refused or contradictory SAY is reported
       // in this turn's result rather than a turn late.
-      const sayNotice = this.postSay(text.match(/SAY:\s*(.+)/i)?.[1] ?? "");
+      const sayNotice = await this.postSay(text.match(/SAY:\s*(.+)/i)?.[1] ?? "");
 
       // The reasoning model sometimes spends its whole budget narrating and never
       // emits an ACT line. Retry with the actRetry profile - a DIFFERENT, cheap,

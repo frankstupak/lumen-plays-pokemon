@@ -78,6 +78,8 @@ src/
   stream.ts         live kiosk server
   chat.ts           streamer chat, one-way (Lumen -> audience)
   persona.ts        canonical self-facts, shared across every platform
+  persona_store.ts  those facts in lumen_state, the fleet's bi-temporal store
+  persona_llm.ts    "did he just state a durable fact about himself?"
   persona_cli.ts    the same store from any process: recall / ask / state
   link/             Game Boy link cable over TCP (multiplayer work)
   probe_*.ts        acceptance probes, one per shipped capability

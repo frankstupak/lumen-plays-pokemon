@@ -65,54 +65,77 @@ low"); a persona fact must never go stale. If he tells the stream his favourite
 Pokémon is Bulbasaur, the answer he gives on Messenger three weeks later has to
 be Bulbasaur, or he is not a character, he is a chatbot.
 
-**One file is the whole cross-platform mechanism.** `CFG.persona.path`
-(`LPP_PERSONA_PATH`, default `/home/lumen/pokemon/runtime/persona.json`) is read
-and written by every surface that speaks as Lumen. It deliberately does not live
-under `events/` or `checkpoints/`: those are swept by retention, and a persona
-fact must outlive every run that produced it. `persona.ts` imports nothing from
-the emulator, the ROM, or any LPP type, so a surface that knows nothing about
-Pokémon can still recall the persona.
+**The fleet store is the whole cross-platform mechanism (wq#1191).** Facts live
+in `lumen_state` — Minerva's bi-temporal store — under subject
+`CFG.persona.subject` (`LPP_PERSONA_SUBJECT`, default `lumen-persona`). Any
+surface, any language, any process reads them:
+
+```bash
+python3 /home/lumen/minerva/lumen_state.py current lumen-persona
+python3 /home/lumen/minerva/lumen_state.py history lumen-persona my_favorite_pokemon
+```
+
+wq#1176 shipped this as a JSON file inside this repo, readable only by an
+LPP-local CLI. That is the single-platform silo the requirement forbids, so the
+storage layer was replaced: `src/persona_store.ts` talks to lumen_state through
+`tools/lumen_state_json.py`, and `CFG.persona.path` is now only the old file's
+location, migrated once on the first boot that finds it and then renamed aside.
+
+One slot is one predicate (`my_favorite_pokemon`). A set-valued slot carries its
+value in the predicate (`i_like__caves`), because lumen_state keeps one open row
+per predicate and a second "i like" must not evict the first.
 
 ### What becomes canonical
 
-Extraction is deliberately narrow. A false canonical fact is worse than a missed
-one: it is a lie the character then has to keep telling.
+The mechanism is a model; the narrowness is policy. After every line Lumen
+speaks, `src/persona_llm.ts` asks the cheap rung (`deepseek-v4-flash`,
+`LPP_BRAIN_PERSONA`) whether he asserted a durable fact about himself — his
+past, possessions, preferences, relationships, opinions, places. Four regexes
+run first as a free fast path, and every proposal from either route passes the
+same guards (`buildClaim`). A false canonical fact is worse than a missed one:
+it is a lie the character then has to keep telling.
 
-| Said | Slot | Kind |
-| --- | --- | --- |
-| `My name is Lumen` | `my name` | single-valued |
-| `My favourite pokemon is Bulbasaur` | `my favorite pokemon` | single-valued |
-| `I go by Lumen` | `my name` | single-valued |
-| `I was built by Frank` | `i was built` | single-valued |
-| `I like caves` | `i like` | set-valued |
-| `I don't like Zubat` | `i do not like` | set-valued |
-| `I am an AI` | `i am` | set-valued |
+| Said | Slot | Kind | Route |
+| --- | --- | --- | --- |
+| `My name is Lumen` | `my name` | single-valued | regex |
+| `My favourite pokemon is Bulbasaur` | `my favorite pokemon` | single-valued | regex |
+| `I go by Lumen` | `my name` | single-valued | regex |
+| `I was built by Frank` | `i was built` | single-valued | regex |
+| `I like caves` | `i like` | set-valued | regex |
+| `I don't like Zubat` | `i do not like` | set-valued | regex |
+| `I am an AI` | `i am` | set-valued | regex |
+| `I used to drive a red Camaro back in Sacramento` | `my old car`, `my hometown` | single-valued | model |
 
 Rejected on purpose: volatile attributes (`my hp is 12`, `my party is weak`),
 passing states (`I am at Viridian`, `I am heading to Mt Moon`), anything in the
-third person, and anything that is not a first-person self-statement.
+third person, and anything that is not a first-person self-statement — whether a
+regex or the model proposed it.
 
 Slots fold spelling variants (`favourite`/`favorite`, `pokémon`/`pokemon`), or
 the same question would have two canonical answers and no contradiction between
 them would ever be detected.
 
-### Canonical means first
+### Contradiction vs. change of mind
 
-A single-valued slot restated with a **different** value does not overwrite.
-The original stands, the contradiction is recorded on the fact, and the caller
-gets a notice it can hand back to the brain:
+The day is the unit.
 
-```
-! PERSONA: you already told people my name is "Lumen" (said 3x since 2026-09-02,
-on messenger). "Ash" contradicts it — the original stands. Stay consistent.
-```
+- **Same day, different answer** — he is contradicting something he just said.
+  Refused, never ingested, and reported back to the brain:
 
-Last-write-wins would let the character drift wherever the most recent turn
-happened to point, which is the failure the store exists to prevent. Set-valued
-slots accumulate instead: liking two things is not a contradiction.
+  ```
+  ! PERSONA: you already told people my name is "Lumen" (said 3x since 2026-09-02,
+  on messenger). "Ash" contradicts it — the original stands. Stay consistent.
+  ```
 
-The prompt carries the facts back in a `PERSONA` block, ahead of the notepad —
-a contradiction there is permanent, while a stale note is not.
+- **A later day, different answer** — a change of mind, which is a legitimate
+  thing for a character to do. lumen_state closes the open row and opens a new
+  one with today's `valid-from`: the new value is current, and the old one stays
+  true of the days it was true (`history`, `asof`). wq#1176 had no valid-from
+  dimension at all, so its first answer was frozen forever.
+
+Set-valued slots accumulate instead of either: liking two things is not a
+contradiction. The prompt carries the current facts back in a `PERSONA` block,
+ahead of the notepad — a persona fact holds until he revises it, a note does not.
 
 ### Other platforms
 
@@ -125,9 +148,9 @@ npx tsx src/persona_cli.ts recall          # the block to paste into a prompt
 npx tsx src/persona_cli.ts list
 ```
 
-`state` exits `3` when the sentence contradicted an existing canonical fact, so
+`state` exits `3` when the sentence contradicted a fact stated the same day, so
 a bridge can react without parsing prose. `/persona.json` on the kiosk server
-serves the same store read-only.
+serves the current view read-only.
 
 ## Configuration
 
@@ -137,12 +160,21 @@ serves the same store read-only.
 | `LPP_CHAT_MIN_INTERVAL_MS` | `45000` | spacing between Lumen's lines |
 | `LPP_CHAT_RING` | `60` | messages kept for the overlay |
 | `LPP_PERSONA_ENABLE` | `1` | `0` = nothing recorded, no `PERSONA` block |
-| `LPP_PERSONA_PATH` | `/home/lumen/pokemon/runtime/persona.json` | the shared store |
+| `LPP_PERSONA_SUBJECT` | `lumen-persona` | lumen_state subject holding the facts |
+| `LPP_PERSONA_PATH` | `/home/lumen/pokemon/runtime/persona.json` | wq#1176 store, migrated once |
 | `LPP_PERSONA_PLATFORM` | `stream` | platform recorded for the agent's own lines |
 | `LPP_PERSONA_RECALL_BUDGET` | `900` | chars of persona per prompt |
+| `LPP_PERSONA_LLM_EXTRACT` | `1` | `0` = regex fast path only, no model call |
+| `LPP_BRAIN_PERSONA` | `deepseek-v4-flash` | extraction rung; keep it cheap |
+| `LPP_PERSONA_CACHE_TTL_MS` | `60000` | how long a turn may reuse the last store read |
+| `LPP_PERSONA_ADAPTER` | `tools/lumen_state_json.py` | the lumen_state door |
+| `LPP_LUMEN_STATE_DB` | *(unset)* | tests only: a throwaway sqlite file |
 
 ## Probes
 
-`src/probe_persona.ts` (38 checks) and `src/probe_chat.ts` (21 checks) are pure
-logic — no ROM, no emulator, no network — and run in `scripts/probes-pure.sh`,
-so CI covers both.
+`src/probe_persona.ts` (60 checks), `src/probe_persona_state.ts` (12) and
+`src/probe_chat.ts` (21) run in `scripts/probes-pure.sh`, so CI covers all
+three. `probe_persona` is pure logic on an in-process store; `probe_persona_state`
+drives the real `lumen_state.py` subprocess against a throwaway sqlite file and
+skips green where Minerva is not installed, which is how CI stays honest without
+either mocking the store or writing to live fleet state.
