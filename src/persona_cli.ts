@@ -72,8 +72,8 @@ async function main(argv: string[]): Promise<number> {
   const positional = positionals(argv.slice(1));
   const mem = new PersonaMemory();
   mem.bind();
-  if (mem.stats().store !== "lumen_state")
-    console.error(`! persona: lumen_state unavailable (${CFG.persona.adapter}); this session is process-local`);
+  if (mem.storeErrors > 0)
+    console.error(`! persona: lumen_state unreachable via ${CFG.persona.adapter} — nothing will be recorded`);
 
   switch (cmd) {
     case "recall": {

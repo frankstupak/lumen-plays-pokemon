@@ -271,14 +271,14 @@ export class PersonaMemory {
    * than killing whatever surface is booting.
    */
   bind(legacyPath = CFG.persona.path): void {
-    const state = new LumenStateStore();
-    if (!state.available()) {
-      // No Minerva on this machine (CI, a laptop). Process-local is honest;
-      // pretending to be cross-platform would be worse.
-      this.storeErrors++;
-      return;
-    }
-    this.store = state;
+    this.store = new LumenStateStore();
+    this.refresh(true);
+    // One bounded read decides whether Minerva is actually there — an adapter
+    // file that exists proves nothing about the interpreter, the module or the
+    // database behind it. A failure leaves the fleet store attached rather than
+    // falling back to something process-local: an outage should heal on the
+    // next refresh, not quietly turn the character into a silo again.
+    if (this.storeErrors > 0) return;
     try { this.migrateLegacy(legacyPath); } catch { /* never block a boot on a migration */ }
     this.refresh(true);
   }

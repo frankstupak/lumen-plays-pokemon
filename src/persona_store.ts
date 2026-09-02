@@ -16,7 +16,6 @@
 // contradiction to refuse — lives in persona.ts; this file only reads and
 // writes rows.
 import { spawnSync, spawn } from "child_process";
-import { existsSync } from "fs";
 import { CFG } from "./config";
 
 /** One open (currently-true) persona row. `validFrom` is a date, not a
@@ -116,12 +115,6 @@ export class LumenStateStore implements PersonaStore {
     this.db = o.db ?? CFG.persona.stateDb;
     this.timeoutMs = o.timeoutMs ?? CFG.persona.stateTimeoutMs;
     this.regenMinIntervalMs = o.regenMinIntervalMs ?? CFG.persona.regenMinIntervalMs;
-  }
-
-  /** True when the adapter and interpreter are actually present. Lets a surface
-   *  (or a probe on a machine without Minerva) degrade instead of throwing. */
-  available(): boolean {
-    return existsSync(this.adapter);
   }
 
   private run(args: string[]): any {
