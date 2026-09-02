@@ -46,6 +46,9 @@ PROBES=(
   probe_warprace699
   probe_braincfg
   probe_brain907
+  probe_resume1177
+  probe_ckptgate1177
+  probe_ckptwrite1177
 )
 
 failed=()
