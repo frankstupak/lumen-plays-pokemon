@@ -30,14 +30,39 @@
 //
 // PURE: no emulator, no I/O. agent.ts wires it around dispatch and emits the
 // board-visible event + forced stuck_dump on the trip.
+//
+// THRESHOLD, re-verified for wq#1090 now that refusals count: 3 stands. The
+// only nav outcomes a brain can legitimately repeat from one tile — battle
+// interrupt and open dialog — are excluded by verifyFailed() below, so nothing
+// honest reaches 3. A false trip costs one goto, since a single tile of
+// movement re-arms the key.
+//
+// ONE INTERACTION IS DELIBERATE. The wq#1181 fight gate has its own anti-wedge
+// exit: it lifts after GATE_MAX_FIRES (10) refusals. Counting gate refusals
+// here means a STATIONARY brain now hits the ceiling at 3 and stops feeding
+// noteFire(), because check() refuses before dispatch. That is the trade we
+// want: 3 wasted turns instead of 10, the gate still lifts on its other three
+// paths (TTL, level rise, corroborated recovery), and the fire path still
+// accrues for a brain that moves — which is the behaviour the gate is asking
+// for in the first place.
 
 export const CEILING = 3;
 
-/** Did this result string report the action failing its OWN verify?
- *  Signatures are the exact strings the executors return today — a guard
- *  refusal (e.g. the wq#606 cross-map line, the wq#601 re-entry line) is NOT
- *  a verify failure and never counts. Covered tools only; dialog/battle
- *  tools (talk, press, choose, battle_move, flee) legitimately repeat. */
+/** Did this result string report the action failing to do what was asked?
+ *  Covered tools only; dialog/battle tools (talk, press, choose, battle_move,
+ *  flee) legitimately repeat.
+ *
+ *  wq#1090: guard refusals on the nav tools USED to be excluded here, on the
+ *  reasoning that a refusal is not a failed verify. That reasoning held only
+ *  while the guards were rare. wq#1086 widened the wq#674 door-bounce guard
+ *  from exact-tile re-entry to warp IDENTITY, and a confused brain promptly
+ *  earned four refusals across four maps in eight minutes
+ *  (events/live-agent-1787956303157.jsonl, turns 17-45) that the ceiling could
+ *  not see: REFUSED is not FAILED-VERIFY, so record() never incremented and
+ *  the ceiling could never trip on the pattern however long it ran. From the
+ *  brain's side the distinction was always cosmetic — the tool did not do the
+ *  thing, and the identical call from the identical tile will not do it next
+ *  turn either. So it counts. */
 export function verifyFailed(tool: string, result: string): boolean {
   switch (tool) {
     case "buy_item":
@@ -52,9 +77,27 @@ export function verifyFailed(tool: string, result: string): boolean {
       return /^use_item:/.test(result) || result.startsWith("catch: cannot");
     case "goto":
     case "enter_warp":
-    case "leave_edge":
-      return / -> stuck\b/.test(result) || result.includes("bad index") ||
-             result.includes("bad direction");
+    case "leave_edge": {
+      // Every string agent.ts's dispatchInner returns for these three has one
+      // of three shapes, so classify by SHAPE rather than by enumerating the
+      // guards — enumerating is what let wq#1086's new refusal slip past.
+      //   "<tool> -> <outcome> now {pos}"  the call actually ran. Of the
+      //       outcomes nav can report (arrived/moved/warped/adjacent_npc/
+      //       stuck) only "stuck" is the call failing.
+      //   "<tool> interrupted ..." / "<tool> blocked: ..."  a wild battle or
+      //       an open dialog got in the way. Transient world state, not the
+      //       call failing — and wq#487 has the harness resume the
+      //       interrupted one itself, so the brain isn't even retrying.
+      //   "<tool>: <reason>"  a guard refusal, a bad arg, or a caught throw.
+      //       The tool declined; repeating it verbatim from this tile gets
+      //       the same refusal. Counts.
+      // Default-true is the load-bearing half: a guard added to agent.ts
+      // tomorrow counts without anyone remembering to edit this file.
+      const ran = /^\w+ -> (\w+) now /.exec(result);
+      if (ran) return ran[1] === "stuck";
+      if (/^\w+ (?:interrupted|blocked)\b/.test(result)) return false;
+      return true;
+    }
     default:
       return false;
   }
@@ -82,7 +125,10 @@ export class ActionCeiling {
       return null;
     }
     if (this.k(tool, args, p) !== this.blockedKey) return null;
-    return `retry_ceiling: ${tool}(${args}) has already failed its verify ${CEILING}x from ` +
+    // wq#1090: "failed or been refused", not "failed its verify" — a refusal
+    // now reaches this line too, and telling the brain its verify failed when
+    // a guard turned it away sends it debugging the wrong thing.
+    return `retry_ceiling: ${tool}(${args}) has already failed or been refused ${CEILING}x from ` +
       `map${p.map} (${p.x},${p.y}) and is REFUSED verbatim. Move at least one tile, or pick a ` +
       `different action/goal — the same macro from the same tile will fail the same way.`;
   }

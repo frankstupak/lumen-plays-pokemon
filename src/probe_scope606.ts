@@ -126,9 +126,11 @@ function busEvents(r: Rig): any[] {
   chk("C use_item success does not", !verifyFailed("use_item", "use_item done: potion on slot 0; 4 left"));
   chk("C ball throw is success-shaped", !verifyFailed("use_item", "poke_ball thrown - broke free (2 left)"));
   chk("C goto stuck counts", verifyFailed("goto", 'goto -> stuck now {"map":3,"x":25,"y":26}'));
-  chk("C goto guard refusal does NOT", !verifyFailed("goto", "goto: target (4,7) is on map67, you are on map3"));
-  chk("C leave_edge interior refusal does NOT",
-      !verifyFailed("leave_edge", "leave_edge: map67 is an INTERIOR — no edge connections exist"));
+  // wq#1090 flipped these two: a guard refusal is the tool declining to do what
+  // was asked, and the identical call from the identical tile keeps declining.
+  chk("C goto guard refusal counts", verifyFailed("goto", "goto: target (4,7) is on map67, you are on map3"));
+  chk("C leave_edge interior refusal counts",
+      verifyFailed("leave_edge", "leave_edge: map67 is an INTERIOR — no edge connections exist"));
   chk("C talk never counts", !verifyFailed("talk", "talk -> anything"));
 
   // ── D. ActionCeiling truth table ────────────────────────────────────────
