@@ -47,7 +47,7 @@ this. Priority order below (first match wins):
 | Mode | Fires when |
 |---|---|
 | `FIGHT_LOSS_LOOP` | among the most recent persisted warps (`runtime/warp_history.json`, capped at 64 by wq#517), a **gym** map (label containing "Gym") appears >=2x **and** a heal/city map for that trip (Pokecenter or a `*City`/`*Town` label) also appears >=2x — walked into the gym, walked back out, more than once |
-| `RESUME_DEADEND` | the same `resumedFrom` checkpoint booted on **more than `RESUME_REPEAT_LIMIT` consecutive** boots (`runtime/resume_history.json`; the bar is parsed out of `src/resume.ts`, never retyped). At exactly the limit the harness's own repeat guard is about to demote that file, so a run of exactly the limit is a remedy already in flight — only a longer run proves the guard ran and found no newer non-warp state to take (wq#1118). Deferred below the fight-readiness reads (wq#1081/#1084) because any long freeze re-resumes its own checkpoint; anchored on the map the agent is standing on, never `None` |
+| `RESUME_DEADEND` | the same resumed **game state** booted on **more than `RESUME_REPEAT_LIMIT` consecutive** boots (`runtime/resume_history.json`; the bar is parsed out of `src/resume.ts`, never retyped). wq#1177: identity is each pick's `key` — `src/resume.ts` `stateKeyOf`, i.e. `map@x,y/story/badges/levelSum` — falling back to the filename for picks written before v4 sidecars. Filenames are unique per run by design, so two boots into the identical situation carry different names and the old file-only test could not see the loop at all. At exactly the limit the harness's own repeat guard is about to demote that file, so a run of exactly the limit is a remedy already in flight — only a longer run proves the guard ran and found no newer non-warp state to take (wq#1118). Deferred below the fight-readiness reads (wq#1081/#1084) because any long freeze re-resumes its own checkpoint; anchored on the map the agent is standing on, never `None` |
 | `OBJECTIVE_UNREACHABLE` | the frontier engine reports `pathExhausted` while this axis is *also* stalled — no further `CRITICAL_PATH` milestone is encoded to aim at |
 | `NAV_LOOP` | no gym involved, but the warp window collapses onto <=3 distinct maps with >=4 warps — an overworld/dungeon loop, not a gym fight |
 | `IDLE` | stalled but nothing above matched — catch-all, deliberately last |
@@ -77,10 +77,17 @@ history). A final SKIP-shaped live-corpus check (never fails the suite on its
 own — see `src/fixtures.ts`'s own doctrine on corpus rot) confirms the real
 `runtime/` still reproduces the incident today.
 
+`python3 tools/test_stuck1177.py` — 5 sections, A-E: the state-identity
+half. Distinct filenames holding one state classify `RESUME_DEADEND` (and the
+old filename test provably cannot see that fixture); one filename over
+genuinely different states does not; keyless (pre-v4) histories behave exactly
+as before, and a history straddling the upgrade does not misfire.
+
 ## Known limits
 
-- Party level/species/type are **not** in checkpoint sidecars (confirmed:
-  only `hpPct`/`ppOk` aggregate booleans). `FIGHT_LOSS_LOOP`'s "underleveled
+- Party species/type are **not** in checkpoint sidecars, and only the party
+  level SUM is (inside wq#1177's `stateKey`, alongside `hpPct`/`ppOk`).
+  `FIGHT_LOSS_LOOP`'s "underleveled
   starter" root cause (wq#672/wq#674) needs a live `.state.gz` decode through
   `src/state.ts`'s `party: PartyMon[]`, not this module — this module only
   detects the *shape* of the loop, not *why* the fights are being lost.

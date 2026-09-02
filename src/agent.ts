@@ -8,6 +8,8 @@ import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
 import { MapModel, Warp } from "./map";
 import { mtMoonLeg, MT_MOON_MAPS } from "./mtmoon_route";
+import { stateKeyOf } from "./resume";                     // wq#1177
+import { checkpointGate, CkptClass } from "./checkpoint_gate";  // wq#1177
 import { corridorPhase } from "./phase";
 import { Navigator, astar } from "./nav";
 import { EventBus } from "./events";
@@ -1264,57 +1266,82 @@ export class Agent {
    *  self-pruning. Unique names per run: recycling names once resumed us
    *  straight back into a wedged state, forever. */
   maybeCheckpoint(before: GameState, after: GameState): void {
-    // Stability guard: never snapshot mid-battle / mid-dialog / mid-script -
-    // transition-frame RAM is not a resume target.
-    if (this.bat.active() || this.dlg.open() || this.sync.textUp()) return;
-    // wq#699: "mid-script" is exactly what the guard above could NOT see. A
-    // map load in flight leaves wCurMap on the destination while the header,
-    // warp table and coordinates still describe the map being left, and all
-    // three flags read zero throughout the first dozen frames of it. Every
-    // `auto-*-map88` checkpoint on disk was written in that window: map88 with
-    // Route 25's (45,3) and onWarp computed off Route 25's warp list. That is
-    // the literal case this guard's own comment promised to exclude.
-    if (this.map.loadPending()) {
-      this.bus.emit("tool_call", { tool: "checkpoint_skipped", reason: "map_load_pending",
-        src: "harness", at: { map: after.map, x: after.x, y: after.y } });
-      return;
-    }
-    const runTag = (this as any)._runTag ?? ((this as any)._runTag = Date.now().toString(36));
-
     // Milestone: badge gained, or a full heal just landed (Center / white-out
     // respawn) - exactly the safe states S2 wants ranked first.
     const b0 = before.party[0], a0 = after.party[0];
     const fullHeal = !!(b0 && a0 && b0.maxHp > 0 && a0.maxHp > 0 &&
       b0.hp < b0.maxHp && a0.hp === a0.maxHp);
-    if (after.badgeCount > before.badgeCount || fullHeal) {
+    const milestone = after.badgeCount > before.badgeCount || fullHeal;
+    const due = milestone || after.map !== before.map || this.turn % 10 === 0;
+    if (!due) return;
+
+    // wq#1177 (plan item 2): one write gate for every checkpoint, in front of
+    // the emulator snapshot. It subsumes the old inline stability guard
+    // (battle / dialog / text) and the wq#699 map-load guard, and adds the two
+    // conditions those missed: wJoyIgnore (a script owns the player and the
+    // agent's own view of position is stale — Sync.busy()) and standing on a
+    // warp tile (wq#1066: a position the next step does not keep).
+    const cls: CkptClass = milestone ? "milestone" : "auto";
+    const gate = (onWarp: boolean) => checkpointGate({
+      cls, onWarp,
+      inBattle: this.bat.active(), dialogOpen: this.dlg.open(), textUp: this.sync.textUp(),
+      engineBusy: this.sync.busy(), loadPending: this.map.loadPending(),
+      turnsSinceWrite: this.turn - this.lastCkptTurn,
+    });
+    const refuse = (reason?: string) => this.bus.emit("tool_call",
+      { tool: "checkpoint_skipped", reason, src: "harness", ckptClass: cls,
+        at: { map: after.map, x: after.x, y: after.y } });
+
+    // Asked in two passes on purpose: `this.map` is shared with nav, and
+    // building it mid-load would leave the departed map's geometry standing in
+    // a model everything else reads. The torn-state reasons are pure RAM
+    // flags, so they answer before anything is built.
+    const torn = gate(false);
+    if (!torn.write) { refuse(torn.reason); return; }
+    const marks = this.checkpointMarks(after);
+    const verdict = gate(marks.onWarp);
+    if (!verdict.write) { refuse(verdict.reason); return; }
+
+    const runTag = (this as any)._runTag ?? ((this as any)._runTag = Date.now().toString(36));
+    if (milestone) {
       this.writeCheckpoint(`milestone-${runTag}-map${after.map}-t${this.turn}`, after,
-        after.badgeCount > before.badgeCount ? "badge" : "heal");
+        after.badgeCount > before.badgeCount ? "badge" : "heal", marks);
       return;
     }
     if (after.map !== before.map)
-      this.writeCheckpoint(`auto-${runTag}-map${after.map}`, after, "map");
-    else if (this.turn % 10 === 0) {
-      this.writeCheckpoint(`auto-${runTag}-t${this.turn}`, after, "periodic");
+      this.writeCheckpoint(`auto-${runTag}-map${after.map}`, after, "map", marks);
+    else {
+      this.writeCheckpoint(`auto-${runTag}-t${this.turn}`, after, "periodic", marks);
       this.pruneAuto();
     }
   }
 
-  private writeCheckpoint(stem: string, st: GameState, kind: string): void {
-    const path = `${this.checkpointDir}/${stem}.state.gz`;
-    saveSnapshotFile(this.emu, path);
-    const lead = st.party[0];
-    // wq#586: stamp the route leg + warp-tile mark so resume can rank Mt Moon
-    // positions by route progress with ZERO boot cost, and prefer saves not
-    // standing on a ladder. Failure to compute either simply omits it — a
-    // legless sidecar ranks as earlier, never wrong.
-    let leg: string | undefined; let onWarp = false;
+  /** wq#586's stamps, hoisted out of the writer (wq#1177) because `onWarp` is
+   *  now a gate INPUT and must be known before anything is serialized.
+   *  Failure to compute either simply omits it — a legless sidecar ranks as
+   *  earlier, never wrong — and an unbuildable map means no warp claim, which
+   *  fails the gate OPEN (a checkpoint that cannot be proven bad is written). */
+  private checkpointMarks(st: GameState): { leg?: string; onWarp: boolean } {
     try {
       this.map.build();
-      onWarp = this.map.isWarp(st.x, st.y);
-      leg = mtMoonLeg(this.map, st.map, st.x, st.y)?.leg;
-    } catch {}
+      return { onWarp: this.map.isWarp(st.x, st.y), leg: mtMoonLeg(this.map, st.map, st.x, st.y)?.leg };
+    } catch { return { onWarp: false }; }
+  }
+
+  private lastCkptTurn = 0;
+
+  private writeCheckpoint(stem: string, st: GameState, kind: string,
+                          marks: { leg?: string; onWarp: boolean }): void {
+    const path = `${this.checkpointDir}/${stem}.state.gz`;
+    saveSnapshotFile(this.emu, path);
+    this.lastCkptTurn = this.turn;
+    const lead = st.party[0];
+    // wq#586: the route leg + warp-tile mark let resume rank Mt Moon positions
+    // by route progress with ZERO boot cost, and prefer saves not standing on
+    // a ladder.
+    const { leg, onWarp } = marks;
     const sidecar = {
-      v: 3, kind, map: st.map, x: st.x, y: st.y,
+      v: 4, kind, map: st.map, x: st.x, y: st.y,
       badges: st.badgeCount, events: this.reader.eventCount(),
       storyScore: this.reader.storyScore(),  // wq#471: monotonic story flags
       // wq#477: campaign-level frontier, seeds regression detection on restart
@@ -1323,6 +1350,14 @@ export class Agent {
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),
       leg, onWarp,                          // wq#586 (v3)
+      // wq#1177 (v4): the identity of the state this file holds, so the resume
+      // repeat guard can tell "a different file" from "a different situation".
+      // Per-run unique names guarantee the two are never the same question.
+      stateKey: stateKeyOf({
+        map: st.map, x: st.x, y: st.y,
+        story: this.reader.storyScore(), badges: st.badgeCount,
+        levelSum: st.party.reduce((n, m) => n + m.level, 0),
+      }),
       // wq#486: notepad snapshot (redundant recovery path if runtime/notepad.txt
       // is lost; primary restore is bind() from that file). Notes only, not the
       // derived guidance channel.

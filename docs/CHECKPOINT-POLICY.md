@@ -60,6 +60,34 @@ against, and it makes the archive useless as a test corpus.
 newest 40 and unlinks the rest by design (they are seconds apart and
 individually worthless). Milestones and named saves are never touched by it.
 
+## When a checkpoint is WRITTEN (wq#1177)
+
+`Agent.maybeCheckpoint` decides a checkpoint is *due* (badge, full heal, map
+change, or every 10th turn), then `src/checkpoint_gate.ts` decides whether the
+state is fit to serialize. Refusals emit a `checkpoint_skipped` tool_call event
+carrying the reason, so a run that stops writing says why.
+
+| Refusal | Applies to | Why |
+|---|---|---|
+| `in_battle`, `dialog_open`, `text_up` | every checkpoint | transition-frame RAM is not a resume target (the original S2 stability guard) |
+| `map_load_pending` | every checkpoint | wq#699: `wCurMap` already names the destination while the header, warp table and coordinates still describe the map being left — every `auto-*-map88` sidecar on disk was written in that window |
+| `engine_busy` | every checkpoint | `Sync.busy()`: `wJoyIgnore != 0`, script control, or mid-step — a script owns the player and the position being stamped is already stale |
+| `on_warp_tile` | `auto-*` only | wq#1066: a warp tile is a position the next step does not KEEP; resuming onto it re-fires the warp (the Cerulean bounce, 180h frozen) |
+
+The warp refusal is the only one that expires: after
+`CKPT_WARP_STARVE_TURNS` (30) turns with nothing written it opens, because a
+run that never checkpoints loses everything on the next restart — wq#517's
+"a gate that can never open is a wedge". Milestones (badge / full heal) bypass
+it outright; permanent progress does not come round again. Either way the
+sidecar stamps `onWarp: true` truthfully and `pickResume`'s wq#1066 ordering
+keeps demoting it.
+
+Sidecars are **v4** as of wq#1177: `stateKey` (`map@x,y/story/badges/levelSum`,
+`stateKeyOf` in `src/resume.ts`) identifies the game state the file holds, so
+the resume repeat guard can tell a different *file* from a different
+*situation*. v1-v3 sidecars stay readable; their key reads as unknown and the
+guard falls back to path identity for them.
+
 ## Related
 
 - Backups of superseded source live in `backups/src-bak/` (wq#490 sweep) —

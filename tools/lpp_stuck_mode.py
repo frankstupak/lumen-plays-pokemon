@@ -38,8 +38,9 @@ MODE CLASSIFICATION (spec wq#671 section 1)
   Computed only once the story_score axis is stalled, from state that already
   exists and is already durable (nothing new is persisted mid-run to compute
   this):
-    RESUME_DEADEND    — runtime/resume_history.json: the same resumedFrom
-                        checkpoint booted on MORE consecutive boots than
+    RESUME_DEADEND    — runtime/resume_history.json: the same resumed GAME
+                        STATE (pick `key`, wq#1177; filename when a pick
+                        predates it) booted on MORE consecutive boots than
                         src/resume.ts's own RESUME_REPEAT_LIMIT tolerates
                         (wq#1118). At exactly the limit the harness's repeat
                         guard is about to demote that file itself, so a run of
@@ -397,10 +398,20 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     # its own — and prescribed "resume from a different checkpoint", the remedy
     # already in flight. A run LONGER than the limit is the honest signal: the
     # guard ran and kept the same file because nothing newer exists to take.
+    # wq#1177: identity is the pick's `key` (src/resume.ts stateKeyOf: the
+    # position, story, badges and party the checkpoint holds) when the writer
+    # stamped one, and the filename otherwise — exactly what the harness guard
+    # now compares. Reading `file` alone would ask a question the guard has
+    # stopped asking: per-run unique names mean two boots into the identical
+    # situation carry different filenames, so a file-only test both misses real
+    # dead ends and, once the guard steps aside on state, would keep claiming
+    # one after it was handled.
     repeat_limit = resume_repeat_limit()
     need = repeat_limit + 1
-    recent_resumes = [p.get("file") for p in (resume_picks or [])[-need:] if p.get("file")]
+    picks = [p for p in (resume_picks or [])[-need:] if p.get("key") or p.get("file")]
+    recent_resumes = [p.get("key") or p.get("file") for p in picks]
     resume_deadend = len(recent_resumes) >= need and len(set(recent_resumes)) == 1
+    deadend_file = picks[-1].get("file") if picks else None
 
     window = (warps or [])[-WARP_WINDOW:]
     if not window:
@@ -445,11 +456,12 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     # `window` is non-empty here (the empty case returned IDLE above).
     if resume_deadend:
         return "RESUME_DEADEND", (
-            f"last {len(recent_resumes)} boots all resumed from {recent_resumes[-1]} — more "
-            f"than the {repeat_limit} identical picks src/resume.ts tolerates, so its repeat "
-            f"guard has already run and kept the same file: there is no newer non-warp "
-            f"checkpoint to step aside to. Re-picking cannot advance the start point; only a "
-            f"newer save further along can"), window[-1]
+            f"last {len(recent_resumes)} boots all resumed the same GAME STATE "
+            f"({recent_resumes[-1]}, most recently {deadend_file}) — more than the "
+            f"{repeat_limit} identical picks src/resume.ts tolerates, so its repeat "
+            f"guard has already run and kept it: there is no newer non-warp checkpoint "
+            f"holding a DIFFERENT state to step aside to. Re-picking cannot advance the "
+            f"start point; only a newer save further along can"), window[-1]
 
     # wq#697: WARP_OSC
     osc_hit, osc_a, osc_b, osc_alt = detect_warp_osc(window)

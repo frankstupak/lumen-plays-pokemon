@@ -145,6 +145,23 @@ export interface Sidecar {
   storyScore?: number;  // v2+ (wq#471): popcount of STORY_FLAGS at write time
   leg?: string;         // v3+ (wq#586): mtMoonLeg at write time ("L1".."L7")
   onWarp?: boolean;     // v3+ (wq#586): checkpoint stands ON a warp tile
+  stateKey?: string;    // v4+ (wq#1177): game-state identity, see stateKeyOf
+}
+
+/** wq#1177: the identity of the GAME STATE a checkpoint holds — position,
+ *  permanent progress, party strength. Two checkpoints with the same key
+ *  resume the same situation no matter what they are called or when they were
+ *  written, which is the fact the repeat guard below needs and file paths
+ *  never carried.
+ *
+ *  Deliberately readable rather than hashed (the plan said hash): it is the
+ *  same identity function either way, and an opaque digest would make the boot
+ *  log and lpp_stuck_mode.py's RESUME_DEADEND evidence unreadable at exactly
+ *  the moment someone is asking WHY two boots were the same state. */
+export function stateKeyOf(s: {
+  map: number; x: number; y: number; story: number; badges: number; levelSum: number;
+}): string {
+  return `m${s.map}@${s.x},${s.y}/s${s.story}/b${s.badges}/l${s.levelSum}`;
 }
 
 /** wq#586: leg -> comparator ordinal. 0 = unknown/legless, which sorts as
@@ -158,6 +175,7 @@ export interface Progress {
   story: number;  // wq#471: monotonic story-flag score; -1 = unknown (v1 sidecar)
   fine: number;   // wq#586: Mt Moon route-leg ordinal (LEG_FINE); 0 = unknown
   onWarp: boolean; // wq#586: standing on a warp tile (selector prefers not)
+  key: string;    // wq#1177: stateKeyOf identity; "" = unknown (pre-v4 sidecar)
   hpPct: number; ppOk: boolean; viable: boolean; mtime: number;
   map: number; x: number; y: number;   // wq#518: rank inputs, kept for diagnostics
 }
@@ -216,6 +234,7 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
       return { rank: progressRank(j.map, j.x, j.y), badges: j.badges, events: j.events,
         story: typeof j.storyScore === "number" ? j.storyScore : -1,  // v1 -> unknown
         fine: LEG_FINE[j.leg ?? ""] ?? 0, onWarp: !!j.onWarp,        // v2 -> unknown
+        key: typeof j.stateKey === "string" ? j.stateKey : "",       // v3 -> unknown
         hpPct: j.hpPct, ppOk: j.ppOk,
         viable: j.hpPct >= VIABLE_HP_PCT && j.ppOk, mtime,
         map: j.map, x: j.x, y: j.y };
@@ -243,10 +262,15 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
     } catch {}
     return { rank: progressRank(s.map, s.x, s.y), badges: s.badgeCount, events: rd.eventCount(),
       story: rd.storyScore(), fine, onWarp,
+      // wq#1177: the emulator is booted here, so the identity is re-derived at
+      // full fidelity rather than left unknown — a legacy state gets the same
+      // key the writer would have stamped.
+      key: stateKeyOf({ map: s.map, x: s.x, y: s.y, story: rd.storyScore(),
+        badges: s.badgeCount, levelSum: s.party.reduce((n, m) => n + m.level, 0) }),
       hpPct, ppOk, viable: hpPct >= VIABLE_HP_PCT && ppOk, mtime,
       map: s.map, x: s.x, y: s.y };
   } catch {
-    return { rank: -2, badges: -1, events: -1, story: -1, fine: 0, onWarp: false,
+    return { rank: -2, badges: -1, events: -1, story: -1, fine: 0, onWarp: false, key: "",
       hpPct: 0, ppOk: false, viable: false,
       mtime: 0, map: -1, x: -1, y: -1 };
   }
@@ -274,10 +298,61 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
 // repeating an identical resume that keeps being abandoned is not working. It
 // cannot wedge: it demotes exactly one file, for exactly one selection, and only
 // when a newer alternative exists to take instead.
+//
+// wq#1177: "the same losing choice" is now measured by GAME STATE, not by
+// filename. The guard compared `recent.every(f => f === winner.f)` — so a
+// checkpoint written at the identical position/story/party under a fresh
+// per-run name (`auto-<runTag>-...`, unique by design since names were made
+// unique to stop resuming into a wedged state) read as a NEW choice, and the
+// escape hatch could even "step aside" onto one. Every boot of a stuck run
+// writes such files, which is why RESUME_DEADEND survived the guard: the
+// guard was never firing on the loop it was built for. Identity now comes from
+// stateKeyOf(); a file whose key is unknown (pre-v4 sidecar, unreadable state)
+// keeps the old path-based identity, so nothing regresses to a WORSE-informed
+// comparison than before.
 export const RESUME_REPEAT_LIMIT = 2;   // consecutive identical picks tolerated
 const HISTORY_KEEP = 8;
-interface HistoryEntry { file: string; at: string }
+interface HistoryEntry { file: string; key?: string; at: string }
 interface History { v: number; picks: HistoryEntry[] }
+
+/** A scored candidate: its Progress plus the file it came from. */
+export interface Candidate extends Progress { f: string }
+
+/** What "the same choice" means. Falls back to the path when the state
+ *  identity is unknown — unproved sameness is not claimed (wq#518/534). */
+export const stateIdentity = (c: { f: string; key: string }): string =>
+  c.key || `file:${c.f}`;
+
+/** The repeat guard, pure so the policy is probeable without a ROM.
+ *  `recentIds` is the identity of each of the last RESUME_REPEAT_LIMIT picks,
+ *  newest last. Returns the (possibly demoted) winner and the line to log. */
+export function repeatGuard(scored: Candidate[], winner: Candidate, recentIds: string[]):
+    { winner: Candidate; line: string | null } {
+  const wid = stateIdentity(winner);
+  if (recentIds.length < RESUME_REPEAT_LIMIT || !recentIds.every(id => id === wid))
+    return { winner, line: null };
+  const short = (p: string) => p.split("/").pop();
+  // Only step aside if the last run actually produced something newer to step
+  // aside TO, and something that is a DIFFERENT STATE — a newer file holding
+  // the same state is the same dead end with a later timestamp. Never trade a
+  // viable state for a non-viable one.
+  // wq#1066: prefer a NEWER NON-WARP alternative so the escape hatch can never
+  // step aside onto a warp-tile save (which would re-fire the warp and resume
+  // the very A<->B bounce this guard exists to break). Fall back to the
+  // original "any newer viable" pick when no non-warp newer state exists,
+  // preserving the anti-wedge guarantee (mtime > winner.mtime proves the last
+  // run produced something newer to move to).
+  const fresh = (c: Candidate) =>
+    stateIdentity(c) !== wid && c.mtime > winner.mtime && (c.viable || !winner.viable);
+  const alt = scored.find(c => fresh(c) && !c.onWarp) ?? scored.find(fresh);
+  if (!alt)
+    return { winner, line: `resume: repeat guard saw ${RESUME_REPEAT_LIMIT} identical picks ` +
+      `of state ${wid} but no newer alternative STATE — keeping ${short(winner.f)}` };
+  return { winner: alt, line:
+    `resume: REPEAT GUARD — state ${wid} picked ${RESUME_REPEAT_LIMIT}x running while newer ` +
+    `states exist; demoting ${short(winner.f)} for this selection and taking ${short(alt.f)} ` +
+    `[${rankLabel(alt.map, alt.x, alt.y)} rank ${alt.rank} vs ${rankLabel(winner.map, winner.x, winner.y)} rank ${winner.rank}]` };
+}
 
 export interface ResumeOpts {
   /** Where the pick history lives. Default <cwd>/runtime/resume_history.json —
@@ -397,33 +472,19 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
         "a reason OTHER than critical health -- investigate"}.`);
   };
   const hist = readHistory(historyFile);
-  const recent = hist.picks.slice(-RESUME_REPEAT_LIMIT).map(p => p.file);
-  const repeated = recent.length >= RESUME_REPEAT_LIMIT && recent.every(f => f === winner.f);
-  if (repeated) {
-    // Only step aside if the last run actually produced something newer to step
-    // aside TO. Without that, the repeat is not evidence of a trap — it is just
-    // the only state there is. Never trade a viable state for a non-viable one.
-    // wq#1066: prefer a NEWER NON-WARP alternative so the escape hatch can
-    // never step aside onto a warp-tile save (which would re-fire the warp and
-    // resume the very A<->B bounce this guard exists to break). Fall back to the
-    // original "any newer viable" pick when no non-warp newer state exists,
-    // preserving the anti-wedge guarantee (mtime > winner.mtime proves the last
-    // run produced something newer to move to).
-    const alt = scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable) && !c.onWarp)
-             ?? scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable));
-    if (alt) {
-      log(`resume: REPEAT GUARD — ${short(winner.f)} picked ${RESUME_REPEAT_LIMIT}x running while newer states exist; ` +
-        `demoting it for this selection and taking ${short(alt.f)} ` +
-        `[${rankLabel(alt.map, alt.x, alt.y)} rank ${alt.rank} vs ${rankLabel(winner.map, winner.x, winner.y)} rank ${winner.rank}]`);
-      winner = alt;
-    } else {
-      log(`resume: repeat guard saw ${RESUME_REPEAT_LIMIT} identical picks but no newer alternative — keeping ${short(winner.f)}`);
-    }
-  }
+  // wq#1177: pre-existing history entries carry no key; their identity stays
+  // path-based, so the guard simply does not fire until two state-keyed picks
+  // have accumulated. Upgrading never mis-fires it.
+  const recent = hist.picks.slice(-RESUME_REPEAT_LIMIT)
+    .map(p => stateIdentity({ f: p.file, key: p.key ?? "" }));
+  const guarded = repeatGuard(scored, winner, recent);
+  if (guarded.line) log(guarded.line);
+  winner = guarded.winner;
   storyCheck();
   log(`resume: ${short(winner.f)} — ${rankLabel(winner.map, winner.x, winner.y)} (map ${winner.map} @ ${winner.x},${winner.y}) ` +
-    `rank=${winner.rank} fine=${winner.fine} onWarp=${winner.onWarp} story=${winner.story} badges=${winner.badges} viable=${winner.viable}, ${scored.length} candidates`);
-  hist.picks.push({ file: winner.f, at: now().toISOString() });
+    `rank=${winner.rank} fine=${winner.fine} onWarp=${winner.onWarp} story=${winner.story} badges=${winner.badges} viable=${winner.viable} ` +
+    `state=${stateIdentity(winner)}, ${scored.length} candidates`);
+  hist.picks.push({ file: winner.f, key: winner.key || undefined, at: now().toISOString() });
   writeHistory(historyFile, hist);
   return winner.f;
 }
