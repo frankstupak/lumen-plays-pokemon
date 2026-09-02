@@ -47,6 +47,8 @@ PROBES=(
   probe_braincfg
   probe_brain907
   probe_novelty1179
+  probe_romtables1180
+  probe_romdecode1180
 )
 
 failed=()

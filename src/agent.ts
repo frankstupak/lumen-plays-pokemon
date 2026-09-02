@@ -20,7 +20,7 @@ import { StateReader } from "./state";
 import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
-import { moveLabel, MOVES, pickBestMove } from "./moves";
+import { moveLabel, pickBestMove } from "./moves";
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
 import { Heal, knownCenter } from "./heal";
@@ -36,6 +36,8 @@ import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
 import { GameNames } from "./names";
+import { installRomMoves } from "./moves";   // wq#1180
+import { RomTables, summarizeRomTables } from "./romtables";   // wq#1180
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
 import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits } from "./objects";  // wq#607
@@ -190,6 +192,12 @@ export class Agent {
   // Assigned in the constructor body rather than as a field initializer because
   // it needs `checkpointDir` and `bus`, which are parameter properties.
   private novelty!: NoveltyTracker;
+  // wq#1180: Moves/TypeEffects/BaseStats decoded from the ROM at boot. moves.ts
+  // installs its own table as a side effect of this call; the type chart and
+  // base stats are parked here for the winnability verdict (plan item 5), which
+  // is the next consumer. Never null after the constructor — a failed decode is
+  // a RomTables with null fields and a populated `problems`, not an exception.
+  public romTables!: RomTables;
 
   constructor(
     public emu: Emulator, public sym: SymbolTable, public rom: Rom,
@@ -203,7 +211,24 @@ export class Agent {
     // the same anchor loadSupervisorBans() uses, and correct for probes and
     // one-off drivers that run from a different cwd than the live deployment.
     this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
+    this.loadRomTables();
     this.loadSupervisorBans();
+  }
+
+  /** wq#1180: decode the ROM battle tables and record what was trusted.
+   *
+   *  Loud on the way past — the whole value of a fail-closed decode is that a
+   *  degraded boot says so. The event carries `problems` so a run that quietly
+   *  fell back to the 25-move golden table is visible in the log rather than
+   *  only in the move choices it goes on to make. */
+  private loadRomTables(): void {
+    this.romTables = installRomMoves(this.rom, this.sym);
+    const line = summarizeRomTables(this.romTables);
+    console.log(line);
+    this.bus.emit("tool_call", {
+      tool: "rom_tables_loaded", src: "harness",
+      degraded: this.romTables.degraded, problems: this.romTables.problems, summary: line,
+    });
   }
 
   /** wq#724: read the supervisor directive at boot and enforce map bans. */

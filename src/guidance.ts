@@ -22,7 +22,7 @@ import { SymbolTable } from "./symbols";
 import { StateReader, PartyMon } from "./state";
 import { ITEM } from "./items";
 import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
-import { MOVES } from "./moves";
+import { moveMeta } from "./moves";
 
 // Story flag bit indices (see src/state.ts STORY_FLAGS for derivation)
 const F_BEAT_BROCK = 0x077;
@@ -78,17 +78,22 @@ export function misty_ready(level: number, potions: number, partyCount: number, 
  *  moveset instead: strongest non-lock damaging move, with an explicit RAGE
  *  warning whenever the set contains a lock-in move. Exported for the probe. */
 export function mistyDamageLine(moves: number[]): string {
-  let name = "", pow = -1, fire = false, hasLock = false;
+  let name = "", pow = -1, fire = false, lockName = "";
   for (const id of moves) {
-    const m = MOVES[id];
+    const m = moveMeta(id);
     if (!m) continue;
-    if (m.lockIn) { hasLock = true; continue; }
+    // wq#1180: lockIn is ROM-derived now and covers all fourteen menu-less
+    // moves, so the warning names the one it actually found instead of always
+    // saying RAGE — a lead holding FLY got a warning about a move it has not got.
+    if (m.lockIn) { if (!lockName) lockName = m.name; continue; }
     if (m.power > pow) { pow = m.power; name = m.name; fire = m.type === "FIRE"; }
   }
   const lead = name && pow > 0
     ? `lead with ${name}${fire ? " (resisted here, still your safest damage)" : ""};`
     : "lead with your strongest usable move;";
-  return hasLock ? `${lead} NEVER pick RAGE - Gen 1 locks you in until the battle ends;` : lead;
+  return lockName
+    ? `${lead} NEVER pick ${lockName} - Gen 1 takes the move menu away while it runs;`
+    : lead;
 }
 
 /** Count HP-restoring items in the bag (POTION family). RAM layout identical
@@ -177,7 +182,7 @@ export function ceruleanGuidance(emu: Emulator, sym: SymbolTable, reader: StateR
   const ready = misty_ready(level, potions, s.partyCount, hasCounter);
   const hpFrac = lead && lead.maxHp > 0 ? lead.hp / lead.maxHp : 1;
   const lowPP = lead ? lead.moves.some((mv, i) =>
-    mv && MOVES[mv] && MOVES[mv].power > 0 && lead.pp[i] <= 5) : false;
+    mv && (moveMeta(mv)?.power ?? 0) > 0 && lead.pp[i] <= 5) : false;
   const needHeal = hpFrac < 0.6 || lowPP;
   const thenLine = ready
     ? "enter CERULEAN GYM (map3 building, map65 inside) and fight MISTY."
