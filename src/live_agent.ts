@@ -18,6 +18,9 @@ import { Agent } from "./agent";
 import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
 import { Notepad } from "./notepad";   // wq#486
+import { StreamChat } from "./chat";       // wq#1176
+import { PersonaMemory } from "./persona"; // wq#1176
+import { gatewayExtractor } from "./persona_llm"; // wq#1191
 import { makeBorrowGuard } from "./borrow_guard";   // wq#488
 import { ceruleanGuidance, hasTypeCounter } from "./guidance";   // wq#478, wq#696
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
@@ -159,6 +162,26 @@ stream.names = () => ({
   badges: BADGE_NAMES, statusBits: STATUS_BITS,
   mapCount: gameNames.mapCount, monCount: gameNames.monCount,
 });
+
+// wq#1176: ONE chat log and ONE persona store for the whole process, same
+// ownership rule as the notepad — both are replaced onto every Agent built
+// below, so a gameplay continue never rewinds what Lumen said or who he is.
+//
+// wq#1191: the persona does not live in a file here at all. bind() attaches
+// lumen_state (subject CFG.persona.subject), which every other surface speaking
+// as Lumen reads too, and migrates wq#1176's JSON store on the first boot that
+// finds it. The chat log is local to the stream, so it stays in RUNTIME.
+const chat = new StreamChat({ ring: CFG.chat.ring, minIntervalMs: CFG.chat.minIntervalMs });
+chat.bind(`${RUNTIME}/chat.json`);
+const persona = new PersonaMemory();
+if (CFG.persona.enabled) {
+  persona.bind(CFG.persona.path);
+  // Extraction is a model call, so it is wired HERE rather than inside
+  // persona.ts: the store has to keep working on a surface with no gateway.
+  if (CFG.persona.llmExtract) persona.extractor = gatewayExtractor();
+}
+stream.chat = () => chat.toJSON();
+stream.persona = () => ({ ...persona.toJSON(), stats: persona.stats() });
 
 // Milestone + loop tracking ride the same state_read the panel already gets,
 // so the panel can never disagree with the game about where the player is.
@@ -545,6 +568,8 @@ function ceruleanApproachPack(map: number): string {
     const brain = new Brain(bus);
     const agent = new Agent(emu, sym, rom, map, nav, scr, sync, dlg, act, bat, reader, brain, bus, CKPTS);
     agent.pad = pad;                                              // wq#486: shared, persisted
+    agent.chat = chat;                                            // wq#1176: shared, persisted
+    agent.persona = persona;                                      // wq#1176: cross-platform store
     // wq#514: corridor guidance is REFRESHED EVERY TURN and selected by a
     // RAM-verified phase, replacing the wq#476 boot pin. Pinning once at boot
     // is what let a pack describing the pre-cave approach stay in context

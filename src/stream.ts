@@ -36,9 +36,23 @@ body { background:#0d1117; color:#c9d1d9; font-family:'SF Mono',Menlo,monospace;
 #stuck { display:none; background:#3d1418; border:2px solid #f85149; border-radius:6px; padding:7px 9px; margin-bottom:10px; }
 #stuck .hd { color:#f85149; font-size:17px; font-weight:700; letter-spacing:2px; }
 #stuck .why { color:#ffa198; font-size:12px; line-height:1.45; margin-top:3px; }
-#bottom { height:208px; border-top:2px solid #30363d; padding:6px 16px; overflow:hidden; background:#010409; }
-#ticker { font-size:12px; line-height:1.6; height:100%; overflow-y:auto; scrollbar-width:thin; }
+/* wq#1176: the bottom strip is now TWO columns. The harness ticker keeps the
+   leftover width; the audience channel gets a fixed share on the right so a
+   quiet stretch of chat never lets the ticker reflow the panel out from under
+   a viewer mid-read. The game frame is untouched — the chat is paid for out of
+   the ticker's width, not out of #top. */
+#bottom { height:208px; border-top:2px solid #30363d; overflow:hidden; background:#010409; display:flex; }
+#ticker { flex:1 1 auto; min-width:0; font-size:12px; line-height:1.6; height:100%; overflow-y:auto; scrollbar-width:thin; padding:6px 12px; }
 #ticker div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#chat { flex:0 0 34%; min-width:220px; max-width:460px; border-left:2px solid #30363d; background:#0b0f14; padding:6px 12px; display:flex; flex-direction:column; }
+#chathd { display:flex; justify-content:space-between; align-items:baseline; color:#58a6ff; font-size:11px; letter-spacing:2px; border-bottom:1px solid #30363d; padding-bottom:3px; margin-bottom:5px; }
+#chathd .facts { color:#6e7681; font-size:10px; letter-spacing:1px; }
+#chatlog { flex:1; overflow-y:auto; scrollbar-width:thin; font-size:13px; line-height:1.5; }
+.cmsg { margin-bottom:6px; }
+.cmsg .ct { color:#6e7681; font-size:10px; margin-right:5px; }
+.cmsg .cx { color:#e6edf3; }
+.cmsg.sys .cx { color:#8b949e; font-style:italic; }
+#chatempty { color:#6e7681; font-size:12px; }
 .k-tool { color:#d29922; } .k-state { color:#3fb950; } .k-think { color:#bc8cff; } .k-sys { color:#8b949e; }
 #pwr { height:28px; border-top:2px solid #30363d; background:#010409; display:flex; align-items:center; gap:12px; padding:0 16px; font-size:12px; white-space:nowrap; }
 #pwr b { color:#58a6ff; }
@@ -67,7 +81,9 @@ body { background:#0d1117; color:#c9d1d9; font-family:'SF Mono',Menlo,monospace;
 <div class="lab" style="margin-top:8px">OBJECTIVE</div>
 <div class="sub" id="s-goal" style="white-space:normal">--</div>
 </div></div>
-<div id="bottom"><div id="ticker"></div></div>
+<div id="bottom"><div id="ticker"></div>
+<div id="chat"><div id="chathd"><span>LUMEN SAYS</span><span class="facts" id="c-facts">&nbsp;</span></div>
+<div id="chatlog"><div id="chatempty">Lumen has not said anything yet.</div></div></div></div>
 <div id="pwr"><b>TABLET&nbsp;PWR</b><div id="pwrmeter"><div id="pwrfill"></div></div><div id="pwrstats">…</div></div>
 <script>
 const img = document.getElementById("game"), hud = document.getElementById("hudbody"), ticker = document.getElementById("ticker");
@@ -75,6 +91,10 @@ let gotWsData = false, polling = false, seen = new Set();
 
 function renderEvent(m) {
   if (m.kind === "frame") { img.src = "data:image/png;base64," + m.b64; return; }
+  // wq#1176: chat lines go to their own panel and are deduped by their own id,
+  // not by the ticker's text key — two identical lines minutes apart are two
+  // real things Lumen said, and the audience should see both.
+  if (m.kind === "chat") { addChat(m); return; }
   // one dedup gate for BOTH paths (WS + polling run concurrently)
   const k = (m.t || "") + (m.kind || "") + (m.line || m.turn || "");
   if (seen.has(k)) return; seen.add(k);
@@ -166,6 +186,49 @@ async function pollRetries() {
   } catch (e) { retriesTxt = { c: "…", w: "…", b: "…", e: "" }; }
 }
 pollRetries(); setInterval(pollRetries, 30000);
+
+// ── wq#1176 streamer chat (one-way: Lumen -> audience) ───────────────────
+// Newest at the BOTTOM, like every chat anyone has ever read. The view follows
+// new lines only when the viewer is already at the bottom; if they scrolled up
+// to read something, a new line must not yank the panel away from them.
+const chatlog = document.getElementById("chatlog");
+const seenChat = new Set();
+function addChat(m) {
+  if (m.id === undefined || seenChat.has(m.id)) return;
+  seenChat.add(m.id);
+  // ids are monotonic, so the oldest are the ones that can never come back
+  if (seenChat.size > 400) for (const id of [...seenChat].slice(0, 200)) seenChat.delete(id);
+  const empty = document.getElementById("chatempty");
+  if (empty) empty.remove();
+  const atBottom = chatlog.scrollHeight - chatlog.scrollTop - chatlog.clientHeight < 24;
+  const d = document.createElement("div");
+  d.className = "cmsg" + (m.style === "system" ? " sys" : "");
+  const ts = document.createElement("span"); ts.className = "ct";
+  ts.textContent = new Date(m.t || Date.now()).toLocaleTimeString();
+  const tx = document.createElement("span"); tx.className = "cx";
+  tx.textContent = m.text || "";      // textContent, never innerHTML: this is model output
+  d.appendChild(ts); d.appendChild(tx);
+  chatlog.appendChild(d);
+  while (chatlog.children.length > 80) chatlog.firstChild.remove();
+  if (atBottom) chatlog.scrollTop = chatlog.scrollHeight;
+}
+
+// Polling fallback for the same reason the ticker has one: the CF-tunnel path
+// can stall WS negotiation entirely. Also carries the persona fact count, so
+// the header shows that what Lumen says about himself is being remembered.
+async function pollChat() {
+  try {
+    const c = await (await fetch("/chat.json", { cache: "no-store" })).json();
+    for (const m of (c.messages || [])) addChat({ ...m, style: m.kind });
+  } catch (e) {}
+  try {
+    const p = await (await fetch("/persona.json", { cache: "no-store" })).json();
+    const n = p && p.stats ? p.stats.facts : null;
+    document.getElementById("c-facts").textContent = n === null || n === undefined
+      ? "" : (n + (n === 1 ? " fact remembered" : " facts remembered"));
+  } catch (e) {}
+}
+pollChat(); setInterval(pollChat, 5000);
 
 // ── wq#503 trainer stats panel ───────────────────────────────────────────
 // Name tables are ROM-derived server-side and fetched ONCE per page load, so
@@ -287,6 +350,10 @@ export class StreamServer {
   // map id rather than blocking on them.
   names: (() => object) | null = null;
   progress: (() => object) | null = null;
+  // wq#1176: set by live_agent from the process-lifetime chat/persona stores.
+  // Null-safe: an unwired server serves an empty panel rather than 500ing.
+  chat: (() => object) | null = null;
+  persona: (() => object) | null = null;
   /** Last geometry the kiosk reported about itself (see the beacon in PAGE).
    *  Kept so the layout can be checked against the tablet's REAL viewport. */
   lastViewport: object | null = null;
@@ -318,6 +385,34 @@ export class StreamServer {
       if (req.url?.startsWith("/retries.json")) {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(this.retryStats ? this.retryStats() : { continues: null, gameplayContinues: null, serviceBoots: null, whiteouts: null, whiteoutsEstimatePre: null }));
+        return;
+      }
+      // wq#1176: the audience channel, READ ONLY. The one-way property is
+      // enforced here rather than assumed: any method other than GET is
+      // refused, so there is no request shape that can put a message into the
+      // panel from outside the harness. Two-way chat means adding a route,
+      // which is a decision someone has to make on purpose.
+      if (req.url?.startsWith("/chat.json")) {
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json", "Allow": "GET" });
+          res.end(JSON.stringify({ error: "chat is one-way: Lumen speaks, the audience cannot post" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(this.chat ? this.chat() : { v: 1, messages: [] }));
+        return;
+      }
+      // wq#1176: persona facts, also read-only over HTTP. A surface that wants
+      // to WRITE a fact does it through the shared store (src/persona_cli.ts),
+      // not through the kiosk's web server.
+      if (req.url?.startsWith("/persona.json")) {
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json", "Allow": "GET" });
+          res.end(JSON.stringify({ error: "read-only; write via the persona store" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(this.persona ? this.persona() : { facts: [], stats: { facts: 0 } }));
         return;
       }
       // wq#503: static-per-ROM name tables, fetched once per page load.

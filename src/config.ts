@@ -1,4 +1,6 @@
 // Efficiency + routing knobs, one place.
+import { join } from "path";
+
 // wq#426: models are now BrainProfiles (model + output budget + reasoning
 // effort), each env-overridable so future model/effort swaps are config-only —
 // no code edits, just Environment= lines in the systemd unit.
@@ -65,6 +67,16 @@ export const CFG = {
     } as BrainProfile,
     // wq#621: escalation-only valve, not the text loop's per-turn brain.
     vision: { model: "lumen-vision", maxTokensOut: 3200 } as BrainProfile,
+    // wq#1191 persona extraction: "did he just state a durable fact about
+    // himself?" over one sentence. Deliberately pinned to the CHEAPEST rung and
+    // deliberately NOT run through Brain's fallback ladder (persona_llm.ts) —
+    // this fires after every line Lumen speaks, and a question that small
+    // climbing to an expensive model would cost more than the feature.
+    persona: {
+      model: envS("LPP_BRAIN_PERSONA", "deepseek-v4-flash"),
+      maxTokensOut: envN("LPP_BRAIN_PERSONA_MAXTOK", 400),
+      thinking: "disabled",
+    } as BrainProfile,
   },
   // wq#621 VISION VERDICT VALVE: escalation-ONLY VLM consult (research
   // reports/vision_research_brief.md — every harness that beat the game used
@@ -152,6 +164,46 @@ export const CFG = {
     // cooldown window". Cheapest-first resumes by itself when it expires.
     breakerFails: envN("LPP_BRAIN_BREAKER_FAILS", 2),
     breakerCooldownMs: envN("LPP_BRAIN_BREAKER_COOLDOWN_MS", 600_000),
+  },
+  // wq#1176 STREAMER CHAT (one-way: Lumen -> audience; there is no inbound
+  // path, see chat.ts). The brain speaks by appending an optional SAY: line to
+  // its reply, so a chat line costs NO game turn — turns are the scarce
+  // resource here and an audience feature must not compete with gameplay for
+  // them. minIntervalMs is what keeps a 25x-realtime emulator from producing a
+  // wall of text: it spaces the lines the viewer actually sees.
+  chat: {
+    enabled: envN0("LPP_CHAT_ENABLE", 1) > 0,
+    ring: envN("LPP_CHAT_RING", 60),                    // messages kept for the overlay
+    minIntervalMs: envN("LPP_CHAT_MIN_INTERVAL_MS", 45_000),
+  },
+  // wq#1176/wq#1191 PERSONA MEMORY. The cross-platform contract is `subject` in
+  // lumen_state (the FLEET's bi-temporal store), not a file in this repo: a
+  // Messenger bridge, an operator running `lumen_state.py current lumen-persona`
+  // and any other fleet agent all read the rows the streamer wrote. `path` is
+  // now only the wq#1176 JSON store's location, migrated into lumen_state once
+  // on first bind and then left alone.
+  persona: {
+    enabled: envN0("LPP_PERSONA_ENABLE", 1) > 0,
+    path: envS("LPP_PERSONA_PATH", "/home/lumen/pokemon/runtime/persona.json"),
+    platform: envS("LPP_PERSONA_PLATFORM", "stream"),
+    recallBudget: envN("LPP_PERSONA_RECALL_BUDGET", 900),   // chars injected per prompt
+    subject: envS("LPP_PERSONA_SUBJECT", "lumen-persona"),
+    python: envS("LPP_PYTHON", "python3"),
+    adapter: envS("LPP_PERSONA_ADAPTER", join(__dirname, "..", "tools", "lumen_state_json.py")),
+    stateRegen: envS("LPP_STATE_REGEN", "/home/lumen/bin/state-regen"),
+    // Tests only: point the adapter at a throwaway sqlite file. Empty = the
+    // real minerva.db, which is the only correct production value.
+    stateDb: envS("LPP_LUMEN_STATE_DB", ""),
+    stateTimeoutMs: envN("LPP_PERSONA_STATE_TIMEOUT_MS", 15_000),
+    regenMinIntervalMs: envN("LPP_PERSONA_REGEN_MIN_INTERVAL_MS", 60_000),
+    // The store is the source of truth; this is how long a turn may reuse the
+    // last read of it before paying for another subprocess.
+    cacheTtlMs: envN0("LPP_PERSONA_CACHE_TTL_MS", 60_000),   // 0 = read every time
+    // LLM extraction (wq#1191). Off = the regex fast path only, which is what
+    // wq#1176 shipped and is still the zero-cost first pass when this is on.
+    llmExtract: envN0("LPP_PERSONA_LLM_EXTRACT", 1) > 0,
+    extractTimeoutMs: envN("LPP_PERSONA_EXTRACT_TIMEOUT_MS", 20_000),
+    maxLlmFacts: envN("LPP_PERSONA_MAX_LLM_FACTS", 4),      // per generated line
   },
   runTokenBudget: 3_000_000,  // hard stop per run
 };
