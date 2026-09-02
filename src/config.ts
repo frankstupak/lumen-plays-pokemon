@@ -153,5 +153,28 @@ export const CFG = {
     breakerFails: envN("LPP_BRAIN_BREAKER_FAILS", 2),
     breakerCooldownMs: envN("LPP_BRAIN_BREAKER_COOLDOWN_MS", 600_000),
   },
+  // wq#1176 STREAMER CHAT (one-way: Lumen -> audience; there is no inbound
+  // path, see chat.ts). The brain speaks by appending an optional SAY: line to
+  // its reply, so a chat line costs NO game turn — turns are the scarce
+  // resource here and an audience feature must not compete with gameplay for
+  // them. minIntervalMs is what keeps a 25x-realtime emulator from producing a
+  // wall of text: it spaces the lines the viewer actually sees.
+  chat: {
+    enabled: envN0("LPP_CHAT_ENABLE", 1) > 0,
+    ring: envN("LPP_CHAT_RING", 60),                    // messages kept for the overlay
+    minIntervalMs: envN("LPP_CHAT_MIN_INTERVAL_MS", 45_000),
+  },
+  // wq#1176 PERSONA MEMORY. `path` is the cross-platform contract: every
+  // surface that speaks as Lumen (this agent, the streamer chat, a Messenger
+  // bridge, src/persona_cli.ts) points LPP_PERSONA_PATH at the SAME file, so a
+  // fact stated on one platform is canonical on all of them. It is deliberately
+  // NOT under events/ or checkpoints/: those are swept by retention, and a
+  // persona fact must outlive every run that produced it.
+  persona: {
+    enabled: envN0("LPP_PERSONA_ENABLE", 1) > 0,
+    path: envS("LPP_PERSONA_PATH", "/home/lumen/pokemon/runtime/persona.json"),
+    platform: envS("LPP_PERSONA_PLATFORM", "stream"),
+    recallBudget: envN("LPP_PERSONA_RECALL_BUDGET", 900),   // chars injected per prompt
+  },
   runTokenBudget: 3_000_000,  // hard stop per run
 };
