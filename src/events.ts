@@ -13,6 +13,10 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
                    // used to run from the EventBus CONSTRUCTOR inside a bare
                    // `catch {}`, so files vanished with no record anywhere. Now
                    // deletion happens once, on request, and says so on the bus.
+  | "chat"         // wq#1176: a line Lumen spoke to the stream audience (one-way)
+  | "persona"      // wq#1176: a self-fact became canonical, was reaffirmed, or was
+                   // contradicted. Structured so a contradiction is countable rather
+                   // than something a human has to notice in the chat panel.
   | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
                    // nav.goto. The turn-level log records position ONCE PER TURN,
                    // POST-ACTION, which makes every decision inside a journey
