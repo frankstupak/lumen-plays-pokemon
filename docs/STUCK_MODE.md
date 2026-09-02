@@ -138,6 +138,14 @@ fail-closed on partial/unverifiable windows, observe-only default vs
   starter" root cause (wq#672/wq#674) needs a live `.state.gz` decode through
   `src/state.ts`'s `party: PartyMon[]`, not this module — this module only
   detects the *shape* of the loop, not *why* the fights are being lost.
+- The dP axis samples **once per turn regardless of what the turn was**, so a
+  long legitimate battle can look flat: a multi-mon trainer fight is many
+  `battle_move` turns with no level, tile, flag or badge gained until it ends.
+  With `--dp-axis` on, that is a false-positive path — 40 such turns would be
+  called a stall and classified like any other. It is why the axis ships
+  observe-only: the gate that should suppress it (`inBattle`, or an XP-rate
+  term) belongs with the battle work in items 5-6 of the improvement plan, not
+  in a detector that cannot yet see a fight's shape.
 - `OBJECTIVE_UNREACHABLE` degrades to "never selected" (not a crash) if
   `lpp_frontier` fails to import, matching `lpp-sentinel`'s own
   `frontier_unavailable` precedent of reporting failure loudly rather than
