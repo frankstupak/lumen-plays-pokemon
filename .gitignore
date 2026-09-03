@@ -29,6 +29,15 @@ runtime/
 # append paths keep working. Canonical location: $LPP_BOARD.
 docs/QUEUE_PROGRESS.md
 docs/board-archive/
+# wq#1375: the live primary tree (/home/lumen/pokemon) carries these three as
+# host-local operational state, and `sync-live` refuses to deploy while
+# `git status --porcelain` is non-empty — so leaving them untracked-but-visible
+# wedges every deploy. assets/ is the stream overlay media the kiosk serves,
+# fallback_stats.jsonl is generated per run, and tools/lpp-pstack is a symlink
+# into /home/lumen/pstack (the skill checkout), not repo content.
+assets/
+fallback_stats.jsonl
+tools/lpp-pstack
 FLEET_STATUS_NOTICE_READ_ME.txt
 MAINTENANCE_NOTICE_READ_ME.txt
 docs/NOTICE-POWERBAR-20260807.md
