@@ -6,6 +6,8 @@ import { CFG, BrainProfile } from "./config";
 import { EventBus } from "./events";
 import { readFileSync, appendFileSync } from "fs";
 
+// wq#1191: exported so persona extraction can reach the gateway on the cheap
+// rung without going through the turn ladder. Same key resolution, one place.
 export function apiKey(): string {
   // wq#903/wq#949: env first (scoped lpp key), then the lpp key file only.
   // Never /home/lumen/agent/.env — that silently misattributes spend to the

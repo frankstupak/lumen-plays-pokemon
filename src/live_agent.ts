@@ -21,6 +21,7 @@ import { Notepad } from "./notepad";   // wq#486
 import { StreamChat } from "./chat";       // wq#1176
 import { PersonaMemory } from "./persona"; // wq#1176
 import { Streamer, gatewayLLM } from "./streamer";   // wq#1192
+import { gatewayExtractor } from "./persona_llm"; // wq#1191
 import { makeBorrowGuard } from "./borrow_guard";   // wq#488
 import { ceruleanGuidance, hasTypeCounter } from "./guidance";   // wq#478, wq#696
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
@@ -167,15 +168,20 @@ stream.names = () => ({
 // ownership rule as the notepad — both are replaced onto every Agent built
 // below, so a gameplay continue never rewinds what Lumen said or who he is.
 //
-// The persona file deliberately sits at CFG.persona.path rather than under
-// RUNTIME: it is the CROSS-PLATFORM store, and any other surface speaking as
-// Lumen points LPP_PERSONA_PATH at that same file. The chat log is local to
-// the stream, so it stays in RUNTIME.
+// wq#1191: the persona does not live in a file here at all. bind() attaches
+// lumen_state (subject CFG.persona.subject), which every other surface speaking
+// as Lumen reads too, and migrates wq#1176's JSON store on the first boot that
+// finds it. The chat log is local to the stream, so it stays in RUNTIME.
 const chat = new StreamChat({ ring: CFG.chat.ring, minIntervalMs: CFG.chat.minIntervalMs });
 chat.bind(`${RUNTIME}/chat.json`);
 chat.bindLog(CFG.chat.log || `${RUNTIME}/chat.jsonl`);   // wq#1192: append-only transcript
 const persona = new PersonaMemory();
-if (CFG.persona.enabled) persona.bind(CFG.persona.path);
+if (CFG.persona.enabled) {
+  persona.bind(CFG.persona.path);
+  // Extraction is a model call, so it is wired HERE rather than inside
+  // persona.ts: the store has to keep working on a surface with no gateway.
+  if (CFG.persona.llmExtract) persona.extractor = gatewayExtractor();
+}
 stream.chat = () => chat.toJSON();
 stream.persona = () => ({ ...persona.toJSON(), stats: persona.stats() });
 
