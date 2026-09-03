@@ -76,6 +76,10 @@ src/
   catch_policy.ts   wild-battle catch policy
   recovery.ts       whiteout and story-regression recovery
   stream.ts         live kiosk server
+  chat.ts           chat transport: rate limit, ring, append-only log
+  streamer.ts       the chat generator: own clock, cheap rung, 60/40 topic mix
+  persona.ts        canonical self-facts, shared across every platform
+  persona_cli.ts    the same store from any process: recall / ask / state
   link/             Game Boy link cable over TCP (multiplayer work)
   probe_*.ts        acceptance probes, one per shipped capability
 docs/               doctrine, research, roadmap, survivability plan
@@ -104,6 +108,7 @@ run by a single operator, as a demonstration of what that setup can do.
 - [`docs/PLAN-SURVIVABILITY.md`](docs/PLAN-SURVIVABILITY.md) — harness hardening log
 - [`docs/WHITEOUT-RECOVERY.md`](docs/WHITEOUT-RECOVERY.md) — how a loss is detected and recovered
 - [`docs/SENTINEL.md`](docs/SENTINEL.md) — the standing health monitor
+- [`docs/STREAMER_CHAT.md`](docs/STREAMER_CHAT.md) — one-way audience chat and cross-platform persona memory
 - [`docs/multiplayer/`](docs/multiplayer) — link-cable trade and battle work
 
 ## Contributing

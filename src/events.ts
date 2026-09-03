@@ -22,6 +22,10 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
                    // action it WITHHELD while advisory-only. The soak week's
                    // evidence for whether LPP_WINNABILITY_FORCE=1 is safe.
   | "fight_ledger" // wq#1181: fight outcome recorded, gate opened/fired/lifted.
+  | "chat"         // wq#1176: a line Lumen spoke to the stream audience (one-way)
+  | "persona"      // wq#1176: a self-fact became canonical, was reaffirmed, or was
+                   // contradicted. Structured so a contradiction is countable rather
+                   // than something a human has to notice in the chat panel.
   | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
                    // nav.goto. The turn-level log records position ONCE PER TURN,
                    // POST-ACTION, which makes every decision inside a journey
