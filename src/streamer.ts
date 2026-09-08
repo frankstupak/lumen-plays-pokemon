@@ -205,6 +205,12 @@ export class Streamer {
   offTopicLines = 0;
   skipped = 0;
   failures = 0;
+  /** Why the most recent attempt produced no line, or null if it spoke (or
+   *  none has run yet). `failures`/`skipped` alone told you the chat box was
+   *  empty; this is what tells you WHY without writing a probe script against
+   *  the gateway by hand — that gap is how a dead LiteLLM budget key ran the
+   *  chat panel silent for days (wq#1360). */
+  lastReason: string | null = null;
   /** Topic keys already used recently — the mixer avoids them. */
   private recentTopics: TopicKey[] = [];
   private timer: NodeJS.Timeout | null = null;
@@ -416,8 +422,11 @@ export class Streamer {
     const trigger = this.due();
     if (!trigger) return null;
     this.inFlight = true;
-    try { return await this.generate(trigger); }
-    finally { this.inFlight = false; }
+    try {
+      const result = await this.generate(trigger);
+      this.lastReason = result.line ? null : (result.reason ?? null);
+      return result;
+    } finally { this.inFlight = false; }
   }
 
   /** Wall-clock loop. 1s is fine: a tick with nothing due is two comparisons,
@@ -432,11 +441,12 @@ export class Streamer {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
-  stats(): { lines: number; offTopic: number; offTopicRate: number; skipped: number; failures: number; model: string } {
+  stats(): { lines: number; offTopic: number; offTopicRate: number; skipped: number; failures: number; model: string; lastReason: string | null } {
     return {
       lines: this.lines, offTopic: this.offTopicLines,
       offTopicRate: this.lines ? this.offTopicLines / this.lines : 0,
       skipped: this.skipped, failures: this.failures, model: CFG.streamer.model,
+      lastReason: this.lastReason,
     };
   }
 }

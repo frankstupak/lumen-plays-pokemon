@@ -428,7 +428,7 @@ export class StreamServer {
           return;
         }
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify(this.streamer ? this.streamer() : { lines: 0, offTopic: 0, offTopicRate: 0, skipped: 0, failures: 0, model: null }));
+        res.end(JSON.stringify(this.streamer ? this.streamer() : { lines: 0, offTopic: 0, offTopicRate: 0, skipped: 0, failures: 0, model: null, lastReason: null }));
         return;
       }
       // wq#503: static-per-ROM name tables, fetched once per page load.
