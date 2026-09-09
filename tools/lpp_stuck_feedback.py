@@ -61,9 +61,25 @@ AUTO-RESOLVE
   current MODE is no longer stalled at all, or stalled under a different
   mode/location — either way, the specific incident that was tracked is over.
 
+ALERT QUEUE (wq#1562)
+  The wq ticket above is filed once and then only touched again when the
+  report signature changes (wq#1162) — exactly the behavior that let
+  FIGHT_LOSS_LOOP@3 tick-loop 167.9h silently once Frank (or anyone) closed
+  wq#1162 out from under it: nothing re-opens a closed ticket, so an
+  incident that is still exhausted goes dark except for the one 3h ntfy.
+  `aq` (/home/lumen/bin/aq) is a separate, persistent triage queue Frank
+  actually works from, and its own `add` is an upsert keyed on (source,key)
+  — a repeat `aq add lpp stuck:<mode>@<loc> ...` while the row is still
+  `open` just bumps count/last_ts/message, it never inserts a duplicate. So
+  every tick where decide() says exhausted calls `aq add lpp
+  stuck:<mode>@<loc>` unconditionally (no report_signature gate needed —
+  aq's dedup already IS the refresh-not-duplicate contract), and
+  resolve_advanced() calls `aq resolve <id>` alongside `wq done` once the
+  incident's counters actually move past baseline.
+
 READ+WRITE. Reads runtime/stuck_mode.json state (recomputed live),
 runtime/intervention_log.json (wq#672, for cost/attempts detail on the
-ticket), calls the `wq` and `ntfy-send` CLIs. Writes only
+ticket), calls the `wq`, `aq`, and `ntfy-send` CLIs. Writes only
 runtime/stuck_escalation.json.
 """
 import json, os, re, subprocess, sys
@@ -77,10 +93,12 @@ import lpp_stuck_intervene as I
 BASE = os.environ.get("LPP_BASE", "/home/lumen/pokemon")
 STATE_PATH = f"{BASE}/runtime/stuck_escalation.json"
 WQ = os.environ.get("LPP_WQ_BIN", "/home/lumen/bin/wq")
+AQ = os.environ.get("LPP_AQ_BIN", "/home/lumen/bin/aq")
 NTFY = os.environ.get("LPP_NTFY_BIN", "/home/lumen/bin/ntfy-send")
 NTFY_TOPIC = "lumen-fleet"
 ESCALATE_AFTER_H = 3.0
 MARKER_RE = re.compile(r"\[lpp\]\[stuck\]\s+(\S+)\s+—")
+AQ_ID_RE = re.compile(r"queued id=(\d+)")
 
 
 def _iso(ms):
@@ -120,6 +138,11 @@ def _default_wq_call(args):
 def _default_ntfy_call(args):
     p = subprocess.run([NTFY, *args], capture_output=True, text=True, timeout=20)
     return p.returncode
+
+
+def _default_aq_call(args):
+    p = subprocess.run([AQ, *args], capture_output=True, text=True, timeout=20)
+    return p.stdout + p.stderr
 
 
 def find_open_ticket(location_key, wq_call):
@@ -186,7 +209,7 @@ def report_signature(report):
     return FROZEN_RE.sub("frozen=<h> ", report)
 
 
-def resolve_advanced(escal, state, wq_call, now_ms):
+def resolve_advanced(escal, state, wq_call, now_ms, aq_call=None):
     """Auto-resolve: any tracked incident whose baseline the CURRENT state has
     since exceeded gets its ticket closed and is dropped from tracked state.
 
@@ -220,14 +243,17 @@ def resolve_advanced(escal, state, wq_call, now_ms):
         )
         if inc.get("ticketId") is not None:
             wq_call(["done", str(inc["ticketId"]), "--notes", evidence])
-        closed.append({"locationKey": key, "ticketId": inc.get("ticketId"), "evidence": evidence})
+        if inc.get("aqId") is not None and aq_call is not None:
+            aq_call(["resolve", str(inc["aqId"]), evidence])
+        closed.append({"locationKey": key, "ticketId": inc.get("ticketId"), "aqId": inc.get("aqId"), "evidence": evidence})
         del escal["incidents"][key]
     return closed
 
 
-def maybe_file_or_append(escal, mode, location_key, location, state, intervention_log, wq_call, now_ms):
+def maybe_file_or_append(escal, mode, location_key, location, state, intervention_log, wq_call, now_ms, report=None):
     inc = escal["incidents"].get(location_key)
-    report = build_report(mode, location_key, location, state, intervention_log, now_ms)
+    if report is None:
+        report = build_report(mode, location_key, location, state, intervention_log, now_ms)
 
     if inc is None:
         existing_id = find_open_ticket(location_key, wq_call)
@@ -298,7 +324,28 @@ def maybe_escalate_ntfy(escal, location_key, state, ntfy_call, now_ms):
     return {"sent": rc == 0, "returncode": rc, "message": msg}
 
 
-def run(state=None, intervention_log=None, escal=None, wq_call=None, ntfy_call=None, now_ms=None):
+def maybe_alert_aq(escal, mode, location_key, state, aq_call, now_ms, report):
+    """Open/refresh the aq row for this incident. Called every tick decide()
+    says exhausted — safe because aq's own `add` is an upsert on
+    (source,key): while the row is still `open`, a repeat call bumps
+    count/last_ts/message instead of inserting a duplicate (see aq's own
+    ingest()). No report_signature gate here on purpose — unlike the wq
+    ticket, this row is meant to visibly age (count, last_ts) as long as the
+    incident stays exhausted, so Frank's triage view shows it is still live
+    rather than going quiet the way the wq-only path did (wq#1562).
+    """
+    key = f"stuck:{location_key}"
+    title = f"[lpp][stuck] {location_key} — {mode} unresolved after K interventions"
+    out = aq_call(["add", "lpp", key, title, report])
+    m = AQ_ID_RE.search(out)
+    inc = escal["incidents"].get(location_key)
+    aq_id = int(m.group(1)) if m else (inc.get("aqId") if inc else None)
+    if inc is not None:
+        inc["aqId"] = aq_id
+    return {"aqId": aq_id, "key": key}
+
+
+def run(state=None, intervention_log=None, escal=None, wq_call=None, ntfy_call=None, aq_call=None, now_ms=None):
     state = state if state is not None else M.compute()
     if not state.get("ok"):
         return {"ok": False, "reason": state.get("reason")}
@@ -306,10 +353,11 @@ def run(state=None, intervention_log=None, escal=None, wq_call=None, ntfy_call=N
     escal = escal if escal is not None else load_state()
     wq_call = wq_call or _default_wq_call
     ntfy_call = ntfy_call or _default_ntfy_call
+    aq_call = aq_call or _default_aq_call
     now_ms = now_ms if now_ms is not None else _now_ms()
 
-    result = {"ok": True, "resolved": [], "filed": None, "ntfy": None}
-    result["resolved"] = resolve_advanced(escal, state, wq_call, now_ms)
+    result = {"ok": True, "resolved": [], "filed": None, "ntfy": None, "aq": None}
+    result["resolved"] = resolve_advanced(escal, state, wq_call, now_ms, aq_call=aq_call)
 
     if state.get("stalled"):
         mode = state["mode"]
@@ -317,8 +365,10 @@ def run(state=None, intervention_log=None, escal=None, wq_call=None, ntfy_call=N
         location_key = f"{mode}@{location}"
         decision = I.decide(state=state, log=intervention_log)
         if decision.get("exhausted"):
+            report = build_report(mode, location_key, location, state, intervention_log, now_ms)
             result["filed"] = maybe_file_or_append(
-                escal, mode, location_key, location, state, intervention_log, wq_call, now_ms)
+                escal, mode, location_key, location, state, intervention_log, wq_call, now_ms, report=report)
+            result["aq"] = maybe_alert_aq(escal, mode, location_key, state, aq_call, now_ms, report)
         if location_key in escal["incidents"]:
             result["ntfy"] = maybe_escalate_ntfy(escal, location_key, state, ntfy_call, now_ms)
 
@@ -350,9 +400,11 @@ def main(argv=None):
                 print(f"RESOLVED {r['locationKey']} (wq#{r['ticketId']})")
         if acted:
             print(f"TICKET {filed['action']} wq#{filed['ticketId']}")
+        if result.get("aq"):
+            print(f"AQ queued id={result['aq']['aqId']} key={result['aq']['key']}")
         if result.get("ntfy"):
             print(f"NTFY sent={result['ntfy']['sent']}: {result['ntfy']['message']}")
-        if not (result.get("resolved") or acted or result.get("ntfy")):
+        if not (result.get("resolved") or acted or result.get("aq") or result.get("ntfy")):
             print("no escalation action")
     return 0 if result.get("ok", True) else 1
 
