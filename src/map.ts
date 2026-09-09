@@ -61,6 +61,16 @@ export class MapModel {
   sprites: { y: number; x: number; pic: number }[] = [];
   warps: Warp[] = [];
   tilesetId = 0;
+  /** wq#1565: the tile id the ENGINE tests for a wild encounter, and the map's
+   *  encounter rate. pokered LoadTilesetHeader copies the tileset header's
+   *  grass byte into wGrassTile and the map header's rate into wGrassRate;
+   *  TryDoWildEncounter rolls only when the tile underfoot equals wGrassTile
+   *  (rate 0 = no wild pool at all, e.g. a town). Both come from RAM rather
+   *  than a hardcoded 0x52 so every tileset answers for itself; verified equal
+   *  to the ROM Tilesets entry's byte 10 on every checkpoint in the live
+   *  corpus (probe_grass1565 G1). 0xff = this tileset has no grass tile. */
+  grassTile = 0xff;
+  grassRate = 0;
   /** TilePairCollisionsLand entries that apply to the CURRENT tileset. */
   landPairs: TilePair[] = [];
   /** LedgeTiles entries — populated only on the overworld tileset (see build). */
@@ -82,6 +92,8 @@ export class MapModel {
     this.height = m[s.addr("wCurMapHeight")];
     this.gw = this.width * 2; this.gh = this.height * 2;
     this.tilesetId = m[s.addr("wCurMapTileset")];
+    this.grassTile = m[s.addr("wGrassTile")];
+    this.grassRate = m[s.addr("wGrassRate")];
     // wq#606: wCurMapConnections is the header's last byte and unlabeled in
     // the .sym — derive it from the labeled end marker rather than a magic
     // address, so a re-dumped symbol file cannot silently skew it.
@@ -256,6 +268,28 @@ export class MapModel {
            m[s.addr("wCurMapTileset")] !== h.tileset;
   }
 
+  /** wq#1565: can a wild Pokemon appear on this cell? Wild encounters in Gen 1
+   *  roll per STEP and ONLY on the tileset's grass tile, so every cell that is
+   *  not one of these is dead ground for catching — the 582h Route 24 freeze
+   *  was the brain walking such ground because the grid never named it. */
+  isGrass(x: number, y: number): boolean {
+    if (this.grassRate === 0 || this.grassTile === 0xff) return false;
+    if (x < 0 || y < 0 || x >= this.gw || y >= this.gh) return false;
+    return this.tileIds[y][x] === this.grassTile;
+  }
+
+  /** Every encounter tile on this map, nearest-first by Manhattan distance
+   *  from (x,y). Manhattan is the ordering only — the caller prices the real
+   *  walk with astar, which is what the brain is promised in steps. */
+  grassCells(x: number, y: number): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    for (let gy = 0; gy < this.gh; gy++)
+      for (let gx = 0; gx < this.gw; gx++)
+        if (this.isGrass(gx, gy)) out.push({ x: gx, y: gy });
+    return out.sort((a, b) =>
+      (Math.abs(a.x - x) + Math.abs(a.y - y)) - (Math.abs(b.x - x) + Math.abs(b.y - y)));
+  }
+
   /** Is (x,y) a warp tile? Pathfinding must not cross these as shortcuts. */
   isWarp(x: number, y: number): boolean {
     return this.warps.some(w => w.x === x && w.y === y);
@@ -269,10 +303,40 @@ export class MapModel {
         else if (this.warps.some(w => w.x === x && w.y === y)) out += "W";
         else if (this.sprites.some(sp => sp.x === x && sp.y === y && sp.pic === 0x3d)) out += "B";  // wq#607: item ball
         else if (this.sprites.some(sp => sp.x === x && sp.y === y)) out += "N";
+        else if (this.isGrass(x, y)) out += "G";   // wq#1565: the only cells wilds spawn on
         else out += this.grid[y][x] ? "." : "#";
       }
       out += "\n";
     }
     return out;
   }
+}
+
+/** What the brain is told about encounter tiles on the current map. */
+export interface GrassView {
+  count: number;                            // encounter tiles on this map
+  onGrass: boolean;                         // the player is standing on one
+  nearest: { x: number; y: number } | null; // nearest reachable-looking cell
+  steps: number | null;                     // astar cost to it, null = no path
+}
+
+/** wq#1565: the encounter-tile advisory. Renders ONLY on maps that HAVE grass
+ *  (same wq#488 no-dead-prose rule as the item-ball and hidden-item lines), so
+ *  towns, interiors and caves stay silent. It exists because the MAPGRID alone
+ *  answers "where is grass" but not "wilds appear ONLY there, per step" — the
+ *  brain spent 452 turns and 725 goto calls on Route 24 without one battle
+ *  while believing grass simply was not shown. */
+export function grassLine(v: GrassView): string | null {
+  if (v.count === 0) return null;
+  const where = `${v.count} tall-grass tile${v.count > 1 ? "s" : ""} on this map (G in MAPGRID)`;
+  if (v.onGrass)
+    return `! TALL GRASS: you are STANDING on grass — ${where}. Wild Pokemon roll PER STEP ` +
+      `taken on a G tile and never anywhere else: keep goto()ing G tiles here until a battle ` +
+      `starts, and do not walk off the grass to look for one.`;
+  if (!v.nearest || v.steps === null)
+    return `! TALL GRASS: ${where}, none reachable from here — wild Pokemon appear ONLY while ` +
+      `stepping on G tiles, so a catch needs a route onto the grass first.`;
+  return `! TALL GRASS at (${v.nearest.x},${v.nearest.y}), ${v.steps} steps — ${where}. Wild ` +
+    `Pokemon appear ONLY while stepping on a G tile: goto(${v.nearest.x},${v.nearest.y}), then ` +
+    `keep stepping between G tiles until one shows up.`;
 }
