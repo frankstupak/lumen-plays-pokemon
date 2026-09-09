@@ -6,7 +6,7 @@ import { join } from "path";
 import { Emulator, KEYS, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
-import { MapModel, Warp } from "./map";
+import { MapModel, Warp, grassLine } from "./map";
 import { mtMoonLeg, MT_MOON_MAPS } from "./mtmoon_route";
 import { corridorPhase } from "./phase";
 import { Navigator, astar } from "./nav";
@@ -481,7 +481,25 @@ export class Agent {
     this.map.build();
     const p = this.nav.posChecked();
     block += `\n${renderWarps(this.currentWarpViews())}`;
-    block += `\nMAPGRID (P=you W=warp N=npc B=item ball #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+    block += `\nMAPGRID (P=you W=warp N=npc B=item ball G=tall grass #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+    // wq#1565: encounter-tile perception. Wild Pokemon in Gen 1 roll per step
+    // and ONLY on the tileset's grass tile, so a grid that renders grass as
+    // plain open ground makes catching unsolvable by observation — which is
+    // what froze the campaign on Route 24 (map35) for 582h at "we must go into
+    // tall grass ... assume we can move to a grass tile". Perception + a nudge,
+    // never a nav goal, same rule as the item-ball line below.
+    {
+      const cells = this.map.grassCells(p.x, p.y);
+      const onGrass = this.map.isGrass(p.x, p.y);
+      let nearest: { x: number; y: number } | null = null, steps: number | null = null;
+      for (const c of cells) {
+        const path = astar(this.map, p.x, p.y, c.x, c.y, new Set<string>());
+        if (!path) continue;
+        nearest = c; steps = path.length; break;
+      }
+      const gline = grassLine({ count: cells.length, onGrass, nearest, steps });
+      if (gline) block += `\n${gline}`;
+    }
     // wq#607: item-ball perception — the line renders ONLY when a ball is on
     // this map (no dead prose). Steps via the same astar goto() uses, so
     // "N steps" is a promise the executor can keep. NO auto-detour: this is

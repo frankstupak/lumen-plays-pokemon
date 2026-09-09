@@ -35,7 +35,7 @@ export function renderState(st: GameState, mapAscii: string | null): string {
     return `#${p.species} L${p.level} ${p.hp}/${p.maxHp}${p.status ? " ST" + p.status : ""} PP[${pp.join("/")}]`;
   }).join(" | ") || "none";
   let out = `MAP ${st.map} POS ${st.x},${st.y} BADGES ${st.badgeCount} MONEY ${st.money} BATTLE ${st.inBattle}\nPARTY ${party}`;
-  if (mapAscii) out += `\nMAPGRID (P=you W=warp N=npc #=wall .=open)\n${mapAscii}`;
+  if (mapAscii) out += `\nMAPGRID (P=you W=warp N=npc G=tall grass #=wall .=open)\n${mapAscii}`;
   return out;
 }
 
