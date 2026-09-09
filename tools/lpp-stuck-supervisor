@@ -63,12 +63,22 @@ def main(argv=None):
         decision = I.decide(state=state, log=log)
         if not args.dry_run:
             I.save_log(log)
-            if decision.get("intervened"):
+            # wq#1563: gate on the DIRECTIVE, not on `intervened`. wq#1091 made
+            # decide() emit a refreshed directive on the exhausted path too and
+            # updated lpp_stuck_intervene.main() to persist it — but this
+            # wrapper is the one the timer actually runs, and it kept the old
+            # `intervened` gate. So every exhausted tick since then computed a
+            # directive and threw it away: runtime/supervisor_directive.json sat
+            # unchanged from 2026-08-29 while the supervisor ticked over
+            # FIGHT_LOSS_LOOP@3 for 167.9h. The post-K rungs wq#1563 adds would
+            # have been discarded the same way.
+            if decision.get("directive"):
                 tmp = I.DIRECTIVE_PATH + ".tmp"
                 with open(tmp, "w") as f:
                     json.dump(decision["directive"], f, indent=1)
                 os.replace(tmp, I.DIRECTIVE_PATH)
-        out["intervention"] = {k: decision.get(k) for k in ("intervened", "mode", "attempt", "k", "exhausted")}
+        out["intervention"] = {k: decision.get(k) for k in
+                               ("intervened", "mode", "attempt", "k", "exhausted", "rung")}
 
         escal = F.load_state()
         result, escal = F.run(state=state, intervention_log=log, escal=escal)

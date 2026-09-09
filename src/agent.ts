@@ -74,6 +74,12 @@ export function mtMoonReentryRefusal(onMap15: boolean, phase: string,
 // until the story advances (storyScore/badges/eventFlags rise).
 interface SupervisorDirective {
   gotoBan: number[];
+  // wq#1563: the post-K breakout rung's ban, and the exact inverse of gotoBan
+  // above — gotoBan refuses enter_warp INTO a map, this refuses goto WITHIN
+  // one, leaving leave_edge and enter_warp as the way out. A map-local freeze
+  // (one map, a full dP window, zero new tiles) cannot be broken by banning
+  // the map: the agent is already inside it and still needs its exits.
+  staleMapGotoBan: number | null;
   mode: string;
   summary: string;
   notepadPin: string;
@@ -97,9 +103,15 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
       ? d.gotoBan.filter((m: any) => typeof m === "number")
       : [];
     const pin = typeof d.notepadPin === "string" ? d.notepadPin : "";
-    if (bans.length === 0 && !pin) return null;   // nothing actionable
+    // wq#1563: honoured for any mode. The breakout rung fires past K on
+    // whatever mode was stalled, so gating it on the mode name the way bans are
+    // gated would make it unreachable on FIGHT_LOSS_LOOP — the one incident it
+    // was built for.
+    const staleMap = typeof d.staleMapGotoBan === "number" ? d.staleMapGotoBan : null;
+    if (bans.length === 0 && staleMap === null && !pin) return null;   // nothing actionable
     return {
       gotoBan: bans,
+      staleMapGotoBan: staleMap,
       mode: d.mode ?? "",
       summary: d.summary ?? "",
       notepadPin: pin,
@@ -196,6 +208,13 @@ export class Agent {
   // observe(). wq#724 wired ban consumption but never rendered this, so the
   // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
   private supervisorPin = "";
+  // wq#1563: the breakout rung's map-local goto ban, and the directive mtime
+  // the loaded state came from. The mtime exists because loadSupervisorBans()
+  // ran ONLY in the constructor: a directive written mid-run was invisible
+  // until the next boot, and live runs go ~450 turns. A recovery step that
+  // cannot reach the process it is recovering is not a recovery step.
+  private supervisorStaleMap: number | null = null;
+  private supervisorMtimeMs = -1;
   // wq#1179: tile novelty + composite progress scalar. OBSERVE-ONLY — nothing
   // below reads it back; observe() writes runtime/{visited_tiles,progress}.json
   // and emits a `progress` event, and tools/lpp_stuck_mode.py is the consumer.
@@ -237,13 +256,17 @@ export class Agent {
     try {
       // checkpointDir is <base>/checkpoints; directive is at <base>/runtime/
       const base = join(this.checkpointDir, "..");
+      this.supervisorMtimeMs = this.directiveMtimeMs();
       const dir = loadSupervisorDirective(base);
       if (!dir) return;
+      this.supervisorBans.clear();
       for (const m of dir.gotoBan) this.supervisorBans.add(m);
       this.supervisorPin = dir.notepadPin || "";
+      this.supervisorStaleMap = dir.staleMapGotoBan;
       // wq#1081/#1084: load the baseline whenever EITHER a ban or a pin is
       // present, so a guidance-only directive still auto-lifts on advance.
-      if (this.supervisorBans.size === 0 && !this.supervisorPin) return;
+      if (this.supervisorBans.size === 0 && this.supervisorStaleMap === null
+          && !this.supervisorPin) return;
       const st = this.reader.read();
       this.supervisorBaseline = {
         score: st.storyScore,
@@ -253,8 +276,41 @@ export class Agent {
       this.bus.emit("tool_call", {
         tool: "supervisor_directive_loaded", src: "harness",
         maps: dir.gotoBan, mode: dir.mode, summary: dir.summary, pin: !!this.supervisorPin,
+        staleMap: this.supervisorStaleMap,
       });
     } catch { /* a bookkeeping failure must never break boot */ }
+  }
+
+  /** wq#1563: mtime of the directive file, or -1 if it is absent/unreadable. */
+  private directiveMtimeMs(): number {
+    try {
+      return statSync(join(this.checkpointDir, "..", "runtime",
+                           "supervisor_directive.json")).mtimeMs;
+    } catch { return -1; }
+  }
+
+  /** wq#1563: pick up a directive written after boot.
+   *
+   *  The supervisor runs on its own timer against a live agent process, so
+   *  before this the ONLY way a new directive reached the brain was a restart.
+   *  A stat() per dispatch is the cheapest honest check; the file is only
+   *  re-parsed when its mtime actually moves. */
+  private refreshSupervisorDirective(): void {
+    const mt = this.directiveMtimeMs();
+    if (mt === this.supervisorMtimeMs) return;
+    this.supervisorMtimeMs = mt;
+    if (mt === -1) {   // directive removed — drop everything it imposed
+      this.supervisorBans.clear();
+      this.supervisorPin = "";
+      this.supervisorStaleMap = null;
+      this.supervisorBaseline = null;
+      return;
+    }
+    this.loadSupervisorBans();
+    this.bus.emit("tool_call", {
+      tool: "supervisor_directive_reloaded", src: "harness",
+      staleMap: this.supervisorStaleMap, pin: !!this.supervisorPin,
+    });
   }
 
   /** wq#724: if story advanced past the baseline, the ban is stale — clear it.
@@ -275,6 +331,7 @@ export class Agent {
         });
         this.supervisorBans.clear();
         this.supervisorPin = "";
+        this.supervisorStaleMap = null;   // wq#1563: kill-criterion 5
         this.supervisorBaseline = null;
       }
     } catch { /* never crash on a bookkeeping read */ }
@@ -559,6 +616,7 @@ export class Agent {
    *  being replayed forever. The 04:00-04:26Z live burn was 12 identical
    *  failing buy_item calls; the ceiling ends that class at 3. */
   async dispatch(actLine: string): Promise<string> {
+    this.refreshSupervisorDirective();  // wq#1563: pick up a mid-run directive
     this.checkSupervisorLift();  // wq#724: auto-clear bans on story advance
     const m = actLine.match(/(\w+)\s*\(([^)]*)\)/);
     if (!m) return "parse_error: no tool call found";
@@ -624,6 +682,15 @@ export class Agent {
             "or goto(map,x,y) to name the map explicitly";
           const xref = crossMapRefusal(tgt, st0.map, id => this.mapLabel(id));
           if (xref) return `goto: ${xref}`;
+          // wq#1563: the breakout rung. Refused only while standing ON the
+          // stale map, and only for goto — leave_edge and enter_warp are the
+          // exits the directive is pushing the agent toward, so they stay open.
+          if (this.supervisorStaleMap !== null && st0.map === this.supervisorStaleMap) {
+            return `goto: refused - the supervisor has spent every other remedy on ` +
+              `${this.mapLabel(st0.map) ?? `map${st0.map}`} and a full progress window ` +
+              `here produced no new tile. Walking to another tile on this map cannot ` +
+              `help. LEAVE THE MAP: leave_edge at a boundary, or enter_warp through a door.`;
+          }
           const tx = tgt.x, ty = tgt.y;
           // wq#601: past the cave, the Mt Moon re-entry warp tile is refused
           // here, not in prose. reader.read() is fresh RAM; map15 is ranked on

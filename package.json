@@ -6,6 +6,7 @@
   "scripts": {
     "test": "bash scripts/probes-main.sh",
     "test:pure": "bash scripts/probes-pure.sh",
+    "test:stuck": "bash scripts/probes-stuck.sh",
     "verify": "tsx src/verify.ts",
     "build": "tsc",
     "p1": "tsx src/p1_verify.ts"

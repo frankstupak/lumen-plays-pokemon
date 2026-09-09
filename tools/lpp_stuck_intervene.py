@@ -275,7 +275,158 @@ PRESCRIPTIONS = {
 
 
 WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
+FRONTIER_PATH = f"{BASE}/runtime/frontier.json"
 NAMES_FILE = f"{os.path.join(HERE, 'map_names.json')}"
+
+# wq#1563: the recovery-of-last-resort rung, and its kill-criteria.
+#
+# THE INCIDENT this rung exists for. FIGHT_LOSS_LOOP@3 sat frozen 167.9h on the
+# story_score axis (runtime/stuck_escalation.json), and the FRONTIER axis had
+# been frozen since 2026-08-16 — 582h. K was spent, so decide() returned a
+# handoff that handed off to nothing, and the supervisor tick-looped forever.
+# What the agent was actually doing, read off the live event log: 452 turns,
+# 725 goto calls, ZERO battles entered, ZERO catches, dP flat at 0 new tiles,
+# every sample on map 35. It was not losing fights at all. It was walking in
+# circles on one route while the pin told it to go grind.
+#
+# WHY THIS RUNG AND NOT THE OTHER FOUR. The options weighed, and why each was
+# rejected or folded in (kept here because the next person to look at a frozen
+# incident will reach for the same list):
+#   - forced flee/run: no mechanism and no target. This supervisor writes files
+#     and never presses a button, and the agent enters no battles to flee from.
+#   - forced heal-return-to-Pokecenter routing: this IS the failure mode. The
+#     party is at full HP and the wq#1091 pin already had to tell the agent to
+#     STOP warping to the centre to heal at full HP.
+#   - checkpoint restore / soft-reset to the last frontier map: the destructive
+#     one. It can regress story flags, and src/resume.ts's pickResume owns the
+#     boot pick anyway (wq#1118) — a reset that lands back on the same state is
+#     just RESUME_DEADEND, which already has its own mode. Rejected outright:
+#     a recovery step that can lose progress is not a recovery step.
+#   - blacklist the losing action: right idea, wrong granularity as it stands.
+#     The existing gotoBan bans enter_warp INTO maps; here the agent is caged
+#     ON one map, so banning map 35 would exile it from the only grass route it
+#     needs. Banning the individual tiles is no better — the trailing window
+#     covers 25 distinct tiles, and banning 25 tiles can make the map's own exit
+#     unreachable, which turns a stall into a hard stop.
+# What survives is the bounded explore-away directive: while the budget runs,
+# goto is refused ON the stale map and the two EXIT primitives (leave_edge,
+# enter_warp) stay open. It cannot corrupt a save, cannot regress the story,
+# cannot loop resets, and kills the exact 725-goto thrash that was observed.
+#
+# KILL-CRITERIA, so it cannot thrash (each is asserted in tools/test_stuck1563.py):
+#   1. anchor required — fires only when a full dP window of progress samples
+#      sits on ONE map and adds no more than breakout_new_tile_max() tiles while
+#      there. No anchor, no breakout; the rung never invents a target.
+#   2. once per incident key, ever — breakout_entry() finds the prior firing and
+#      decide() refuses a second, so the ladder cannot cycle the way wq#1162
+#      found the K budget cycling.
+#   3. bounded — BREAKOUT_WINDOW_MULT dP windows of turns, then it expires.
+#   4. it releases its own ban on expiry: the terminal handoff carries an empty
+#      ban, so a failed breakout never leaves a live restriction behind.
+#   5. it lifts free on success — the harness already clears any directive when
+#      story advances past its baseline (src/agent.ts checkSupervisorLift).
+BREAKOUT_WINDOW_MULT = 3   # budget = 3 dP windows; one window is the flatness
+                           # test itself, so three gives two clear windows to
+                           # show a new tile before the rung admits defeat.
+
+# How many NEW tiles a full window may contain and still count as re-walking
+# known ground. Measured, not guessed: on the live FIGHT_LOSS_LOOP@3 incident
+# the three most recent 40-turn windows of runtime/progress.json contained 0, 2
+# and 0 new tiles while touching 25 distinct positions — the agent was pacing a
+# route it had already mapped. A tenth of the window is well above that and far
+# below a real traversal, which adds tiles on most turns.
+#
+# The classifier's own dP `flat` flag was tried here first and rejected: it is
+# computed off the composite P, so ONE new tile flips it false. The rung would
+# have fired or not on a coin-flip between consecutive supervisor ticks — the
+# live incident flipped flat true->false inside ten minutes while staying just
+# as frozen. A rate, sampled over the same window, does not flap.
+def breakout_new_tile_max(window):
+    return max(1, window // 10)
+
+
+def _frontier(path=None):
+    return M.load_json(path or FRONTIER_PATH, {}) or {}
+
+
+def breakout_anchor(state, samples=None, window=None, frontier=None):
+    """The (stall_map, target_map, last_turn) a breakout would act on, or None.
+
+    Kill-criterion 1. Two conditions, both read off files another module owns:
+    the trailing window of runtime/progress.json (written by the wq#1179
+    tracker) must sit entirely on ONE map, and must have added no more than
+    breakout_new_tile_max() new tiles while there. The window length is
+    src/novelty.ts's DP_WINDOW_TURNS, parsed not retyped, and the map to aim at
+    is runtime/frontier.json's furthestMap.
+
+    The caller has already established the other half of the case: decide()
+    only reaches this rung when the classifier says stalled and K is spent.
+    """
+    dp = state.get("dP") or {}
+    if not dp.get("ok"):
+        return None                      # no novelty tracking: no honest anchor
+    window = window or M.dp_window_turns()
+    samples = samples if samples is not None else M.load_progress()
+    tail = [s for s in samples[-window:] if s.get("map") is not None]
+    if len(tail) < window:
+        return None                      # not enough evidence to name a cage
+    maps = {s["map"] for s in tail}
+    if len(maps) != 1:
+        return None                      # moving between maps: not map-local
+    new_tiles = sum((s.get("newTiles") or 0) for s in tail)
+    if new_tiles > breakout_new_tile_max(window):
+        return None                      # genuinely exploring: leave it alone
+    stall_map = tail[-1]["map"]
+    fr = frontier if frontier is not None else _frontier()
+    target = fr.get("furthestMap")
+    if not isinstance(target, int) or target == stall_map:
+        # Already parked on the frontier map: aim at any map this run has
+        # reached that is not the stale one and not in the recent window.
+        recent = {m.get("id") for m in (fr.get("recentMaps") or []) if isinstance(m, dict)}
+        target = next((m for m in (fr.get("mapsEver") or [])
+                       if isinstance(m, int) and m != stall_map and m not in recent), None)
+    last_turn = tail[-1].get("turn")
+    return {"stallMap": stall_map, "targetMap": target, "newTiles": new_tiles,
+            "lastTurn": last_turn if isinstance(last_turn, int) else None,
+            "budgetTurns": window * BREAKOUT_WINDOW_MULT}
+
+
+def breakout_entry(log, location_key):
+    """The live breakout logged for this key, or None (kill-criterion 2).
+
+    Same accounting rule as open_attempt_count: a breakout that closed as
+    'advanced' is a breakout that WORKED, and wq#1162 made 'advanced' mean the
+    classifier itself stopped reporting the key. Letting that one keep the rung
+    disabled would mean a stall could be broken once and never again; a
+    'superseded' close, which is only evidence the incident changed shape, does
+    keep it spent.
+    """
+    for e in log["attempts"]:
+        if (e["locationKey"] == location_key and e.get("rung") == "breakout"
+                and e.get("outcome") != "advanced"):
+            return e
+    return None
+
+
+def breakout_expired(entry, samples=None):
+    """Has a fired breakout run out its turn budget (kill-criterion 3)?
+
+    Turns, not wall-clock: the budget is about how much the agent got to TRY,
+    and a run that is down produces no turns and should not burn the budget.
+    """
+    d = entry.get("directive") or {}
+    expires = d.get("expiresAtTurn")
+    if not isinstance(expires, int):
+        return True                      # unreadable budget fails closed
+    samples = samples if samples is not None else M.load_progress()
+    turns = [s.get("turn") for s in samples if isinstance(s.get("turn"), int)]
+    if not turns:
+        return False                     # no turn data yet: the budget still stands
+    # progress.json is a rolling window and `turn` resets when the process
+    # restarts, so a CURRENT turn below the recorded one means a new run began —
+    # which is itself the end of the budget, since the directive it was written
+    # for was consumed at that boot.
+    return turns[-1] >= expires or turns[-1] < (d.get("issuedAtTurn") or 0)
 
 
 def _resolve_loop_maps():
@@ -439,6 +590,83 @@ def _terminal_directive(template, mode, location_id, location_key, prior, now_ms
     }
 
 
+def _breakout_directive(mode, location_id, location_key, prior, anchor, now_ms):
+    """wq#1563 rung L4 — the bounded explore-away directive.
+
+    `staleMapGotoBan` is a NEW field and deliberately not `gotoBan`: gotoBan
+    means "refuse enter_warp INTO these maps", and this means "refuse goto
+    WITHIN this map, exits excepted". Reusing the old name would have silently
+    exiled the agent from the route it needs (see the rejected-options note).
+    """
+    stall, target = anchor["stallMap"], anchor["targetMap"]
+    issued = anchor["lastTurn"]
+    where = _located(stall)
+    aim = (f"Head for {_located(target)}" if isinstance(target, int)
+           else "Head for any map you have not stood on in the last hour")
+    return {
+        "v": 1,
+        "generatedAt": _iso(now_ms),
+        "mode": mode,
+        "location": location_id,
+        "locationKey": location_key,
+        "attempt": prior + 1,
+        "k": K,
+        "rung": "breakout",
+        "exhausted": True,     # the K ladder IS spent; this rung is what follows it
+        "action": "breakout_leave_map",
+        "summary": (f"K spent and {where} has produced no new tile in a full dP window — "
+                    f"leave the map for {anchor['budgetTurns']} turns."),
+        "notepadPin": (
+            f"PIN: SUPERVISOR (BREAKOUT, after {prior}/{K}): you have spent a whole "
+            f"progress window inside {where} without stepping on a single new tile, "
+            f"and every earlier instruction has been tried. Walking around this map "
+            f"again cannot help. LEAVE IT: use leave_edge at a map boundary, or "
+            f"enter_warp through a door — goto is REFUSED on this map for the next "
+            f"{anchor['budgetTurns']} turns, and those two are your way out. {aim}. "
+            f"Once you are on a different map, resume the standing objective there."
+        ),
+        "gotoBan": [],
+        "staleMapGotoBan": stall,
+        "breakoutTargetMap": target,
+        "budgetTurns": anchor["budgetTurns"],
+        "issuedAtTurn": issued,
+        "expiresAtTurn": (issued + anchor["budgetTurns"]) if isinstance(issued, int) else None,
+    }
+
+
+def _handoff_directive(mode, location_id, location_key, prior, now_ms, why):
+    """wq#1563 rung L5 — the honest end of the ladder.
+
+    Reached when the K budget AND the breakout are both spent, or when no
+    breakout anchor exists to act on. Carries no ban of any kind (kill-criterion
+    4: a failed breakout must not leave a live restriction behind) and says
+    plainly that the machine is out of moves, so the pin the agent reads stops
+    claiming a remedy is in flight. wq#1562 is the ticket that turns this into
+    an aq row Frank triages; until it lands, this is still the correct on-disk
+    state — a stale "attempt 3/3" pin was strictly worse.
+    """
+    return {
+        "v": 1,
+        "generatedAt": _iso(now_ms),
+        "mode": mode,
+        "location": location_id,
+        "locationKey": location_key,
+        "attempt": prior,
+        "k": K,
+        "rung": "handoff",
+        "exhausted": True,
+        "action": "handoff_operator",
+        "summary": f"Every automatic rung is spent at {_located(location_id)} — {why}.",
+        "notepadPin": (
+            f"PIN: SUPERVISOR (HANDOFF): the supervisor has run out of automatic "
+            f"remedies at {_located(location_id)} ({why}). No restriction is in force. "
+            f"Play the standing objective as best you can; a human has been notified."
+        ),
+        "gotoBan": [],
+        "handoff": {"reason": why, "locationKey": location_key},
+    }
+
+
 def decide(state=None, log=None, now_ms=None):
     """Returns a dict: {intervened, mode, locationKey, attempt, k, directive,
     exhausted}. Persists the directive and appends to the log as a side
@@ -471,17 +699,62 @@ def decide(state=None, log=None, now_ms=None):
     if attempt > K:
         # wq#1091: exhausted still REFRESHES the directive on disk. It appends
         # nothing to the log — that invariant is what wq#673 keys its one
-        # ticket off, and it is untouched — but leaving the file frozen at the
-        # attempt-3 text meant the live agent read a stale "SUPERVISOR (3/3)"
-        # pin indefinitely (33h on FIGHT_LOSS_LOOP@3) with no way for a
-        # corrected prescription to ever reach it, since the key can never
-        # intervene again. The requirement outlives the attempt budget.
-        return {"intervened": False, "exhausted": True, "mode": mode,
+        # ticket off — but leaving the file frozen at the attempt-3 text meant
+        # the live agent read a stale "SUPERVISOR (3/3)" pin indefinitely (33h
+        # on FIGHT_LOSS_LOOP@3) with no way for a corrected prescription to
+        # reach it. The requirement outlives the attempt budget.
+        #
+        # wq#1563 adds the two rungs BELOW that refresh, because "refresh the
+        # same words forever" is not a recovery: FIGHT_LOSS_LOOP@3 sat here for
+        # 167.9h re-rendering advice the agent had already failed to act on.
+        # L4 BREAKOUT fires at most once, only on a real anchor, only for a
+        # bounded number of turns. L5 HANDOFF is the honest end.
+        prior_breakout = breakout_entry(log, location_key)
+        if prior_breakout is None:
+            anchor = breakout_anchor(state)
+            if anchor is not None:
+                directive = _breakout_directive(mode, location_id, location_key,
+                                                prior, anchor, now_ms)
+                log["attempts"].append({
+                    "ts": now_ms, "mode": mode, "locationKey": location_key,
+                    "attempt": prior + 1, "rung": "breakout", "directive": directive,
+                    "beforeState": _snapshot(state), "afterState": None, "outcome": None,
+                })
+                return {"intervened": True, "exhausted": True, "rung": "breakout",
+                        "mode": mode, "locationKey": location_key, "attempts": prior,
+                        "k": K, "directive": directive,
+                        "reason": f"K spent at {location_key}; escalating to a bounded "
+                                  f"{anchor['budgetTurns']}-turn breakout off "
+                                  f"map{anchor['stallMap']}"}
+            # Kill-criterion 1: no anchor means no honest target, so the rung
+            # does not fire at all. Keep refreshing the standing requirement
+            # rather than inventing a map to run to.
+            return {"intervened": False, "exhausted": True, "rung": None, "mode": mode,
+                    "locationKey": location_key, "attempts": prior, "k": K,
+                    "directive": _terminal_directive(template, mode, location_id,
+                                                     location_key, prior, now_ms),
+                    "reason": f"{prior} attempts already logged for {location_key} — "
+                              f"no breakout anchor (progress is not map-local), "
+                              f"handing off to the wq#673 feedback loop"}
+
+        if not breakout_expired(prior_breakout):
+            # In flight. Re-emit the SAME directive so a mid-flight supervisor
+            # tick cannot shorten its own budget or restate it differently.
+            return {"intervened": False, "exhausted": True, "rung": "breakout",
+                    "mode": mode, "locationKey": location_key, "attempts": prior, "k": K,
+                    "directive": prior_breakout["directive"],
+                    "reason": f"breakout in flight at {location_key} until turn "
+                              f"{prior_breakout['directive'].get('expiresAtTurn')}"}
+
+        # Budget spent and the classifier still calls this key stalled, so the
+        # breakout did not work. Kill-criterion 2 forbids a second one.
+        return {"intervened": False, "exhausted": True, "rung": "handoff", "mode": mode,
                 "locationKey": location_key, "attempts": prior, "k": K,
-                "directive": _terminal_directive(template, mode, location_id,
-                                                 location_key, prior, now_ms),
-                "reason": f"{prior} attempts already logged for {location_key} — "
-                          f"handing off to the wq#673 feedback loop"}
+                "directive": _handoff_directive(mode, location_id, location_key,
+                                                prior, now_ms,
+                                                "the bounded breakout also failed"),
+                "reason": f"breakout spent at {location_key} without advancing — "
+                          f"handing off to an operator"}
 
     # wq#724: resolve gotoBan — the old symbolic "last_loop_target" was never
     # consumed because it never named actual map IDs. Now we read the warp
