@@ -120,6 +120,23 @@ export const CFG = {
     advisory: envN0("LPP_WINNABILITY", 1) > 0,
     force: envN0("LPP_WINNABILITY_FORCE", 0) > 0,
   },
+  // wq#1731 EXPLORATION OVERRIDE (src/explore.ts). ON by default: this is the
+  // hard rung the stuck detectors never had. It fires only on a COMPLETE
+  // novelty window with zero new tiles that is either a tight pace (< minTiles
+  // tiles) or never left one map, then drives K directional steps with no
+  // brain call. LPP_EXPLORE_OVERRIDE=0 reverts the rung, LPP_EXPLORE_PROMPT=0
+  // drops the PROGRESS/GOAL lines, both without a redeploy.
+  explore: {
+    enabled: envN0("LPP_EXPLORE_OVERRIDE", 1) > 0,
+    prompt: envN0("LPP_EXPLORE_PROMPT", 1) > 0,
+    windowTurns: envN("LPP_EXPLORE_WINDOW", 150),
+    minTiles: envN("LPP_EXPLORE_MIN_TILES", 5),
+    stepsK: envN("LPP_EXPLORE_K", 30),
+    clearance: envN("LPP_EXPLORE_CLEARANCE", 3),
+    expireFactor: envN("LPP_EXPLORE_EXPIRE_FACTOR", 3),
+    urgencyTurns: envN("LPP_EXPLORE_URGENCY_TURNS", 60),
+    catchParty: envN("LPP_EXPLORE_CATCH_PARTY", 3),
+  },
   // wq#1181 LOSS LEDGER + engagement gates (roadmap item 6). ON by default:
   // unlike the verdict above it cannot act on its own, it can only refuse a
   // re-entry the agent has already proven it loses, and every gate carries
