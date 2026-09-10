@@ -36,6 +36,7 @@ import { Winnability } from "./calc";                              // wq#1181 it
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
+import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";   // wq#1731
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
@@ -196,14 +197,17 @@ export class Agent {
   // observe(). wq#724 wired ban consumption but never rendered this, so the
   // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
   private supervisorPin = "";
-  // wq#1179: tile novelty + composite progress scalar. OBSERVE-ONLY — nothing
-  // below reads it back; observe() writes runtime/{visited_tiles,progress}.json
-  // and emits a `progress` event, and tools/lpp_stuck_mode.py is the consumer.
-  // Assigned in the constructor body rather than as a field initializer because
-  // it needs `checkpointDir` and `bus`, which are parameter properties.
+  // wq#1179: tile novelty + composite progress scalar. observe() writes
+  // runtime/{visited_tiles,progress}.json and emits a `progress` event;
+  // tools/lpp_stuck_mode.py consumes the files. wq#1731: the exploration
+  // override below READS the sample window back (never writes it) to decide a
+  // stall. Assigned in the constructor body rather than as a field initializer
+  // because it needs `checkpointDir` and `bus`, which are parameter properties.
   private novelty!: NoveltyTracker;
-  // wq#1181: the fight loss ledger + its gates. Unlike novelty above this one
-  // IS read back — enter_warp consults it (CFG.fightGate) — which is why every
+  // wq#1731: the hard exploration rung in runTurn's ladder (src/explore.ts).
+  private explore!: ExplorationOverride;
+  // wq#1181: the fight loss ledger + its gates. Unlike the tracker files above
+  // this one gates travel — enter_warp consults it (CFG.fightGate) — which is why every
   // gate it hands out carries three expiries and a fire cap (ledger.ts header).
   private ledger!: FightLedger;
   // Identity of the battle currently in progress, captured on the turn it
@@ -229,6 +233,22 @@ export class Agent {
     // one-off drivers that run from a different cwd than the live deployment.
     this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
     this.ledger = new FightLedger({ dir: join(checkpointDir, "..", "runtime"), bus });
+    this.explore = new ExplorationOverride({
+      map: this.map,
+      pos: () => this.nav.posChecked(),
+      step: (dx, dy) => this.nav.step(dx, dy),
+      hop: (dx, dy) => this.nav.hopStep(dx, dy),
+      samples: () => this.novelty.recent(),
+      blocked: () =>
+        (this.emu.mem()[this.sym.addr("wIsInBattle")] !== 0 || this.bat.active()) ? "battle"
+        : (this.dlg.open() || this.sync.textUp()) ? "dialog" : null,
+      // An interrupted goto the transit policy would resume is the brain's
+      // stalled intent; resuming it after the escape walks straight back.
+      onFire: () => this.transit.clear(),
+      bus,
+      logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
+      cfg: CFG.explore,
+    });
     this.loadSupervisorBans();
   }
 
@@ -398,6 +418,16 @@ export class Agent {
     // written to runtime/supervisor_directive.json and never read (wq#724 wired
     // ban enforcement but not this). Prefixed "!!" so it reads as high-priority.
     if (this.supervisorPin) block += `\n!! ${this.supervisorPin}`;
+
+    // wq#1731: the reward weights as stated goals. Overworld only, so a fight
+    // never gets a "leave this map" line in the middle of it; the battle branch
+    // above returns before this.
+    if (CFG.explore.prompt) {
+      try {
+        block += `\n${progressBlock({ badges: st.badges, partyCount: st.partyCount,
+          map: st.map, samples: this.novelty.recent() }, CFG.explore)}`;
+      } catch { /* prompt salience must never cost the turn */ }
+    }
 
     // wq#1181 (roadmap item 6): the grind governor. Evaluated ONLY while a loss
     // gate is live — that is the state in which the harness itself put the
@@ -1374,6 +1404,20 @@ export class Agent {
     return `battle_lock: forced battle_move(${slot}) [${moveLabel(b.moves[slot])}] after ${this.btTurns} turns (stall ${this.btStall})`;
   }
 
+  /** wq#1731: the exploration rung. Never acts in a battle (wIsInBattle must
+   *  read 0 on this turn's state); src/explore.ts owns the trigger, the escape
+   *  plan and the telemetry. A throw here is swallowed into the brain path: the
+   *  rung is a loop breaker, and a bug in it must not cost the turn. */
+  private async explorationOverride(before: GameState): Promise<string | null> {
+    if (before.inBattle !== 0) return null;
+    try { return await this.explore.tick(this.turn); }
+    catch (e: any) {
+      this.bus.emit("exploration_override", { stage: "error", turn: this.turn,
+        reason: String(e?.message ?? e).slice(0, 200) });
+      return null;
+    }
+  }
+
   async runTurn(): Promise<void> {
     this.turn++;
     await this.sync.settle();
@@ -1393,17 +1437,29 @@ export class Agent {
     let think = "", act = "", result = "";
     let plannedTurn = false;
     const forced = await this.battleLockForce();
+    // wq#1731: hard exploration override. Below the soft-lock escalation (which
+    // only acts in battle, and this rung never does), above everything that
+    // would hand the turn back to the brain's stalled intent.
+    const explored = forced === null ? await this.explorationOverride(before) : null;
     // wq#487: transit turns (flee an interrupting encounter / resume the
     // interrupted goto). Checked BEFORE plannedAuto and independent of the
     // wq#472 budget: soft-lock escalation still outranks it.
-    const transited = forced === null ? await this.transitAuto() : null;
+    const transited = (forced === null && explored === null) ? await this.transitAuto() : null;
     // wq#472: planned deterministic turn between brain calls (null = feature
     // off, budget spent, or state needs judgment -> brain path).
-    const planned = (forced === null && transited === null && this.autoBudget > 0) ? await this.plannedAuto() : null;
+    const planned = (forced === null && explored === null && transited === null && this.autoBudget > 0)
+      ? await this.plannedAuto() : null;
     if (forced !== null) {
       result = forced;
       act = "AUTO:battle_lock";
       think = "[soft-lock escalation - harness action, no brain call]";
+    } else if (explored !== null) {
+      // A harness turn, so it stays out of the brain's stall accounting, the
+      // same as transit: stallTurns measures the brain failing to progress.
+      plannedTurn = true;
+      result = explored;
+      act = "AUTO:grass_breakout";
+      think = "[exploration override - no brain call]";
     } else if (transited !== null) {
       plannedTurn = true;
       result = transited.result;
