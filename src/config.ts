@@ -44,10 +44,14 @@ export const CFG = {
       maxTokensOut: envN("LPP_BRAIN_MAXTOK", 3200),
       reasoningEffort: envEffort("LPP_BRAIN_EFFORT", "low"),
     } as BrainProfile,
-    // hard spots (stalls, gyms, puzzles) - full effort wanted here
+    // hard spots (stalls, gyms, puzzles) - full effort wanted here by default,
+    // but wq#1616: on glm-5.3-flash-zai reasoning is MANDATORY (no "none") and
+    // bills as output at $0.50/M, so this must be env-overridable per rung
+    // rather than hardcoded "full effort" — lpp-glm.env pins it to "low".
     escalate: {
       model: envS("LPP_BRAIN_ESCALATE", "cerebras-oss-120b"),
       maxTokensOut: envN("LPP_BRAIN_ESCALATE_MAXTOK", 3200),
+      reasoningEffort: envEffort("LPP_BRAIN_ESCALATE_EFFORT"),
     } as BrainProfile,
     // no-ACT rescue: a DIFFERENT (cheap, content-reliable) model retries the
     // turn instead of the same model failing the same way. deepseek-v4-flash
@@ -59,11 +63,13 @@ export const CFG = {
       model: envS("LPP_BRAIN_ACTRETRY", "cerebras-oss-120b"),
       maxTokensOut: envN("LPP_BRAIN_ACTRETRY_MAXTOK", 6000),
       thinking: "disabled",
+      reasoningEffort: envEffort("LPP_BRAIN_ACTRETRY_EFFORT"),
     } as BrainProfile,
     // compaction helper, off the main loop
     summarize: {
       model: envS("LPP_BRAIN_SUMMARIZE", "cerebras-oss-120b"),
       maxTokensOut: 3200,
+      reasoningEffort: envEffort("LPP_BRAIN_SUMMARIZE_EFFORT"),
     } as BrainProfile,
     // wq#621: escalation-only valve, not the text loop's per-turn brain.
     vision: { model: "lumen-vision", maxTokensOut: 3200 } as BrainProfile,
