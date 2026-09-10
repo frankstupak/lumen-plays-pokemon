@@ -563,6 +563,22 @@ function ceruleanApproachPack(map: number): string {
       (c.targetMap === 3 && CERULEAN_TOWN_MAPS.includes(st.map));
     return { arrived, evidence: `current position is map${st.map} (${st.x},${st.y})` };
   };
+  // wq#1578: a reboot cycle that takes ZERO turns is not gameplay, it is a
+  // loop — and until now it was a SILENT one. The brain error goes to the event
+  // bus (a file the stream reads); the only thing that ever reached stdout was
+  // the resume line, so 14h of a gateway key that could not reach any brain
+  // model looked, in `journalctl -u lumen-pokemon-live`, exactly like a healthy
+  // stream: 1186 boots, 0 turns, $0 of brain spend, no alert. Two things follow.
+  // The failure text now lands on stderr, beside the resume line that is already
+  // there. And consecutive dead cycles escalate and back off instead of
+  // re-picking a checkpoint every 57s forever: there is nothing to force-advance
+  // TO when the turn itself cannot run, so the honest move is to say so loudly
+  // and stop spinning. Any single successful turn clears the count.
+  const DEAD_CYCLE_ALERT = Number(process.env.LPP_DEAD_CYCLE_ALERT ?? 3);
+  const DEAD_CYCLE_BACKOFF_MS = Number(process.env.LPP_DEAD_CYCLE_BACKOFF_MS ?? 30_000);
+  const DEAD_CYCLE_BACKOFF_MAX_MS = Number(process.env.LPP_DEAD_CYCLE_BACKOFF_MAX_MS ?? 15 * 60_000);
+  let deadCycles = 0;
+  let lastFatal = "";
   for (;;) {
     const snap = pickResume([SAVES, CKPTS], sym, ROM);
     loadSnapshotFile(emu, snap);
@@ -649,16 +665,24 @@ function ceruleanApproachPack(map: number): string {
     };
     bus.emit("boot", { mode: "live-agent", resumedFrom: snap.split("/").pop() });
     let failStreak = 0;
+    let turnsThisCycle = 0;   // wq#1578: real turns, not attempts
     for (;;) {
       try {
         refreshStageGuidance();   // wq#478
         refreshCorridorGuidance();   // wq#514: phase can change mid-run
         await agent.runTurn();
         failStreak = 0;
+        turnsThisCycle++;
         await sleep(1500);   // stream readability: let viewers read the THINK line
       } catch (e: any) {
         failStreak++;
+        lastFatal = String(e?.message ?? e).slice(0, 200);
         bus.emit("turn_summary", { line: `brain error (${failStreak}): ${String(e?.message ?? e).slice(0, 100)}` });
+        // wq#1578: stderr too. The bus writes to events/*.jsonl, which nothing
+        // watching the SERVICE reads; this is the copy that lands in the unit
+        // journal next to the resume line, so the next incident is one
+        // `journalctl -u lumen-pokemon-live` away instead of 14h invisible.
+        console.error(`[live] turn failed (${failStreak}/5): ${lastFatal}`);
         saveSnapshotFile(emu, `${CKPTS}/error-recovery.state.gz`);
         if (failStreak >= 5 || brain.overBudget()) break;   // reboot agent, keep progress
         await sleep(10000);
@@ -667,6 +691,21 @@ function ceruleanApproachPack(map: number): string {
     bus.emit("turn_summary", { line: "agent rebooting from latest checkpoint" });
     retry.noteGameplayContinue();   // wq#470: in-process resume = gameplay continue
     metrics.flush("reboot");
-    await sleep(5000);
+    // wq#1578: a cycle that played nothing is a dead cycle. One real turn is
+    // enough to call the run alive again, because one real turn is exactly what
+    // the loop could not produce for 14h.
+    deadCycles = turnsThisCycle > 0 ? 0 : deadCycles + 1;
+    let backoffMs = 5000;
+    if (deadCycles >= DEAD_CYCLE_ALERT) {
+      backoffMs = Math.min(DEAD_CYCLE_BACKOFF_MS * 2 ** (deadCycles - DEAD_CYCLE_ALERT),
+        DEAD_CYCLE_BACKOFF_MAX_MS);
+      const msg = `LPP has taken 0 turns across ${deadCycles} consecutive agent reboots ` +
+        `(last error: ${lastFatal || "unknown"}). Resuming is not the problem, the turn is; ` +
+        `backing off ${Math.round(backoffMs / 1000)}s before the next attempt.`;
+      console.error(`[live] DEAD LOOP: ${msg}`);
+      bus.emit("tool_call", { tool: "isis_alert", level: "critical", source: "live_agent", msg });
+      bus.emit("turn_summary", { line: `DEAD LOOP: 0 turns in ${deadCycles} reboots — ${lastFatal}` });
+    }
+    await sleep(backoffMs);
   }
 })();

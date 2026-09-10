@@ -399,6 +399,20 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
   const hist = readHistory(historyFile);
   const recent = hist.picks.slice(-RESUME_REPEAT_LIMIT).map(p => p.file);
   const repeated = recent.length >= RESUME_REPEAT_LIMIT && recent.every(f => f === winner.f);
+  // wq#1578: "newer" has to mean "written since the last resume", not merely
+  // "newer than the file being demoted". MEASURED: lumen-pokemon-live took zero
+  // turns for 14h while rebooting every ~57s (1186 boots), ping-ponging
+  // auto-mtu5q40w-t110 <-> -t300 — two checkpoints written 14 minutes apart the
+  // PREVIOUS day. t300.mtime > t110.mtime is true forever, so the escape hatch
+  // fired on every other selection, the pick never settled, and neither state
+  // had anything to do with the run in progress. The premise the comment above
+  // rests on — "the previous run demonstrably produced something newer" — was
+  // never actually tested; mtime was compared against the wrong side. It is
+  // tested now: the alternative must POSTDATE THE LAST RECORDED PICK, which is
+  // the only evidence on disk that a run wrote it. Empty history (first boot)
+  // gives 0, which is exactly the old behaviour.
+  const lastAt = Date.parse(hist.picks[hist.picks.length - 1]?.at ?? "");
+  const sinceLastPick = Number.isFinite(lastAt) ? lastAt : 0;
   if (repeated) {
     // Only step aside if the last run actually produced something newer to step
     // aside TO. Without that, the repeat is not evidence of a trap — it is just
@@ -409,15 +423,17 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
     // original "any newer viable" pick when no non-warp newer state exists,
     // preserving the anti-wedge guarantee (mtime > winner.mtime proves the last
     // run produced something newer to move to).
-    const alt = scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable) && !c.onWarp)
-             ?? scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable));
+    const newer = (c: typeof winner) => c.f !== winner.f && c.mtime > winner.mtime &&
+      c.mtime > sinceLastPick && (c.viable || !winner.viable);
+    const alt = scored.find(c => newer(c) && !c.onWarp) ?? scored.find(newer);
     if (alt) {
       log(`resume: REPEAT GUARD — ${short(winner.f)} picked ${RESUME_REPEAT_LIMIT}x running while newer states exist; ` +
         `demoting it for this selection and taking ${short(alt.f)} ` +
         `[${rankLabel(alt.map, alt.x, alt.y)} rank ${alt.rank} vs ${rankLabel(winner.map, winner.x, winner.y)} rank ${winner.rank}]`);
       winner = alt;
     } else {
-      log(`resume: repeat guard saw ${RESUME_REPEAT_LIMIT} identical picks but no newer alternative — keeping ${short(winner.f)}`);
+      log(`resume: repeat guard saw ${RESUME_REPEAT_LIMIT} identical picks but nothing has been ` +
+        `written since the last resume — keeping ${short(winner.f)} and letting the run play it`);
     }
   }
   storyCheck();
