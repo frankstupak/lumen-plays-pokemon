@@ -146,7 +146,10 @@ export class Brain {
 
   /** The profile's own model first (generous deadline), then the configured
    *  cloud rungs (short deadline). Duplicates collapse, so a profile that is
-   *  already pointed at a fallback model does not get tried twice. */
+   *  already pointed at a fallback model does not get tried twice.
+   *  wq#1589: CFG.brain.fallbackModels are text-only, so a multimodal profile
+   *  (image_url content blocks) stops at its own model instead of walking
+   *  rungs that reject the content type outright (D3). */
   ladder(prof: BrainProfile): Rung[] {
     const rungs: Rung[] = [];
     const seen = new Set<string>();
@@ -156,7 +159,9 @@ export class Brain {
       rungs.push({ model, timeoutMs, attempts: 1, terminal: false });
     };
     push(prof.model, CFG.brain.timeoutMs);
-    for (const m of CFG.brain.fallbackModels) push(m, CFG.brain.fallbackTimeoutMs);
+    if (!prof.multimodal) {
+      for (const m of CFG.brain.fallbackModels) push(m, CFG.brain.fallbackTimeoutMs);
+    }
     const last = rungs[rungs.length - 1];
     if (last) { last.terminal = true; last.attempts = CFG.brain.terminalAttempts; }
     return rungs;
@@ -208,7 +213,11 @@ export class Brain {
   private async callRung(rung: Rung, prof: BrainProfile, messages: object[]): Promise<{ text: string; usage: TurnUsage }> {
     const body: any = { model: rung.model, messages, max_tokens: prof.maxTokensOut, temperature: 0.6 };
     if (prof.reasoningEffort) body.reasoning_effort = prof.reasoningEffort;
-    if (prof.thinking) body.thinking = { type: prof.thinking };
+    // wq#1589 (D3): `thinking` is DeepSeek v4's own switch (see BrainProfile). actRetry's
+    // default model IS cerebras-oss-120b, and any profile can land on a non-DeepSeek rung
+    // via the fallback ladder — sending this there surfaces as a CerebrasException
+    // ("reasoning_effort: Input should be none/low/medium/high"), not a silent no-op.
+    if (prof.thinking && rung.model.startsWith("deepseek")) body.thinking = { type: prof.thinking };
     let r: Response;
     try {
       r = await fetch(CFG.gateway, {

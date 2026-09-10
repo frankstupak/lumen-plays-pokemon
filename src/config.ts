@@ -11,6 +11,11 @@ export interface BrainProfile {
   thinking?: "disabled" | "enabled";             // DeepSeek v4 thinking switch. NOTE: the
   // gateway's global drop_params currently strips it (verified 2026-08-08); it is plumbed
   // so a dedicated LiteLLM alias with thinking baked in becomes a pure env swap later.
+  // wq#1589: messages carry `content: [{type:"image_url", ...}]` blocks. CFG.brain's
+  // cross-provider fallbackModels are text-only (D3: qwen36-local/cerebras-oss-120b both
+  // reject image_url with a content-type error), so a multimodal profile's ladder must
+  // stop at its own model instead of walking those rungs with the image still attached.
+  multimodal?: boolean;
 }
 
 const envS = (k: string, d: string) => process.env[k] ?? d;
@@ -96,7 +101,7 @@ export const CFG = {
       reasoningEffort: envEffort("LPP_BRAIN_SUMMARIZE_EFFORT"),
     } as BrainProfile,
     // wq#621: escalation-only valve, not the text loop's per-turn brain.
-    vision: { model: "lumen-vision", maxTokensOut: 3200 } as BrainProfile,
+    vision: { model: "lumen-vision", maxTokensOut: 3200, multimodal: true } as BrainProfile,
     // wq#1191 persona extraction: "did he just state a durable fact about
     // himself?" over one sentence. Deliberately pinned to the CHEAPEST rung and
     // deliberately NOT run through Brain's fallback ladder (persona_llm.ts) —
