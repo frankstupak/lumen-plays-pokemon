@@ -10,8 +10,9 @@
 # NOT on GitHub CI — scripts/probes-pure.sh is the CI-safe subset.
 #
 # Excluded on purpose:
-#   probe_battle587, probe_catch559 — real wild-encounter RNG (skip-capable);
-#     run them manually around battle/item work.
+#   probe_battle587, probe_catch559, probe_battlebag1663 — real
+#     wild-encounter RNG (skip-capable); run them manually around
+#     battle/item work.
 #   probe_diag — a diagnostic harness, not a test.
 set -u
 cd "$(dirname "$0")/.."

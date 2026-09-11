@@ -154,6 +154,20 @@ export class Items {
       await this.tap(this.cur() < target ? KEYS.DOWN : KEYS.UP, 130);
     return this.cur() === target;
   }
+  /** wq#1663: scroll a bag list to an ABSOLUTE item position. wCurrentMenuItem
+   *  only tracks the ROW within whatever page is currently drawn -
+   *  wListScrollOffset is the page offset - so moveCur(idx) compares a
+   *  0-3-ish row straight against an absolute list index and can never reach
+   *  any item past the first page (it silently pins the highest visible
+   *  row/cur() forever). This was already worked around once, inline, in
+   *  useOverworld below; factored out so useInBattle gets the same fix and
+   *  the two paths can't drift apart again like this did. */
+  private async moveToBagIndex(idx: number): Promise<boolean> {
+    for (let i = 0; i < idx + 6; i++) { if (this.scroll() === 0 && this.cur() === 0) break; await this.tap(KEYS.UP, 110); }
+    let guard = 0;
+    while (this.scroll() + this.cur() < idx && guard++ < 24) await this.tap(KEYS.DOWN, 130);
+    return this.scroll() + this.cur() === idx;
+  }
   // Research-probe-verified helpers (2026-08-06):
   // cf91/wCurItem is written with the selected item id on A-press in list menus.
   // wq#620 CORRECTION to the old "hover does NOT update it" note: in the MART
@@ -342,10 +356,7 @@ export class Items {
     // Bag row = wListScrollOffset + wCurrentMenuItem; cf91 after A is the verify.
     let selected = false;
     for (let attempt = 0; attempt < 2 && !selected; attempt++) {
-      for (let i = 0; i < idx + 6; i++) { if (this.scroll() === 0 && this.cur() === 0) break; await this.tap(KEYS.UP, 110); }
-      let guard = 0;
-      while (this.scroll() + this.cur() < idx && guard++ < 24) await this.tap(KEYS.DOWN, 130);
-      if (this.scroll() + this.cur() !== idx) continue;
+      if (!await this.moveToBagIndex(idx)) continue;
       await this.tap(KEYS.A, 300);
       if (await this.waitFor(() => this.curItem() === itemId, 600)) { selected = true; break; }
       await this.tap(KEYS.B, 300);
@@ -386,10 +397,33 @@ export class Items {
     if (w && w !== "menu") return `use_item: battle not at menu (${w})`;
     await this.tap(KEYS.DOWN, 120); await this.tap(KEYS.LEFT, 120);   // -> ITEM (bottom-left)
     await this.tap(KEYS.A, 300);
-    if (!await this.waitFor(() => this.scr.text().includes("CANCEL") || this.scr.text().includes("BALL") || /x\d/.test(this.scr.text()), 800)) {
+    // wq#1663: the bag list is one page of a potentially long, scrollable Pack
+    // (TMs/key items share the list, in pickup order) and this check never
+    // scrolls, so it must not depend on which page happens to be showing.
+    // CANCEL only renders at the bottom of the list; BALL only once POKe
+    // BALL's row is in view - neither is guaranteed on page 1. The old /x\d/
+    // fallback was itself broken: Gen 1 right-justifies the count field, so a
+    // single-digit qty renders "x 1" (space before the digit), not "x1" -
+    // /x\d/ only ever matched a 10-99 stack, i.e. never in the common case.
+    // Root cause of the 1200x "didn't open" run: page 1 showed TM34/DOME
+    // FOSSIL/ANTIDOTE/NUGGET, all single-digit qty - CANCEL absent, BALL
+    // absent, /x\d/ never matching - so the OR was permanently false and the
+    // 800ms budget always burned out, even though the bag opened correctly.
+    // Primary signal is now structural, not textual: the bag list draws its
+    // cursor in a completely different screen region from the main FIGHT/
+    // ITEM/RUN/PKMN quadrant Battle.atMainMenu() already fences off (verified
+    // live: main menu ~{x:9,y:14-16}; bag list ~{x:5,y:4+}). "cursor visible
+    // and outside the main-menu quadrant" is true from the first frame the
+    // list is drawn, regardless of scroll position or item ordering. The old
+    // text checks stay as a cheap OR fallback (regex fixed to allow the
+    // padding space) in case of a genuine one-frame cursor/tile draw race.
+    if (!await this.waitFor(() => {
+      const inSubmenu = this.scr.cursor() !== null && !this.bat.atMainMenu?.();
+      return inSubmenu || this.scr.text().includes("CANCEL") || this.scr.text().includes("BALL") || /x\s*\d/.test(this.scr.text());
+    }, 800)) {
       await this.closeBattleMenus(); return "use_item: battle bag didn't open";
     }
-    if (!await this.moveCur(idx)) { await this.closeBattleMenus(); return "use_item: cursor lost on battle bag"; }
+    if (!await this.moveToBagIndex(idx)) { await this.closeBattleMenus(); return "use_item: cursor lost on battle bag"; }
     // A gets eaten on fresh menus (standing lesson) -> cf91-verified retry;
     // without it a missed press leaves the bag open and the drive loop B's out.
     let thrown = false;
