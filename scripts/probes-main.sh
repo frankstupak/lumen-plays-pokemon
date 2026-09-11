@@ -46,6 +46,8 @@ PROBES=(
   probe_mistygate674
   probe_warprace699
   probe_braincfg
+  probe_braincfg1664
+  probe_bootguard1664
   probe_brain907
   probe_novelty1179
   probe_explore1731
