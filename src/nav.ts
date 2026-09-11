@@ -86,10 +86,39 @@ const TRACE = (process.env.LPP_NAV_TRACE ?? "1") !== "0";
  *  a journey escapes its starting neighbourhood; the tail is 70 cells of noise. */
 const TRACE_HEAD = Number(process.env.LPP_NAV_TRACE_HEAD ?? 8);
 
+/** wq#1662: what actually stopped the last walk, so a "stuck" result carries a
+ *  reason instead of forcing reach.ts to guess "wild encounters or an NPC".
+ *  Captured at the moment a step fails to move the player or a replan finds
+ *  no path — the only two points inside goto() that ever learn anything about
+ *  the blocker before it is discarded into learnedBlocked (a bare coordinate
+ *  set with no identity). */
+export interface Obstacle {
+  x: number; y: number;
+  kind: "sprite" | "terrain" | "no_path";
+  spritePic?: number;
+}
+
+/** Pure classifier for a cell that refused a step: a sprite standing there
+ *  names itself (and is the recoverable case — it can walk off); anything
+ *  else is terrain the collision model called passable but the engine did
+ *  not. Split out from goto()'s loop so it is unit-testable without an
+ *  emulator. */
+export function classifyBlockedCell(map: { sprites: { x: number; y: number; pic: number }[] },
+                                    x: number, y: number): Obstacle {
+  const sp = map.sprites.find(s => s.x === x && s.y === y);
+  return sp ? { x, y, kind: "sprite", spritePic: sp.pic } : { x, y, kind: "terrain" };
+}
+
 export class Navigator {
   private learnedBlocked = new Set<string>();
+  private lastObstacle: Obstacle | null = null;
   constructor(private emu: Emulator, private sym: SymbolTable, private map: MapModel,
               private bus: EventBus, private sync?: Sync) {}
+
+  /** The last thing that stopped a walk in progress, if any. Cleared at the
+   *  start of every goto() so a stale obstacle from a prior journey is never
+   *  reported for this one. */
+  lastGotoObstacle(): Obstacle | null { return this.lastObstacle; }
 
   private trace(data: object) { if (TRACE) this.bus.emit("nav_trace", data); }
 
@@ -298,6 +327,7 @@ export class Navigator {
     // 2026-08-19). Land the pending transition first, on its own event.
     await this.absorbPendingTransition();
     this.learnedBlocked.clear();   // learned walls are per-journey, never persistent
+    this.lastObstacle = null;
     let noPath = 0;
     for (let replans = 0; replans < 25; replans++) {
       if (this.inBattle()) return "battle";
@@ -331,6 +361,7 @@ export class Navigator {
           await this.emu.framesAsync(120);
           continue;
         }
+        this.lastObstacle = { x: gx, y: gy, kind: "no_path" };
         this.bus.emit("tool_call", { tool: "goto", result: "no_path" });
         return "stuck";
       }
@@ -363,6 +394,9 @@ export class Navigator {
         if (r === "battle") return "battle";
         if (r === "dialog") return "dialog";
         if (r === "blocked") {
+          // wq#1662: name WHAT is at the cell that refused entry, not just
+          // its coordinates.
+          this.lastObstacle = classifyBlockedCell(this.map, cell.x, cell.y);
           this.learnedBlocked.add(`${cell.x},${cell.y}`);
           break; // replan
         }

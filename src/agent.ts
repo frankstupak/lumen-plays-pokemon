@@ -633,6 +633,22 @@ export class Agent {
 
     const cpos = this.nav.posChecked();
     const argsKey = args.join(",");
+    // wq#1662: a goto ceilinged by a sprite blocking the route is worth
+    // re-arming the instant that sprite moves — the walk that failed 3x in a
+    // row was refused by an NPC that is, by construction, not permanent
+    // terrain. Re-checking the same tile after it clears is not a verbatim
+    // retry of the failure; it is the first attempt that can actually
+    // succeed. Anything else ceilinged (terrain, no_path) is left alone: the
+    // ceiling's job there is exactly to stop the repeat.
+    if (tool === "goto") {
+      const ob = this.nav.lastGotoObstacle();
+      if (ob && ob.kind === "sprite") {
+        this.map.build();
+        const stillThere = this.map.sprites.some(
+          sp => sp.x === ob.x && sp.y === ob.y && sp.pic === ob.spritePic);
+        if (!stillThere) this.ceiling.reset();
+      }
+    }
     const pre = this.ceiling.check(tool, argsKey, cpos);
     if (pre) return pre;
     const result = await this.dispatchInner(tool, args, rawArgs);
@@ -723,7 +739,8 @@ export class Agent {
             // turn again. Say WHY it failed and name what would work instead.
             this.map.build();
             return `goto -> stuck now ${JSON.stringify(p)}` +
-              stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews());
+              stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews(),
+                        this.nav.lastGotoObstacle());
           }
           // wq#674: "warped" lands on the new map's arrival tile with zero
           // steps taken there yet; anything else that actually got the player
