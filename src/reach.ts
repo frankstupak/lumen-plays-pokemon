@@ -18,7 +18,7 @@
 // render — at most 8 on the Mt Moon floors, on a <=40x36 grid, against turns that
 // are minutes apart.
 import { MapModel } from "./map";
-import { astar } from "./nav";
+import { astar, Obstacle } from "./nav";
 
 export type WarpState = "here" | "reachable" | "unreachable";
 
@@ -91,7 +91,8 @@ export function renderWarps(views: WarpView[]): string {
 
 /** The reply a failed goto gets. Says why it failed and what would work. */
 export function stuckHint(map: MapModel, px: number, py: number,
-                          tx: number, ty: number, views: WarpView[]): string {
+                          tx: number, ty: number, views: WarpView[],
+                          obstacle?: Obstacle | null): string {
   const p = pathTo(map, px, py, tx, ty);
   // wq#583: a sprite standing ON the target makes pathTo's goal-cell
   // exemption report "reachable" forever while the engine refuses every
@@ -107,8 +108,23 @@ export function stuckHint(map: MapModel, px: number, py: number,
     // matters — the right response is to retry or clear the interruption, NOT to
     // pick a different target, and the old bare "stuck" pushed the brain the
     // wrong way on both.
+    //
+    // wq#1662: the walk loop DOES know what stopped it (nav.lastGotoObstacle()) —
+    // say that instead of guessing. Naming a sprite tells the brain the retry is
+    // only worth it once that sprite has moved; naming terrain tells it the
+    // retry ceiling is right to refuse a verbatim repeat.
+    const why = !obstacle
+      ? `something interrupted it (wild encounters or an NPC in the way)`
+      : obstacle.kind === "sprite"
+        ? `an NPC/object (sprite ${obstacle.spritePic}) at (${obstacle.x},${obstacle.y}) blocked a step on the route` +
+          ` — retry once it has moved, don't repeat the exact same goto from here`
+        : obstacle.kind === "no_path"
+          ? `no route to (${obstacle.x},${obstacle.y}) could be planned on this pass — likely a` +
+            ` wandering NPC sealed the only gap; wait and retry`
+          : `a step onto (${obstacle.x},${obstacle.y}) was refused by terrain the map model marks` +
+            ` passable — a scripted tile or ledge the collision grid doesn't know about`;
     return ` — (${tx},${ty}) IS reachable from here (${p.length} steps) but the walk did not finish;` +
-      ` something interrupted it (wild encounters or an NPC in the way), the target is not the problem.`;
+      ` ${why}, the target is not the problem.`;
   }
   const usable = views.filter(v => v.state !== "unreachable");
   if (!usable.length)

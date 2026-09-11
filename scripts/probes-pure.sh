@@ -6,7 +6,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-PROBES=(probe_notepad probe_notepad584 probe_economy probe_vision621 probe_braincfg probe_brain907 probe_novelty1179 probe_explore1731 probe_calc1181 probe_ledger1181 probe_persona probe_persona_state probe_chat probe_streamer)
+PROBES=(probe_notepad probe_notepad584 probe_economy probe_vision621 probe_braincfg probe_brain907 probe_novelty1179 probe_explore1731 probe_calc1181 probe_ledger1181 probe_persona probe_persona_state probe_chat probe_streamer probe_walkinterrupt1662)
 
 failed=()
 for p in "${PROBES[@]}"; do
