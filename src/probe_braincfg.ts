@@ -6,6 +6,12 @@ process.env.LPP_BRAIN_EFFORT = "high";
 process.env.LPP_BRAIN_ACTRETRY_MAXTOK = "999";
 process.env.LPP_BRAIN_ESCALATE_MAXTOK = "-5";   // invalid -> default
 process.env.LPP_BRAIN_SUMMARIZE = "";           // sharp edge: empty string is defined -> wins
+// wq#1664: the rescue roles now default to the first fallback rung that is not
+// primary, so the ladder has to be staged too or an ambient LPP_BRAIN_* in the
+// probe runner's environment decides what "default" means here.
+process.env.LPP_BRAIN_FALLBACK_MODELS = "cerebras-oss-120b,mistral-small";
+delete process.env.LPP_BRAIN_ESCALATE;
+delete process.env.LPP_BRAIN_ACTRETRY;
 
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
@@ -16,9 +22,9 @@ const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "
   chk("primary effort overridden", CFG.profiles.primary.reasoningEffort === "high", String(CFG.profiles.primary.reasoningEffort));
   chk("primary maxtok default kept", CFG.profiles.primary.maxTokensOut === 3200, String(CFG.profiles.primary.maxTokensOut));
   chk("actRetry maxtok overridden", CFG.profiles.actRetry.maxTokensOut === 999, String(CFG.profiles.actRetry.maxTokensOut));
-  chk("actRetry model default", CFG.profiles.actRetry.model === "cerebras-oss-120b", CFG.profiles.actRetry.model);
+  chk("actRetry model defaults to next ladder rung", CFG.profiles.actRetry.model === "cerebras-oss-120b", CFG.profiles.actRetry.model);
   chk("invalid number -> default", CFG.profiles.escalate.maxTokensOut === 3200, String(CFG.profiles.escalate.maxTokensOut));
-  chk("escalate model default", CFG.profiles.escalate.model === "cerebras-oss-120b", CFG.profiles.escalate.model);
+  chk("escalate model defaults to next ladder rung", CFG.profiles.escalate.model === "cerebras-oss-120b", CFG.profiles.escalate.model);
   chk("SHARP EDGE: empty-string env wins over default (never set Environment= to empty)",
     CFG.profiles.summarize.model === "", `'${CFG.profiles.summarize.model}'`);
   console.log(`\n${pass} PASS / ${fail} FAIL`);

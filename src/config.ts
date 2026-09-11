@@ -30,6 +30,24 @@ const envList = (k: string, d: string[]) => {
   return v.split(",").map(s => s.trim()).filter(Boolean);
 };
 
+// wq#1664: the escalation ladder is [primary, ...fallbackModels] (Brain.ladder),
+// so these two are hoisted out of CFG to derive the rescue roles' DEFAULTS from
+// it. NEXT_RUNG is the first ladder rung that is not primary — the cheapest
+// model that is genuinely a second opinion. Only a default: an explicit
+// LPP_BRAIN_ESCALATE/ACTRETRY still wins, and brainConfigErrors() below is what
+// refuses the pin-everything-to-one-model shape.
+const PRIMARY_MODEL = envS("LPP_BRAIN_PRIMARY", "cerebras-oss-120b");
+const FALLBACK_MODELS = envList("LPP_BRAIN_FALLBACK_MODELS", ["cerebras-oss-120b", "mistral-small"]);
+
+/** First fallback rung that differs from `primary`, or `primary` itself when the
+ *  ladder offers no second model — in which case brainConfigErrors() reports it
+ *  rather than this silently returning a same-model "escalation". */
+export function nextLadderRung(primary: string, fallbacks: string[]): string {
+  return fallbacks.find(m => m && m !== primary) ?? primary;
+}
+
+const NEXT_RUNG = nextLadderRung(PRIMARY_MODEL, FALLBACK_MODELS);
+
 export const CFG = {
   // wq#907: env-overridable so a test can point the brain at a stub gateway
   // without touching the running proxy.
@@ -40,27 +58,31 @@ export const CFG = {
     // (~50% of turns were AUTO; Cerebras docs: standard OpenAI param, verified
     // through our LiteLLM gateway 2026-08-08).
     primary: {
-      model: envS("LPP_BRAIN_PRIMARY", "cerebras-oss-120b"),
+      model: PRIMARY_MODEL,
       maxTokensOut: envN("LPP_BRAIN_MAXTOK", 3200),
       reasoningEffort: envEffort("LPP_BRAIN_EFFORT", "low"),
     } as BrainProfile,
-    // hard spots (stalls, gyms, puzzles) - full effort wanted here by default,
+    // hard spots (stalls, gyms, puzzles). wq#1664: defaults to the next ladder
+    // rung, never to primary — re-asking the model that just stalled 12 turns is
+    // not an escalation (it fired 337x in one day that way; M7 in
+    // foreman/research/LPP_BEHAVIORAL_ANALYSIS.md). full effort wanted here by default,
     // but wq#1616: on glm-5.3-flash-zai reasoning is MANDATORY (no "none") and
     // bills as output at $0.50/M, so this must be env-overridable per rung
     // rather than hardcoded "full effort" — lpp-glm.env pins it to "low".
     escalate: {
-      model: envS("LPP_BRAIN_ESCALATE", "cerebras-oss-120b"),
+      model: envS("LPP_BRAIN_ESCALATE", NEXT_RUNG),
       maxTokensOut: envN("LPP_BRAIN_ESCALATE_MAXTOK", 3200),
       reasoningEffort: envEffort("LPP_BRAIN_ESCALATE_EFFORT"),
     } as BrainProfile,
     // no-ACT rescue: a DIFFERENT (cheap, content-reliable) model retries the
-    // turn instead of the same model failing the same way. deepseek-v4-flash
+    // turn instead of the same model failing the same way — hence the next-rung
+    // default and the brainConfigErrors() check, wq#1664. deepseek-v4-flash
     // reasons ~2-4k tokens before its content, so the budget leaves headroom
     // (1600 truncated in vivo 2026-08-08); a rescued turn costs ~$0.002 vs a
     // wasted AUTO turn. thinking:"disabled" is set for the day the gateway
     // passes it (see BrainProfile note).
     actRetry: {
-      model: envS("LPP_BRAIN_ACTRETRY", "cerebras-oss-120b"),
+      model: envS("LPP_BRAIN_ACTRETRY", NEXT_RUNG),
       maxTokensOut: envN("LPP_BRAIN_ACTRETRY_MAXTOK", 6000),
       thinking: "disabled",
       reasoningEffort: envEffort("LPP_BRAIN_ACTRETRY_EFFORT"),
@@ -195,7 +217,7 @@ export const CFG = {
     // deliberately on two DIFFERENT cloud providers so the ladder cannot end
     // on a single failure domain. The last rung is never skipped (see the
     // breaker below), so every turn makes at least one real attempt.
-    fallbackModels: envList("LPP_BRAIN_FALLBACK_MODELS", ["cerebras-oss-120b", "mistral-small"]),
+    fallbackModels: FALLBACK_MODELS,
     // Attempts on the terminal rung only. Non-terminal rungs get one shot —
     // the ladder IS the retry, and retrying a hung rung is what cost 12h.
     terminalAttempts: envN("LPP_BRAIN_TERMINAL_ATTEMPTS", 2),
@@ -300,3 +322,32 @@ export const CFG = {
   },
   runTokenBudget: 3_000_000,  // hard stop per run
 };
+
+/** wq#1664: the two rescue roles must be a SECOND OPINION, not the model that
+ *  just failed. When a unit drop-in pins every role to one model (as lpp-glm did
+ *  on 09-10), `escalate` on stall_12_turns and `actRetry` on a missing ACT line
+ *  both re-ask the model that produced the stall: same prompt, same weights,
+ *  same answer, one extra billed call. That is silent — the escalation is logged
+ *  and looks like it worked — so it is caught at boot instead.
+ *  Returns one message per broken role; empty array = config is sane. */
+export interface BrainRoleConfig {
+  profiles: { primary: BrainProfile; escalate: BrainProfile; actRetry: BrainProfile };
+  brain: { fallbackModels: string[] };
+}
+
+export function brainConfigErrors(cfg: BrainRoleConfig = CFG): string[] {
+  const primary = cfg.profiles.primary.model;
+  const ladder = [primary, ...cfg.brain.fallbackModels].filter((m, i, a) => m && a.indexOf(m) === i);
+  const errs: string[] = [];
+  for (const [role, env] of [["escalate", "LPP_BRAIN_ESCALATE"], ["actRetry", "LPP_BRAIN_ACTRETRY"]] as const) {
+    const model = cfg.profiles[role].model;
+    if (!model) { errs.push(`${role} profile has no model (${env} is set to an empty string).`); continue; }
+    if (model !== primary) continue;
+    const alts = ladder.filter(m => m !== primary);
+    errs.push(`${role} profile model "${model}" is the primary model, so ${role} re-asks the model that just failed. `
+      + `Set ${env} to a different model`
+      + (alts.length ? ` (ladder rungs available: ${alts.join(", ")}).`
+                     : `; no rung of LPP_BRAIN_FALLBACK_MODELS differs from primary either, so there is nothing to escalate to.`));
+  }
+  return errs;
+}
