@@ -49,6 +49,13 @@ def load_lumen_state(db=None):
     if spec is None or spec.loader is None:
         sys.stderr.write("lumen_state.py not found at %s\n" % path)
         sys.exit(2)
+    # wq#1830: `python3 lumen_state.py` puts the script's own directory on
+    # sys.path; loading it by file location does not, so its sibling imports
+    # (minerva_audit) raise ModuleNotFoundError and every persona call fails.
+    # Appended, not prepended: a fleet directory must never shadow the stdlib.
+    home = os.path.dirname(os.path.abspath(path))
+    if home not in sys.path:
+        sys.path.append(home)
     mod = importlib.util.module_from_spec(spec)
     try:
         # Imported under the name "lumen_state", so the module's __main__ guard
