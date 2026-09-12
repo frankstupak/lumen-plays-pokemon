@@ -34,6 +34,7 @@ process.env.LPP_FALLBACK_LOG = join(SCRATCH, "runtime", "fallback_stats.jsonl");
 process.env.LPP_VISITED_TILES = join(SCRATCH, "runtime", "visited_tiles.json");
 process.env.LPP_PROGRESS_LOG = join(SCRATCH, "runtime", "progress.json");
 process.env.LPP_OVERRIDE_LOG = join(SCRATCH, "runtime", "stuck_escalation_overrides.jsonl");
+process.env.LPP_EXPLORE_EXCLUSION = join(SCRATCH, "runtime", "explore_exclusion.json");   // wq#1828
 process.env.LPP_PERSONA_ENABLE = "0";
 process.env.LPP_PERSONA_PATH = join(SCRATCH, "runtime", "persona.json");
 if (PHASE === "A") {
@@ -150,7 +151,7 @@ function stubBrain(): Promise<number> {
   const maxTurns = PHASE === "A" ? 1 + CFG.explore.stepsK * CFG.explore.expireFactor + 20
                                  : CFG.explore.windowTurns * 4 + CFG.explore.stepsK * CFG.explore.expireFactor + 20;
   const perTurn: { turn: number; line: string; brain: number }[] = [];
-  let throws = 0, endAt = -1;
+  let throws = 0, endAt = -1, exAtEnd: any = null;
   for (let t = 1; t <= maxTurns; t++) {
     const b0 = brainCalls, n0 = summaries.length;
     try { await agent.runTurn(); } catch (e) { throws++; console.log(`   T${t} THREW ${String(e).slice(0, 80)}`); }
@@ -158,7 +159,13 @@ function stubBrain(): Promise<number> {
     perTurn.push({ turn: t, line, brain: brainCalls - b0 });
     if (/AUTO:grass_breakout/.test(line) || ovr.some(o => o.stage === "fire") && endAt < 0)
       console.log(`   T${t} brain=${brainCalls - b0} ${line.slice(0, 150)}`);
-    if (endAt < 0 && ovr.some(o => o.stage === "end")) endAt = t;
+    if (endAt < 0 && ovr.some(o => o.stage === "end")) {
+      endAt = t;
+      // wq#1828: snapshot the exclusion the moment the run ends — the turns
+      // after it are exactly the ones that can lift it again.
+      const f = process.env.LPP_EXPLORE_EXCLUSION!;
+      if (existsSync(f)) try { exAtEnd = JSON.parse(readFileSync(f, "utf8")); } catch {}
+    }
     if (endAt > 0 && t >= endAt + 20) break;
   }
 
@@ -176,7 +183,13 @@ function stubBrain(): Promise<number> {
   chk("R2 the rung fired on the production ladder", !!fire && ovTurns.length > 0,
     `fire turn=${fire?.turn} overrideTurns=${ovTurns.length}`);
   if (PHASE === "A")
-    chk("R2a on the live stall window it fires on turn 1", fire?.turn === 1, String(fire?.turn));
+    // Not "turn 1" any more (wq#1828): the seeded window is whatever the live
+    // deployment's last 150 samples are, and the agent shuttles — a tail taken
+    // mid-excursion holds too little of the patch until the pacing resumes for
+    // a few turns. What must still hold is that a SEEDED window fires long
+    // before a fresh one could fill (that is R2b's job, from empty history).
+    chk("R2a the seeded live window fires without waiting for a fresh window",
+      !!fire && fire.turn <= CFG.explore.stepsK, String(fire?.turn));
   else
     chk("R2b from empty history it fires only after the brain filled a window",
       !!fire && fire.turn >= CFG.explore.windowTurns, String(fire?.turn));
@@ -197,6 +210,15 @@ function stubBrain(): Promise<number> {
   chk("R7 telemetry file holds fire + end", logged.join(",") === "fire,end", logged.join(","));
   chk("R8 live stuck_escalation.json was not written by the agent",
     !existsSync(join(SCRATCH, "runtime", "stuck_escalation.json")));
+  // wq#1828: the escape only counts if the brain cannot walk straight back.
+  // The stub brain does nothing BUT pace the strip, so the turns after the end
+  // are the walk-back this exclusion exists to refuse.
+  const refusals = perTurn.filter(p => p.turn > endAt && /EXPLORATION EXCLUSION/.test(p.line));
+  chk("R9 the escaped patch is persisted with its expiry", !!exAtEnd && exAtEnd.map === 35 &&
+    exAtEnd.tiles.length > 0 && exAtEnd.untilTurn === endAt + CFG.explore.excludeTurns,
+    JSON.stringify(exAtEnd && { tiles: exAtEnd.tiles.length, until: exAtEnd.untilTurn, endAt }));
+  chk("R10 the brain's goto back into it is refused, by name", refusals.length > 0,
+    refusals[0]?.line.slice(0, 120) ?? "no refusal in the turns after the end");
   if (end) {
     const back = perTurn.filter(p => p.turn > endAt).findIndex(p => /\[map35 [45],(19|2\d)\]/.test(p.line));
     console.log(`info: after the run the stub brain (which only paces) was back on the strip ` +

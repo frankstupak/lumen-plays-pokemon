@@ -56,6 +56,10 @@ export interface ExploreCfg {
   expireFactor: number;  // an override older than K*expireFactor turns ends (battles eat turns)
   urgencyTurns: number;  // turns without new ground before the prompt says leave
   catchParty: number;    // party smaller than this gets the catch line
+  patchShare: number;    // wq#1828: share of the window one patch must hold (0 = trigger off)
+  patchRadius: number;   // Chebyshev radius of that patch, in tiles
+  patchNew: number;      // new tiles INSIDE the patch the verdict tolerates
+  excludeTurns: number;  // turns the escaped patch is refused as a goto target (0 = off)
 }
 
 /** The fixed escape the design falls back to when no target is reachable:
@@ -73,7 +77,7 @@ export interface Tile { map: number; x: number; y: number }
 
 export interface StallVerdict {
   stalled: boolean;
-  trigger: "tight_pace" | "no_new_ground" | null;
+  trigger: "tight_pace" | "no_new_ground" | "dominant_patch" | null;
   complete: boolean;
   samples: number;
   windowTurns: number;
@@ -83,28 +87,84 @@ export interface StallVerdict {
   fromSeq: number;
   toSeq: number;
   tiles: Tile[];
+  patch: Patch | null;
 }
 
-/** Is the last `windowTurns` of novelty samples (seq > sinceSeq) a stall? */
+/** The window's densest region: the Chebyshev-`radius` disc, centred on a cell
+ *  the agent actually stood on, that holds the most of the window's samples. */
+export interface Patch {
+  map: number; x: number; y: number;   // the centre cell
+  radius: number;
+  samples: number;                     // samples taken inside it
+  share: number;                       // samples / window length
+  newTiles: number;                    // tiles first discovered INSIDE it
+  cells: Tile[];                       // its visited cells
+}
+
+/** Densest patch of a sample window, or null for an empty one. Ties go to the
+ *  cell the agent reached first. Counted over distinct CELLS rather than
+ *  samples, so the cost is quadratic in tiles (<= windowTurns), not in turns. */
+export function dominantPatch(win: ProgressSample[], radius: number): Patch | null {
+  const cells = new Map<string, { map: number; x: number; y: number; n: number; fresh: number }>();
+  for (const s of win) {
+    const k = tileKey(s.map, s.x, s.y);
+    const c = cells.get(k) ?? { map: s.map, x: s.x, y: s.y, n: 0, fresh: 0 };
+    c.n++; c.fresh += s.newTiles ?? 0;
+    cells.set(k, c);
+  }
+  const all = [...cells.values()];
+  const r = Math.max(0, Math.floor(radius));
+  let best: Patch | null = null;
+  for (const seed of all) {
+    const inside = all.filter(c => c.map === seed.map &&
+      Math.max(Math.abs(c.x - seed.x), Math.abs(c.y - seed.y)) <= r);
+    const n = inside.reduce((sum, c) => sum + c.n, 0);
+    if (best && n <= best.samples) continue;
+    best = {
+      map: seed.map, x: seed.x, y: seed.y, radius: r,
+      samples: n, share: n / win.length,
+      newTiles: inside.reduce((sum, c) => sum + c.fresh, 0),
+      cells: inside.map(c => ({ map: c.map, x: c.x, y: c.y })),
+    };
+  }
+  return best;
+}
+
+/** Is the last `windowTurns` of novelty samples (seq > sinceSeq) a stall?
+ *
+ *  wq#1828 added the third trigger. The first two AND over the WHOLE window, so
+ *  one sample anywhere in it clears the verdict for the next `windowTurns`, and
+ *  the live agent's shuttle — grind the map35 x=4..5 strip, pop to Route 25 or
+ *  Bill's for a few turns, come back — trips both vetoes forever. Replaying the
+ *  run's own samples (runtime/progress.json, 2026-09-12) through this function
+ *  scored 363 of 363 windows not-stalled: 230 vetoed by a second map, 133 by a
+ *  new tile found somewhere else entirely, while 60.9% of the samples sat in
+ *  the strip the override exists to break. `dominant_patch` asks the question
+ *  the shuttle cannot dodge — did most of this window happen inside one small
+ *  patch that earned no new ground — and fires on 260 of those 363 windows. */
 export function assessStall(samples: ProgressSample[], sinceSeq: number,
-                            cfg: Pick<ExploreCfg, "windowTurns" | "minTiles">): StallVerdict {
+                            cfg: Pick<ExploreCfg, "windowTurns" | "minTiles" | "patchShare" |
+                                       "patchRadius" | "patchNew">): StallVerdict {
   const eligible = (samples ?? []).filter(s => s && typeof s.seq === "number" && s.seq > sinceSeq);
   const d = deltaP(eligible, cfg.windowTurns);
   const win = eligible.slice(-d.windowTurns);
   const seen = new Map<string, Tile>();
   for (const s of win) seen.set(tileKey(s.map, s.x, s.y), { map: s.map, x: s.x, y: s.y });
   const maps = [...new Set(win.map(s => s.map))];
+  const patch = d.complete ? dominantPatch(win, cfg.patchRadius) : null;
   let trigger: StallVerdict["trigger"] = null;
-  if (d.complete && d.newTiles === 0) {
-    if (seen.size < cfg.minTiles) trigger = "tight_pace";
-    else if (maps.length === 1) trigger = "no_new_ground";
+  if (d.complete) {
+    if (d.newTiles === 0 && seen.size < cfg.minTiles) trigger = "tight_pace";
+    else if (d.newTiles === 0 && maps.length === 1) trigger = "no_new_ground";
+    else if (cfg.patchShare > 0 && patch && patch.share >= cfg.patchShare &&
+             patch.newTiles <= cfg.patchNew) trigger = "dominant_patch";
   }
   return {
     stalled: trigger !== null, trigger, complete: d.complete,
     samples: win.length, windowTurns: d.windowTurns,
     uniqueTiles: seen.size, newTiles: d.newTiles, maps,
     fromSeq: win.length ? win[0].seq : 0, toSeq: win.length ? win[win.length - 1].seq : 0,
-    tiles: [...seen.values()],
+    tiles: [...seen.values()], patch,
   };
 }
 
@@ -253,6 +313,9 @@ export interface OverrideDeps {
   blocked(): string | null;
   /** Called once per fire: drop harness goals that would walk straight back. */
   onFire?(): void;
+  /** wq#1828: called once per END with the patch this run escaped, so goto can
+   *  refuse it as a destination until it expires (src/exclusion.ts). */
+  exclude?(e: { tiles: string[]; map: number; turn: number; turns: number; fromFire: number }): void;
   bus?: { emit(kind: any, data: object): void };
   logFile: string;
   cfg: ExploreCfg;
@@ -261,11 +324,13 @@ export interface OverrideDeps {
 interface Run {
   fire: number;
   firedTurn: number;
+  turn: number;                           // last turn this run was ticked on
   from: Tile;
   map: number;
   trigger: NonNullable<StallVerdict["trigger"]>;
   footprint: Set<string>;                 // tileKey over the stall window
   footprintHere: { x: number; y: number }[];
+  excludeTiles: string[];                 // the patch goto is refused, on END
   stepsLeft: number;
   queue: { dir: Dir; hop: boolean }[];
   mode: "target" | "fallback";
@@ -304,6 +369,7 @@ export class ExplorationOverride {
       if (!v.stalled) return null;
       this.start(turn, v);
     }
+    this.run!.turn = turn;
     return this.advance();
   }
 
@@ -312,12 +378,20 @@ export class ExplorationOverride {
     this.d.map.build();
     const p = this.d.pos();
     const footprintHere = v.tiles.filter(t => t.map === p.map).map(t => ({ x: t.x, y: t.y }));
+    // wq#1828: what goto is refused afterwards is the footprint ON THIS MAP,
+    // not the whole window. A dominant_patch window spans every map the shuttle
+    // touched (map36, map88, map3 on the live run), and banning Route 25
+    // because the agent paced Route 24 would be the opposite of the fix.
+    // Narrower than this does not hold either: the acceptance replay refused
+    // the patch core and the stub brain was back on the strip one turn later,
+    // through a paced tile just outside it.
+    const excludeTiles = v.tiles.filter(t => t.map === p.map).map(t => tileKey(t.map, t.x, t.y));
     this.fires++;
     const run: Run = {
-      fire: this.fires, firedTurn: turn, from: p, map: p.map,
+      fire: this.fires, firedTurn: turn, turn, from: p, map: p.map,
       trigger: v.trigger!,
       footprint: new Set(v.tiles.map(t => tileKey(t.map, t.x, t.y))),
-      footprintHere, stepsLeft: cfg.stepsK, queue: [], mode: "target", target: null,
+      footprintHere, excludeTiles, stepsLeft: cfg.stepsK, queue: [], mode: "target", target: null,
       fallbackIdx: 0, legs: 0, learnedBlocked: new Set(), walked: new Set(), executed: [],
     };
     this.run = run;
@@ -327,7 +401,10 @@ export class ExplorationOverride {
       v: 1, ev: "fire", fire: run.fire, turn, ts: Date.now(), iso: new Date().toISOString(),
       at: p, trigger: v.trigger,
       window: { turns: v.windowTurns, samples: v.samples, uniqueTiles: v.uniqueTiles,
-                newTiles: v.newTiles, maps: v.maps, fromSeq: v.fromSeq, toSeq: v.toSeq },
+                newTiles: v.newTiles, maps: v.maps, fromSeq: v.fromSeq, toSeq: v.toSeq,
+                patch: v.patch && { at: [v.patch.map, v.patch.x, v.patch.y], r: v.patch.radius,
+                                    share: +v.patch.share.toFixed(3), samples: v.patch.samples,
+                                    newTiles: v.patch.newTiles, cells: v.patch.cells.length } },
       k: cfg.stepsK, mode: run.mode, source: planned?.source ?? "fallback",
       target: run.target, sequence: run.mode === "target"
         ? run.queue.map(q => q.hop ? `${q.dir}^` : q.dir)
@@ -420,11 +497,25 @@ export class ExplorationOverride {
     const mapChanged = at.map !== run.map;
     const escaped = mapChanged || newGround >= cfg.minTiles;
     this.flushSeq = Math.max(this.flushSeq, lastSeq);
+    // wq#1828: the escape only holds if the brain does not walk back. Hand the
+    // patch to the exclusion gate BEFORE the turn is handed back, so the very
+    // next goto is already refused.
+    // A run that ended on another map needs no exclusion: goto is same-map only
+    // (crossMapRefusal in agent.ts), and a map change lifts it anyway.
+    const excludeUntil = cfg.excludeTurns > 0 && !mapChanged && run.excludeTiles.length
+      ? run.turn + cfg.excludeTurns : null;
+    if (excludeUntil !== null) {
+      try {
+        this.d.exclude?.({ tiles: run.excludeTiles, map: run.map, turn: run.turn,
+                           turns: cfg.excludeTurns, fromFire: run.fire });
+      } catch { /* bookkeeping never breaks a turn */ }
+    }
     const rec = {
       v: 1, ev: "end", fire: run.fire, reason, ts: Date.now(), iso: new Date().toISOString(),
       from: run.from, at, stepsTaken: cfg.stepsK - run.stepsLeft, k: cfg.stepsK,
       mode: run.mode, target: run.target, executed: run.executed,
       distinctTiles: run.walked.size, newGround, mapChanged, escaped,
+      excludeTiles: excludeUntil === null ? 0 : run.excludeTiles.length, excludeUntil,
       flushSeq: this.flushSeq,
     };
     appendOverrideLog(this.d.logFile, rec);
@@ -433,7 +524,10 @@ export class ExplorationOverride {
     const summary = `exploration_override #${run.fire} ended (${reason}): ` +
       `${rec.stepsTaken} steps, ${newGround} tiles outside the stalled patch` +
       `${mapChanged ? ", left the map" : ""}. You were pacing the same ground with no progress; ` +
-      `do not walk back to it.`;
+      `do not walk back to it.` +
+      (excludeUntil === null ? "" :
+        ` goto() into those ${run.excludeTiles.length} tiles is REFUSED until turn ${excludeUntil} ` +
+        `(walking through them is still fine).`);
     return lastLine ? `${lastLine}\n${summary}` : summary;
   }
 }

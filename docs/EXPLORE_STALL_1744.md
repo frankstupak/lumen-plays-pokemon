@@ -124,6 +124,50 @@ Persist it instead:
 Escape hatch: `LPP_EXPLORE_EXCLUDE_TURNS=0` is a full revert, matching the
 `LPP_EXPLORE_OVERRIDE=0` convention.
 
+## As implemented (wq#1828)
+
+Both steps landed. Two things are sharper than the design above, and one is a
+stated limitation.
+
+**The patch is a disc, not a hand-drawn strip.** "The cells holding >=
+patchShare of the samples" needs a rule for *which* cells, or it is satisfiable
+by simply taking enough of them. `dominantPatch()` (src/explore.ts) picks the
+Chebyshev-`patchRadius` disc, centred on a cell the agent actually stood on,
+that holds the most samples; the verdict is that disc's share and the new tiles
+earned inside it. Radius is the third knob, `LPP_EXPLORE_PATCH_RADIUS`, default
+5 — the measured half-height of the live strip (map35 x=4..5, y=19..29).
+Sensitivity over the same 363 windows: r=2 fires 0, r=3 fires 6, r=4 fires 244,
+r=5 fires 260, r=6 fires 277. Below 4 the trigger cannot see the stall it was
+written for, so 5 is the first setting with margin on both sides.
+
+**Measured, on the run's own samples** (`src/fixture_stall1828.ts` checks in two
+slices so `probe_explore1731` can replay them with no live read):
+
+| window | old verdict | new verdict |
+|---|---|---|
+| the shuttle (4 maps, 3 new tiles, 55 tiles) | not stalled | `dominant_patch`, patch (35,5,23) share 0.567, patchNew 0 |
+| Route 25 progressing (60 samples) | not stalled | not stalled — patch share 0.800 but patchNew 1 |
+
+Density alone would have convicted the progressing stretch; the new-tiles-inside
+test is what acquits it. The end-to-end replay against the live deployment's
+window (`accept_explore1731.ts` phase A, 11/11) fires with
+`trigger: "dominant_patch"` on turn 16 of the production ladder, escapes 18
+tiles out of the patch, and refuses the stub brain's `goto(4,24)` back into it.
+
+**The exclusion is the map's footprint, not the patch core.** The first cut
+persisted the 16-cell patch; the acceptance replay then showed the stub brain
+back on the strip one turn later through a paced tile just outside it. What is
+persisted is every window tile on the map the escape started from (27 on that
+replay), which is the "footprint" the ticket asked for, narrowed to one map
+because a `dominant_patch` window spans every map the shuttle touched.
+
+**Limitation, by design.** Refusing destinations does not keep the agent out of
+the patch: any allowed target beyond it is reached by walking through it, so
+turns still END on patch tiles. That is the deliberate trade from the design
+above — the alternative bricks a run whose only corridor crosses the patch. What
+the refusal buys is that the patch can no longer be the *goal*, and the brain is
+told why in a sentence it can plan against.
+
 ## What this deliberately does not fix
 
 Catching is blocked on the live run by economics, not by either shipped fix:
