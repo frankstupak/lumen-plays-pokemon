@@ -38,7 +38,8 @@ import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
 import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";   // wq#1731
-import { ExclusionGate, exclusionFile } from "./exclusion";        // wq#1828
+import { ExclusionGate, exclusionFile, exclusionLift } from "./exclusion";        // wq#1828
+import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
@@ -80,6 +81,10 @@ interface SupervisorDirective {
   mode: string;
   summary: string;
   notepadPin: string;
+  // wq#1840: the supervisor stamps every file it writes. Read here so the
+  // directive can expire on its own age instead of only on the story advance
+  // it is blocking (src/pin.ts).
+  generatedAt?: string;
   baselineScore?: number;
   baselineBadges?: number;
   baselineEvents?: number;
@@ -106,6 +111,7 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
       mode: d.mode ?? "",
       summary: d.summary ?? "",
       notepadPin: pin,
+      generatedAt: typeof d.generatedAt === "string" ? d.generatedAt : undefined,
       baselineScore: d.baselineScore,
       baselineBadges: d.baselineBadges,
       baselineEvents: d.baselineEvents,
@@ -199,6 +205,13 @@ export class Agent {
   // observe(). wq#724 wired ban consumption but never rendered this, so the
   // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
   private supervisorPin = "";
+  // wq#1840: what the pin needs to expire on its OWN age. Null whenever no pin
+  // is live; carries the supervisor's generatedAt stamp plus the turn/clock the
+  // agent picked it up at (src/pin.ts).
+  private supervisorPinned: PinnedDirective | null = null;
+  // wq#1840: latch for the suppression event, so the transition is logged once
+  // rather than once per turn for the hundreds of turns the condition holds.
+  private pinSuppressed = false;
   // wq#1179: tile novelty + composite progress scalar. observe() writes
   // runtime/{visited_tiles,progress}.json and emits a `progress` event;
   // tools/lpp_stuck_mode.py consumes the files. wq#1731: the exploration
@@ -297,8 +310,26 @@ export class Agent {
       const base = join(this.checkpointDir, "..");
       const dir = loadSupervisorDirective(base);
       if (!dir) return;
+      // wq#1840: age it BEFORE it can reach the prompt even once. A directive
+      // whose K-attempt ladder finished days ago is residue, not guidance, and
+      // the 14-day FIGHT_LOSS_LOOP@3 pin was re-loaded on every continue.
+      const pinned: PinnedDirective = {
+        pin: dir.notepadPin || "", mode: dir.mode,
+        generatedAt: dir.generatedAt, loadedTurn: this.turn, loadedMs: Date.now(),
+      };
+      const dead = pinExpiry(pinned, { turn: this.turn, ms: pinned.loadedMs }, CFG.pin);
+      if (dead) {
+        this.bus.emit("tool_call", {
+          tool: "supervisor_directive_expired", src: "harness",
+          reason: dead, mode: dir.mode, maps: dir.gotoBan, atBoot: true,
+        });
+        return;
+      }
       for (const m of dir.gotoBan) this.supervisorBans.add(m);
-      this.supervisorPin = dir.notepadPin || "";
+      this.supervisorPin = pinned.pin;
+      // Held whether or not there is a pin: a ban-only directive ages on the
+      // same clock, and a single run outlives the cap (6.7h measured 2026-09-12).
+      this.supervisorPinned = pinned;
       // wq#1081/#1084: load the baseline whenever EITHER a ban or a pin is
       // present, so a guidance-only directive still auto-lifts on advance.
       if (this.supervisorBans.size === 0 && !this.supervisorPin) return;
@@ -321,6 +352,25 @@ export class Agent {
     // wq#1081/#1084: baseline is set whenever a ban OR a pin loaded, so gate on
     // it alone — a guidance-only directive must lift its pin on advance too.
     if (!this.supervisorBaseline) return;
+    // wq#1840: age first, because the story-advance test below can never fire
+    // for a directive whose own remedy IS the blocked story advance. Retires
+    // the whole artifact — pin and bans share one generatedAt and one ladder,
+    // and a ban that outlives its ladder wedges exactly as the pin does.
+    if (this.supervisorPinned) {
+      const dead = pinExpiry(this.supervisorPinned, { turn: this.turn, ms: Date.now() }, CFG.pin);
+      if (dead) {
+        this.bus.emit("tool_call", {
+          tool: "supervisor_directive_expired", src: "harness",
+          reason: dead, mode: this.supervisorPinned.mode,
+          maps: [...this.supervisorBans], atBoot: false,
+        });
+        this.supervisorBans.clear();
+        this.supervisorPin = "";
+        this.supervisorPinned = null;
+        this.supervisorBaseline = null;
+        return;
+      }
+    }
     try {
       const st = this.reader.read();
       const b = this.supervisorBaseline;
@@ -333,6 +383,7 @@ export class Agent {
         });
         this.supervisorBans.clear();
         this.supervisorPin = "";
+        this.supervisorPinned = null;
         this.supervisorBaseline = null;
       }
     } catch { /* never crash on a bookkeeping read */ }
@@ -463,7 +514,30 @@ export class Agent {
     // turn. Without this the entire FIGHT_LOSS_LOOP grind remedy was inert —
     // written to runtime/supervisor_directive.json and never read (wq#724 wired
     // ban enforcement but not this). Prefixed "!!" so it reads as high-priority.
-    if (this.supervisorPin) block += `\n!! ${this.supervisorPin}`;
+    // wq#1840: and only when the live bag has not refuted it. A pin ordering a
+    // CATCH at $96 with zero balls is not guidance, it is a second voice
+    // arguing with progressBlock()'s CATCHING IS IMPOSSIBLE line below; a pin
+    // ordering the agent into tall grass while wq#1828's exclusion refuses that
+    // patch gets the exclusion named rather than left to contradict it.
+    if (this.supervisorPin) {
+      const ex = this.exclusion.peek();
+      const live = ex && !exclusionLift(ex, this.turn, st.map)
+        ? { tiles: ex.tiles.length, map: ex.map, untilTurn: ex.untilTurn } : null;
+      const r = renderPin(this.supervisorPin,
+        { balls: this.ballCount(), money: st.money, ballPrice: BALL_PRICE }, live, CFG.pin);
+      if (r) block += `\n!! ${r.text}`;
+      // Rising edge only: the condition holds for hundreds of consecutive
+      // turns (wq#1829 measured $96 for a whole run), and an event per turn
+      // would bury the transition that is the actual finding.
+      const now = !!r?.suppressed;
+      if (now !== this.pinSuppressed) {
+        this.pinSuppressed = now;
+        this.bus.emit("tool_call", {
+          tool: now ? "supervisor_pin_suppressed" : "supervisor_pin_restored", src: "harness",
+          balls: this.ballCount(), money: st.money,
+        });
+      }
+    }
 
     // wq#1731: the reward weights as stated goals. Overworld only, so a fight
     // never gets a "leave this map" line in the middle of it; the battle branch
