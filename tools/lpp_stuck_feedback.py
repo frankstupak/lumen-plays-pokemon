@@ -148,8 +148,8 @@ def build_report(mode, location_key, location, state, intervention_log, now_ms):
 
     wq#1845: the attempt list used to be every entry ever logged for the key,
     unfiltered, printed under a sentence that dates the freeze to
-    `since {lastAdvanceAt}`. A (mode, location) key outlives one freeze —
-    `open_attempt_count` never forgets a spent budget — so the two halves
+    `since {lastAdvanceAt}`. A (mode, location) key outlives one freeze, and
+    `open_attempt_count` then ran over the key's whole lifetime, so the two halves
     routinely disagreed. FIGHT_LOSS_LOOP@65 filed "frozen since 2026-09-02 ...
     interventions: attempt 1, 2, 3 grind_sub_objective (superseded)" whose three
     attempts were all made 2026-08-18, against a save a checkpoint restore later
@@ -211,7 +211,10 @@ def report_signature(report):
     just appended for this exact exhaustion", crediting the guard to a caller
     that "only invokes this on a fresh `exhausted` decision". No such caller
     exists — `run()` calls it on every poll where decide() says exhausted, and
-    once K is spent decide() says exhausted forever. FIGHT_LOSS_LOOP@3 collected
+    once K is spent decide() says exhausted on every poll for the rest of the
+    stall episode (wq#1846; it used to be for the rest of the key's life, which
+    is the same thing as far as this guard is concerned — a poll every 30min
+    against a budget that cannot move). FIGHT_LOSS_LOOP@3 collected
     seven REPEAT blocks in 2.6h whose only difference was `frozen=2.4h` counting
     up to `frozen=5.0h`; the detail grows without bound and the reader has to
     diff paragraphs to find out that nothing changed.
