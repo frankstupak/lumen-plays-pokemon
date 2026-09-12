@@ -129,6 +129,16 @@ export const MART_ORDER: Record<number, number[]> = {
        ITEM.PARLYZ_HEAL, ITEM.REPEL],                                      // Vermilion
 };
 
+/** wq#1829: the city behind each MART_ORDER map id. Kept beside the stock
+ *  table so "which marts sell balls" can be DERIVED (economy.ballMarts())
+ *  instead of re-listed from memory — economyAdvice used to name only two of
+ *  the four, and the one the agent was standing next to (Cerulean) was not
+ *  always among them. Every key here must exist in MART_ORDER; probe_economy
+ *  asserts the two tables agree. */
+export const MART_CITY: Record<number, string> = {
+  42: "Viridian", 56: "Pewter", 67: "Cerulean", 91: "Vermilion",
+};
+
 export interface BagEntry { id: number; qty: number; name: string; }
 
 export class Items {
@@ -197,7 +207,7 @@ export class Items {
     const out: BagEntry[] = [];
     for (let i = 0; i < Math.min(n, 20); i++) {
       const id = m[a + i * 2];
-      out.push({ id, qty: m[a + i * 2 + 1], name: ITEM_NAME[id] ?? `item${id}` });
+      out.push({ id, qty: m[a + i * 2 + 1], name: itemLabel(id) });
     }
     return out;
   }

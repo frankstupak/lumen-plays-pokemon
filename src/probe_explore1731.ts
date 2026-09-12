@@ -331,27 +331,52 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
   console.log("=== D. progressBlock ===");
   {
     const s = strip(150);
-    const b = progressBlock({ badges: 0b1, partyCount: 1, map: 35, samples: s }, CFG);
+    // Resourced: one ball in the bag, so the catch line is executable.
+    const b = progressBlock({ badges: 0b1, partyCount: 1, map: 35, samples: s, balls: 1, money: 0 }, CFG);
     chk("D1 one badge names Gym #2 Cerulean", /GOAL: Gym #2, Cerulean \(Misty, Cascade Badge\)/.test(b), b.split("\n")[1]);
     chk("D2 counters read the sample window", /badges 1\/8, party 1, 150\+ turns on this map, 150\+ turns since/.test(b),
       b.split("\n")[0]);
     chk("D3 a long no-new-ground stretch says leaving is high value, fights de-emphasized",
       /!! NO NEW GROUND.*leaving this map is high value.*only worth it when they block the path/.test(b));
-    chk("D4 party below catchParty gets the catch line", /CATCH: you have 1 Pokemon/.test(b));
+    chk("D4 party below catchParty WITH a ball gets the catch line",
+      /CATCH: you have 1 Pokemon and 1 ball\(s\)/.test(b));
 
     const fresh = s.concat([sample(35, 9, 9, 1)]);
-    const b2 = progressBlock({ badges: 0b1, partyCount: 3, map: 35, samples: fresh }, CFG);
+    const b2 = progressBlock({ badges: 0b1, partyCount: 3, map: 35, samples: fresh, balls: 1, money: 0 }, CFG);
     chk("D5 a new tile clears the urgency line", !/NO NEW GROUND/.test(b2) && /0 turns since/.test(b2), b2.split("\n")[0]);
     chk("D6 no catch line at catchParty", !/CATCH/.test(b2));
     chk("D7 a different map than the window means 0 turns here, no urgency",
-      !/NO NEW GROUND/.test(progressBlock({ badges: 1, partyCount: 3, map: 36, samples: s }, CFG)));
+      !/NO NEW GROUND/.test(progressBlock({ badges: 1, partyCount: 3, map: 36, samples: s, balls: 1, money: 0 }, CFG)));
     chk("D8 badge bits, not badge count, pick the gym (Boulder+Cascade -> Vermilion)",
-      /Gym #3, Vermilion \(Lt\. Surge, Thunder Badge\)/.test(progressBlock({ badges: 0b11, partyCount: 3, map: 1, samples: [] }, CFG)));
-    chk("D9 all badges -> the League", /Victory Road/.test(progressBlock({ badges: 0xff, partyCount: 6, map: 1, samples: [] }, CFG)));
+      /Gym #3, Vermilion \(Lt\. Surge, Thunder Badge\)/.test(progressBlock({ badges: 0b11, partyCount: 3, map: 1, samples: [], balls: 1, money: 0 }, CFG)));
+    chk("D9 all badges -> the League", /Victory Road/.test(progressBlock({ badges: 0xff, partyCount: 6, map: 1, samples: [], balls: 1, money: 0 }, CFG)));
     chk("D10 empty sample log renders zeros without throwing",
-      /party 0, 0 turns on this map, 0 turns since/.test(progressBlock({ badges: 0, partyCount: 0, map: 1, samples: [] }, CFG)));
+      /party 0, 0 turns on this map, 0 turns since/.test(progressBlock({ badges: 0, partyCount: 0, map: 1, samples: [], balls: 0, money: 0 }, CFG)));
     const k = progressCounters(s.slice(-10).concat([sample(12, 1, 1)]), 12);
     chk("D11 onMap stops at the last map change", k.onMap === 1 && !k.onMapCapped, JSON.stringify(k));
+
+    // wq#1829: the live 2026-09-12 state — party under target, ZERO balls, $96
+    // against a $200 ball. The old line said "catching another is valuable"
+    // here, which is a directive the agent cannot execute.
+    const broke = progressBlock({ badges: 0b1, partyCount: 1, map: 35, samples: s, balls: 0, money: 96 }, CFG);
+    chk("D12 broke + ballless says catching is IMPOSSIBLE, never 'valuable'",
+      /CATCHING IS IMPOSSIBLE: 1 Pokemon, ZERO balls, \$96/.test(broke) && !/catching another is valuable/.test(broke),
+      broke.split("\n").pop());
+    chk("D13 the impossible branch names the only income source and the price",
+      /TRAINER battles pay/.test(broke) && /\$200/.test(broke) && /wild Pokemon pay nothing/.test(broke));
+    chk("D14 it does NOT tell a ballless agent to weaken wilds",
+      !/weaken/i.test(broke) || /Do NOT spend turns hunting or weakening/.test(broke));
+
+    // Affordable but empty-handed: the action is BUY, and the marts are named
+    // from MART_ORDER (all four that stock balls, not a remembered two).
+    const rich = progressBlock({ badges: 0b1, partyCount: 1, map: 35, samples: s, balls: 0, money: 1200 }, CFG);
+    chk("D15 money but no balls -> BUY BALLS FIRST, with the mart list",
+      /BUY BALLS FIRST: 1 Pokemon, ZERO balls, \$1200/.test(rich) && /Cerulean \(map67\)/.test(rich),
+      rich.split("\n").pop());
+    chk("D16 the buy branch lists every ball mart MART_ORDER knows",
+      ["Viridian (map42)", "Pewter (map56)", "Cerulean (map67)", "Vermilion (map91)"].every(m => rich.includes(m)));
+    chk("D17 exactly one catch/economy line renders per block",
+      [broke, rich, b].every(t => t.split("\n").filter(l => /^(CATCH|BUY BALLS|CATCHING)/.test(l)).length === 1));
   }
 
   try { unlinkSync(process.env.LPP_OVERRIDE_LOG!); } catch {}
