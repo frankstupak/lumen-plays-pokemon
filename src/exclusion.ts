@@ -100,6 +100,11 @@ export class ExclusionGate {
       stage: "exclusion", tiles: e.tiles.length, map: e.map, untilTurn: e.untilTurn, fire: e.fromFire });
   }
 
+  /** wq#1746: the exclusion as it stands, WITHOUT lifting a spent one. The
+   *  escape verdict reads the refusal count while writing its record and must
+   *  not change gate state to do it; `live()` is the deciding read. */
+  peek(): Exclusion | null { return this.cur; }
+
   /** The live exclusion for this turn, lifting it first if it is spent. */
   live(turn: number, map: number): Exclusion | null {
     if (!this.cur) return null;

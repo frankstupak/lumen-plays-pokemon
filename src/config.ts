@@ -175,6 +175,12 @@ export const CFG = {
     patchRadius: envN0("LPP_EXPLORE_PATCH_RADIUS", 5),
     patchNew: envN0("LPP_EXPLORE_PATCH_NEW", 0),
     excludeTurns: envN0("LPP_EXPLORE_EXCLUDE_TURNS", 60),
+    // wq#1746: novelty samples an escape is watched for before its `verdict`
+    // record settles `escaped`. One stall window, so the answer covers the
+    // exclusion's 60 turns AND the 90 after it lifts — the interval in which
+    // all nine historical fires were undone. LPP_EXPLORE_VERDICT_TURNS=0 drops
+    // the measurement; nothing else reads it, so nothing else changes.
+    verdictTurns: envN0("LPP_EXPLORE_VERDICT_TURNS", 150),
   },
   // wq#1181 LOSS LEDGER + engagement gates (roadmap item 6). ON by default:
   // unlike the verdict above it cannot act on its own, it can only refuse a

@@ -4,8 +4,8 @@
 // The brain is a local stub that does what the live brain did for weeks: pace
 // the x=4..5 strip, flee wild battles. No gateway, no network.
 //
-//   LPP_ACCEPT_PHASE=A npx tsx src/accept_explore1731.ts   # live window seeded
-//   LPP_ACCEPT_PHASE=B npx tsx src/accept_explore1731.ts   # detect from scratch
+//   npx tsx src/accept_explore1731.ts A   # live window seeded (LPP_ACCEPT_PHASE too)
+//   npx tsx src/accept_explore1731.ts B   # detect from scratch
 //
 // A: runtime/progress.json + visited_tiles.json are COPIED from the live
 //    deployment (the 500-sample stall itself) and defaults are left alone, so
@@ -21,7 +21,7 @@ import { join } from "path";
 import { createServer, IncomingMessage, ServerResponse } from "http";
 import { AddressInfo } from "net";
 
-const PHASE = (process.env.LPP_ACCEPT_PHASE ?? "A").toUpperCase();
+const PHASE = (process.argv[2] ?? process.env.LPP_ACCEPT_PHASE ?? "A").toUpperCase();
 const LIVE = "/home/lumen/pokemon";
 const CK_DIRS = [process.env.LPP_ACCEPT_CKPT_DIR ?? `${LIVE}/checkpoints`];
 const SCRATCH = mkdtempSync(join(tmpdir(), `explore1731-${PHASE}-`));
@@ -35,6 +35,11 @@ process.env.LPP_VISITED_TILES = join(SCRATCH, "runtime", "visited_tiles.json");
 process.env.LPP_PROGRESS_LOG = join(SCRATCH, "runtime", "progress.json");
 process.env.LPP_OVERRIDE_LOG = join(SCRATCH, "runtime", "stuck_escalation_overrides.jsonl");
 process.env.LPP_EXPLORE_EXCLUSION = join(SCRATCH, "runtime", "explore_exclusion.json");   // wq#1828
+// wq#1746: the escape verdict settles verdictTurns novelty samples after the
+// end, and this replay watches ~25 turns past it. The live default (150) would
+// never land inside the run; 15 does, so R12 judges a record rather than its
+// absence.
+process.env.LPP_EXPLORE_VERDICT_TURNS = process.env.LPP_EXPLORE_VERDICT_TURNS ?? "15";
 process.env.LPP_PERSONA_ENABLE = "0";
 process.env.LPP_PERSONA_PATH = join(SCRATCH, "runtime", "persona.json");
 if (PHASE === "A") {
@@ -87,6 +92,23 @@ function stubBrain(): Promise<number> {
   const port = await stubBrain();
   process.env.LPP_GATEWAY = `http://127.0.0.1:${port}/v1/chat/completions`;
   const { CFG } = await import("./config.js");
+  // wq#1746: phase A's fixture is whatever the live deployment was doing at
+  // copy time, and the live agent keeps writing it. Every A assertion is about
+  // a SEEDED stall, so when the copied window is not one, A is scoring a coin
+  // flip — two runs minutes apart on 2026-09-12 gave "fire at turn 63" and "no
+  // fire at all". Say which it is and skip.
+  if (PHASE === "A") {
+    const { assessStall } = await import("./explore.js");
+    const seeded = JSON.parse(readFileSync(process.env.LPP_PROGRESS_LOG!, "utf8")).samples ?? [];
+    const v = assessStall(seeded, 0, CFG.explore);
+    if (!v.stalled) {
+      console.log(`SKIP FIXTURE DRIFT: the copied live window is not a stall right now ` +
+        `(complete=${v.complete} uniqueTiles=${v.uniqueTiles} newTiles=${v.newTiles} ` +
+        `maps=${v.maps} patchShare=${v.patch?.share?.toFixed(3) ?? "-"}). Phase B is the ` +
+        `deterministic half; re-run A when the live agent is mid-stall.`);
+      process.exit(2);
+    }
+  }
   const { Emulator, loadSnapshotFile } = await import("./emulator.js");
   const { SymbolTable } = await import("./symbols.js");
   const { Rom } = await import("./rom.js");
@@ -151,7 +173,7 @@ function stubBrain(): Promise<number> {
   const maxTurns = PHASE === "A" ? 1 + CFG.explore.stepsK * CFG.explore.expireFactor + 20
                                  : CFG.explore.windowTurns * 4 + CFG.explore.stepsK * CFG.explore.expireFactor + 20;
   const perTurn: { turn: number; line: string; brain: number }[] = [];
-  let throws = 0, endAt = -1, exAtEnd: any = null;
+  let throws = 0, endAt = -1, verdictAt = -1, exAtEnd: any = null;
   for (let t = 1; t <= maxTurns; t++) {
     const b0 = brainCalls, n0 = summaries.length;
     try { await agent.runTurn(); } catch (e) { throws++; console.log(`   T${t} THREW ${String(e).slice(0, 80)}`); }
@@ -166,7 +188,8 @@ function stubBrain(): Promise<number> {
       const f = process.env.LPP_EXPLORE_EXCLUSION!;
       if (existsSync(f)) try { exAtEnd = JSON.parse(readFileSync(f, "utf8")); } catch {}
     }
-    if (endAt > 0 && t >= endAt + 20) break;
+    if (verdictAt < 0 && ovr.some(o => o.stage === "verdict")) verdictAt = t;   // wq#1746
+    if (endAt > 0 && t >= endAt + 25) break;
   }
 
   const fire = ovr.find(o => o.stage === "fire");
@@ -207,7 +230,9 @@ function stubBrain(): Promise<number> {
   chk("R6 exactly one fire (the flush floor holds for the 20 turns after)", fires === 1, String(fires));
   const logged = existsSync(process.env.LPP_OVERRIDE_LOG!)
     ? readFileSync(process.env.LPP_OVERRIDE_LOG!, "utf8").trim().split("\n").map(l => JSON.parse(l).ev) : [];
-  chk("R7 telemetry file holds fire + end", logged.join(",") === "fire,end", logged.join(","));
+  // wq#1746: a verdict lands too, once the escape has been watched long enough.
+  chk("R7 telemetry file holds fire + end", logged[0] === "fire" && logged[1] === "end" &&
+    logged.slice(2).every(e => e === "verdict"), logged.join(","));
   chk("R8 live stuck_escalation.json was not written by the agent",
     !existsSync(join(SCRATCH, "runtime", "stuck_escalation.json")));
   // wq#1828: the escape only counts if the brain cannot walk straight back.
@@ -219,10 +244,33 @@ function stubBrain(): Promise<number> {
     JSON.stringify(exAtEnd && { tiles: exAtEnd.tiles.length, until: exAtEnd.untilTurn, endAt }));
   chk("R10 the brain's goto back into it is refused, by name", refusals.length > 0,
     refusals[0]?.line.slice(0, 120) ?? "no refusal in the turns after the end");
-  if (end) {
-    const back = perTurn.filter(p => p.turn > endAt).findIndex(p => /\[map35 [45],(19|2\d)\]/.test(p.line));
-    console.log(`info: after the run the stub brain (which only paces) was back on the strip ` +
-      `${back < 0 ? "never, in the 20 turns observed" : `after ${back + 1} turns`}`);
+  // wq#1746: and the escape is judged by where the brain actually stood, which
+  // is the half neither the end record nor the exclusion can see — walking
+  // THROUGH the patch to a legal destination is allowed by design, and it puts
+  // the agent right back on the stalled ground.
+  const verdict = ovr.find(o => o.stage === "verdict");
+  chk("R11 the end record is provisional and names the patch it is watching",
+    !!end && end.provisional === true && !!end.watch && end.watch.map === 35 &&
+    end.watch.keys.length > 0 && end.watch.untilSeq > end.watch.fromSeq,
+    JSON.stringify(end && { prov: end.provisional, keys: end.watch?.keys?.length,
+      until: end.watch?.untilSeq }));
+  if (end?.watch) {
+    const keys = new Set<string>(end.watch.keys);
+    const stood = perTurn.filter(p => {
+      const m = p.line.match(/\[map(\d+) (\d+),(\d+)\]/);
+      // Only the turns the verdict could have seen: it is written the moment it
+      // settles, and turns after that belong to no watch.
+      return !!m && Number(m[1]) === end.watch.map && keys.has(`${m[2]},${m[3]}`) &&
+        p.turn > endAt && (verdictAt < 0 || p.turn <= verdictAt);
+    });
+    console.log(`info: after the run the stub brain (which only paces) stood on the patch ` +
+      `${stood.length ? `on turns ${stood.map(p => p.turn).join(",")}` : "never, in the turns observed"}` +
+      `; verdict=${JSON.stringify(verdict && { reason: verdict.reason, escaped: verdict.escaped,
+        reentered: verdict.reentered, held: verdict.heldSamples, exFires: verdict.exclusionFires })}`);
+    chk("R12 the verdict agrees with where the brain actually stood",
+      !!verdict && verdict.escaped === (stood.length === 0) &&
+      verdict.reentered === (stood.length > 0),
+      `stood=${stood.length} verdict=${verdict?.reason}/${verdict?.escaped}`);
   }
   console.log(`info: decision calls=${brainCalls} compaction calls=${compactCalls}`);
   console.log(`\n${pass} PASS / ${fail} FAIL   (scratch kept at ${SCRATCH})`);

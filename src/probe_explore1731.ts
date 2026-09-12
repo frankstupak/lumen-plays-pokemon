@@ -13,7 +13,7 @@ import { existsSync, readFileSync, unlinkSync } from "fs";
 import type { ProgressSample } from "./novelty";
 import {
   assessStall, dominantPatch, planEscape, pathToDirs, footDistance, progressBlock, progressCounters,
-  ExplorationOverride, overrideLogFile, recoverFlushSeq, FALLBACK_SEQUENCE,
+  ExplorationOverride, overrideLogFile, recoverFlushSeq, recoverWatch, FALLBACK_SEQUENCE,
   type ExploreCfg, type GridLike,
 } from "./explore";
 import { ExclusionGate, exclusionLift, loadExclusion, EXCLUSION_MAX_FIRES,
@@ -29,7 +29,7 @@ const chk = (n: string, ok: boolean, d = "") => {
 const CFG: ExploreCfg = {
   enabled: true, prompt: true, windowTurns: 150, minTiles: 5, stepsK: 30,
   clearance: 3, expireFactor: 3, urgencyTurns: 60, catchParty: 3,
-  patchShare: 0.5, patchRadius: 5, patchNew: 0, excludeTurns: 60,
+  patchShare: 0.5, patchRadius: 5, patchNew: 0, excludeTurns: 60, verdictTurns: 150,
 };
 
 let seqCounter = 0;
@@ -264,6 +264,7 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     step: (dx, dy) => move(dx, dy, 1), hop: (dx, dy) => move(dx, dy, 2),
     samples: () => w.samples, blocked: () => (w.battle ? "battle" : null),
     onFire: () => { w.fires++; }, exclude: e => gate.set(e),
+    exclusionFires: () => gate.peek()?.fires ?? 0,
     logFile: w.log, cfg: { ...CFG, ...(opts.cfg ?? {}) },
   });
   /** One harness turn, then the end-of-turn novelty sample the agent takes —
@@ -538,6 +539,137 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
       /left map35/.test(exclusionLift(e, 99, 36) ?? ""));
     chk("E10b a missing or corrupt file excludes nothing",
       loadExclusion(`/tmp/explore1828-missing-${TAG}.json`) === null);
+  }
+
+  // --------------------------------------------------- F. the verdict (wq#1746)
+  // The end record's `escaped` is the run's own walk: all nine live fires read
+  // true while the brain's next goto went straight back in. F covers the record
+  // that settles it from where the player actually stood afterwards — including
+  // the walk-back E cannot see, the one that ENDS on a patch tile after walking
+  // THROUGH it, which the exclusion deliberately allows.
+  console.log("=== F. escape verdict ===");
+  /** Drive turns until the run ends; the turn it ended on and the line it said. */
+  const runOut = async (turn: (n: number) => Promise<string | null>, max = 40) => {
+    for (let n = 1; n <= max; n++) {
+      const l = await turn(n);
+      if (l && /ended/.test(l)) return { turn: n, line: l };
+    }
+    return { turn: -1, line: "" };
+  };
+  {
+    const { w, turn, records } = stripWorld({ cfg: { verdictTurns: 5 } });
+    const { turn: endTurn } = await runOut(turn);
+    const end = records().find(r => r.ev === "end");
+    chk("F1 an escaped run ends PROVISIONAL and starts watching the patch it left",
+      !!end && end.provisional === true && !!end.watch && end.watch.map === 35 &&
+      end.watch.keys.length === 22 && end.watch.keys.includes("5,24") &&
+      end.watch.untilSeq === end.watch.fromSeq + 5,
+      JSON.stringify(end && { prov: end.provisional, keys: end.watch?.keys?.length,
+        from: end.watch?.fromSeq, until: end.watch?.untilSeq }));
+    for (let t = endTurn + 1; t <= endTurn + 7; t++) await turn(t);
+    const v = records().filter(r => r.ev === "verdict");
+    chk("F2 staying out for the window settles it as a real escape",
+      v.length === 1 && v[0].reason === "held" && v[0].escaped === true &&
+      v[0].reentered === false && v[0].fire === 1 && v[0].heldSamples >= 5,
+      JSON.stringify(v[0] && { reason: v[0].reason, escaped: v[0].escaped, held: v[0].heldSamples }));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, ov, turn, records } = stripWorld({ cfg: { verdictTurns: 50 } });
+    const { turn: endTurn } = await runOut(turn);
+    // The live walk-back, and the one the exclusion allows by design: the turn
+    // ENDS on a patch tile, whatever the goto's stated destination was.
+    w.pos = { map: 35, x: 4, y: 24 };
+    await turn(endTurn + 1);
+    const v = records().filter(r => r.ev === "verdict");
+    chk("F3 standing in the patch again settles it as NOT an escape",
+      v.length === 1 && v[0].reason === "reentered" && v[0].escaped === false &&
+      v[0].reentered === true && v[0].at.x === 4 && v[0].at.y === 24 && v[0].reenteredSeq > 0,
+      JSON.stringify(v[0] && { reason: v[0].reason, escaped: v[0].escaped, at: v[0].at }));
+    await turn(endTurn + 2);
+    chk("F3b one verdict per fire, not one per turn spent in the patch",
+      records().filter(r => r.ev === "verdict").length === 1 && ov.watching() !== null);
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, records } = stripWorld({ cfg: { verdictTurns: 8 } });
+    const { turn: endTurn } = await runOut(turn);
+    w.pos = { map: 36, x: 3, y: 3 };                      // the shuttle: off to Route 25
+    for (let t = endTurn + 1; t <= endTurn + 3; t++) await turn(t);
+    const mid = records().filter(r => r.ev === "verdict");
+    w.pos = { map: 35, x: 5, y: 22 };                     // ...and back to the strip
+    await turn(endTurn + 4);
+    const v = records().filter(r => r.ev === "verdict");
+    chk("F4 a shuttle off the map is not an escape: coming back is still re-entry",
+      mid.length === 0 && v.length === 1 && v[0].reason === "reentered" &&
+      v[0].escaped === false && v[0].offMapSamples === 3,
+      JSON.stringify(v[0] && { off: v[0].offMapSamples, reason: v[0].reason }));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, records, gate } = stripWorld({ cfg: { verdictTurns: 5 } });
+    const { turn: endTurn } = await runOut(turn);
+    gate.refuse(endTurn + 1, 35, 5, 24, "map35");
+    gate.refuse(endTurn + 1, 35, 4, 24, "map35");
+    for (let t = endTurn + 1; t <= endTurn + 7; t++) await turn(t);
+    const v = records().find(r => r.ev === "verdict");
+    chk("F5 the verdict carries what the wq#1828 exclusion did beside its own answer",
+      !!v && v.exclusionFires === 2 && v.escaped === true,
+      JSON.stringify(v && { fires: v.exclusionFires, escaped: v.escaped }));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, ov, turn, records } = stripWorld({ cfg: { verdictTurns: 0 } });
+    const { turn: endTurn } = await runOut(turn);
+    for (let t = endTurn + 1; t <= endTurn + 7; t++) await turn(t);
+    const end = records().find(r => r.ev === "end");
+    chk("F6 LPP_EXPLORE_VERDICT_TURNS=0 is a full revert to the wq#1731 record",
+      !!end && end.provisional === false && end.watch === null && ov.watching() === null &&
+      !records().some(r => r.ev === "verdict"));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, ov, turn, records } = stripWorld({ enclosed: true, cfg: { verdictTurns: 50 } });
+    for (let t = 1; t <= 40; t++) await turn(t);
+    const end = records().find(r => r.ev === "end");
+    chk("F7 a run that never escaped is judged by nothing — there is no escape to watch",
+      !!end && end.escaped === false && end.provisional === false && ov.watching() === null);
+    try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, records } = stripWorld({ cfg: { verdictTurns: 50 } });
+    const { turn: endTurn } = await runOut(turn);
+    const cfg = { ...CFG, verdictTurns: 50 };
+    const again = new ExplorationOverride({ map: w.g, pos: () => w.pos, step: async () => "moved",
+      hop: async () => "moved", samples: () => w.samples, blocked: () => null, logFile: w.log, cfg });
+    chk("F8 a restarted agent recovers the watch (turn counters reset, seq does not)",
+      (again.watching()?.tiles ?? 0) === 22 && again.watching()!.map === 35 &&
+      again.watching()!.untilSeq === records().find(r => r.ev === "end")!.watch.untilSeq,
+      String(again.watching()?.untilSeq));
+    w.pos = { map: 35, x: 4, y: 24 };
+    await again.tick(1);                                   // turn 1 of the new process
+    const v = records().filter(r => r.ev === "verdict");
+    chk("F8b and settles it, so a restart mid-window cannot launder an escape",
+      v.length === 1 && v[0].escaped === false && v[0].reason === "reentered");
+    chk("F8c once the verdict is logged there is nothing left to recover",
+      recoverWatch(w.log, w.samples[w.samples.length - 1].seq) === null);
+    for (let t = endTurn + 1; t <= endTurn + 3; t++) await turn(t);
+    chk("F8d and the original instance does not write a second one for the same fire",
+      records().filter(r => r.ev === "verdict").length <= 2, String(records().filter(r => r.ev === "verdict").length));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, records } = stripWorld({ cfg: { windowTurns: 10, verdictTurns: 500 } });
+    const { turn: endTurn } = await runOut(turn, 60);
+    // Parked off the strip, the samples become a tight pace: the rung fires
+    // again while the first escape is still being judged.
+    for (let t = endTurn + 1; t <= endTurn + 40; t++) await turn(t);
+    const v = records().filter(r => r.ev === "verdict");
+    chk("F9 a second fire settles the first escape instead of watching two at once",
+      records().filter(r => r.ev === "fire").length >= 2 && v.length === 1 &&
+      v[0].reason === "superseded",
+      JSON.stringify({ fires: records().filter(r => r.ev === "fire").length, v: v.map(x => x.reason) }));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
   }
 
   try { unlinkSync(process.env.LPP_OVERRIDE_LOG!); } catch {}

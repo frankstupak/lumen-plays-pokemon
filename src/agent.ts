@@ -253,6 +253,9 @@ export class Agent {
       // wq#1828: every historical fire read `escaped: true, mapChanged: false` —
       // the escape worked and the brain walked back. Now it is refused.
       exclude: e => this.exclusion.set(e),
+      // wq#1746: the verdict record carries what the ban did beside whether the
+      // escape held, so one line answers both.
+      exclusionFires: () => this.exclusion.peek()?.fires ?? 0,
       bus,
       logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
       cfg: CFG.explore,

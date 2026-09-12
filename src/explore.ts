@@ -40,6 +40,30 @@
 //   directions and could drop an incident's ticketId. Fires go to the sibling
 //   runtime/stuck_escalation_overrides.jsonl, append-only, plus an
 //   `exploration_override` bus event.
+//
+// wq#1746: `escaped` WAS NOT A MEASUREMENT OF ESCAPING
+//   All nine live fires (2026-09-10 21:00Z - 09-11 01:19Z) logged escaped=true
+//   and the Route 24 cycle did not break, because `escaped` only ever saw the
+//   run's own walk. The nav traces say what it missed: the FIRST brain action
+//   after each end is a goto straight back into the patch — end at (15,4), then
+//   steps (15,5),(15,6),(15,7)... inside 18 seconds; end at (4,4), then
+//   (4,5),(4,6),(4,8)... The brain was not being perverse, it was following the
+//   pinned supervisor directive (FIGHT_LOSS_LOOP@3, written 2026-08-29, lifted
+//   only by story advance, still live 13 days later): "use goto() to WALK into
+//   the tall grass to trigger wild battles".
+//
+//   So an end record now says `provisional`, and a `verdict` record settles it
+//   `verdictTurns` novelty samples later from the only thing that decides it:
+//   whether the player stood in that patch again. Seq, not turn, because the
+//   agent's turn counter resets on every process restart (~2h live, shorter
+//   than one verdict window) and seq does not — the watch is recovered from the
+//   log on boot for the same reason the flush floor is.
+//
+//   This is the measurement half of wq#1828's exclusion (src/exclusion.ts): the
+//   exclusion refuses the walk-back as a DESTINATION, by design leaving a walk
+//   THROUGH the patch legal, so "did the escape hold" is a question only
+//   position sampling can answer. The verdict counts the exclusion's refusals
+//   beside its own answer, which is what makes the next live run decidable.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "fs";
 import { dirname } from "path";
 import { deltaP, tileKey, type ProgressSample } from "./novelty";
@@ -60,6 +84,7 @@ export interface ExploreCfg {
   patchRadius: number;   // Chebyshev radius of that patch, in tiles
   patchNew: number;      // new tiles INSIDE the patch the verdict tolerates
   excludeTurns: number;  // turns the escaped patch is refused as a goto target (0 = off)
+  verdictTurns: number;  // wq#1746: novelty samples an escape is watched for (0 = off)
 }
 
 /** The fixed escape the design falls back to when no target is reachable:
@@ -285,6 +310,46 @@ export function appendOverrideLog(file: string, rec: object): void {
   } catch { /* bookkeeping never breaks a turn */ }
 }
 
+/** wq#1746: an escape under watch — the patch it left, and until when. */
+export interface Watch {
+  fire: number;
+  map: number;
+  keys: Set<string>;        // "x,y" of the patch on `map`
+  tiles: number;
+  fromSeq: number;
+  untilSeq: number;
+  reenteredSeq: number;     // 0 until the player stands in the patch again
+  offMapSamples: number;    // samples of the watch spent on another map
+  exFires: number;          // most refusals wq#1828's exclusion had issued
+  written: boolean;
+}
+
+/** The watch in flight when the process died, or null.
+ *
+ *  Newest-first, the first record that is either a `verdict` or an `end`
+ *  carrying a watch decides: a verdict means the newest escape is already
+ *  settled, an end means it is not. Fire numbers restart at 1 with every
+ *  process, so they cannot be matched across a restart — position can. */
+export function recoverWatch(file: string, seq: number): Watch | null {
+  for (const f of [file, `${file}.1`]) {
+    let lines: string[];
+    try { lines = readFileSync(f, "utf8").trim().split("\n").reverse(); } catch { continue; }
+    for (const l of lines) {
+      let r: any;
+      try { r = JSON.parse(l); } catch { continue; }
+      if (!r || (r.ev !== "verdict" && r.ev !== "end")) continue;
+      if (r.ev === "verdict" || !r.watch || !Array.isArray(r.watch.keys)) return null;
+      if (!(r.watch.untilSeq > seq)) return null;
+      return {
+        fire: r.fire ?? 0, map: r.watch.map, keys: new Set<string>(r.watch.keys),
+        tiles: r.watch.keys.length, fromSeq: r.watch.fromSeq ?? seq,
+        untilSeq: r.watch.untilSeq, reenteredSeq: 0, offMapSamples: 0, exFires: 0, written: false,
+      };
+    }
+  }
+  return null;
+}
+
 /** Highest flushSeq recorded by an `end` line, newest generation first. */
 export function recoverFlushSeq(file: string): number {
   for (const f of [file, `${file}.1`]) {
@@ -316,6 +381,10 @@ export interface OverrideDeps {
   /** wq#1828: called once per END with the patch this run escaped, so goto can
    *  refuse it as a destination until it expires (src/exclusion.ts). */
   exclude?(e: { tiles: string[]; map: number; turn: number; turns: number; fromFire: number }): void;
+  /** wq#1746: the live exclusion's refusal count, read (never mutated) when a
+   *  verdict is written, so one record says both what the ban did and whether
+   *  the escape held. Absent = no exclusion gate wired (probes, run_agent). */
+  exclusionFires?(): number;
   bus?: { emit(kind: any, data: object): void };
   logFile: string;
   cfg: ExploreCfg;
@@ -346,13 +415,23 @@ export class ExplorationOverride {
   private run: Run | null = null;
   private flushSeq: number;
   private fires = 0;
+  private watch: Watch | null = null;
 
   constructor(private d: OverrideDeps) {
     this.flushSeq = recoverFlushSeq(d.logFile);
+    try { this.watch = recoverWatch(d.logFile, this.lastSeq()); } catch { this.watch = null; }
   }
 
   active(): boolean { return this.run !== null; }
   floor(): number { return this.flushSeq; }
+  /** wq#1746: the escape currently being judged, or null. */
+  watching(): Watch | null { return this.watch; }
+
+  /** Newest novelty seq, or the flush floor before any sample exists. */
+  private lastSeq(): number {
+    const s = this.d.samples();
+    return s && s.length ? s[s.length - 1].seq : this.flushSeq;
+  }
 
   /** One ladder rung. A string = the harness acted this turn, skip the brain.
    *  null = not ours this turn (off, not stalled, battle, dialog, map loading). */
@@ -364,6 +443,7 @@ export class ExplorationOverride {
       return null;
     }
     if (this.d.blocked() || this.d.map.loadPending()) return null;
+    this.settleWatch();     // overworld only: it reads where the player stands
     if (!this.run) {
       const v = assessStall(this.d.samples(), this.flushSeq, cfg);
       if (!v.stalled) return null;
@@ -373,8 +453,65 @@ export class ExplorationOverride {
     return this.advance();
   }
 
+  /** wq#1746: is the escape still an escape? Called once per overworld turn.
+   *  The first re-entry settles it; so does running out of window. Standing in
+   *  the patch is the whole test — wq#1828's exclusion refuses it as a goto
+   *  DESTINATION and leaves walking through it legal, so a turn that ends there
+   *  is exactly what neither the end record nor the exclusion can see. */
+  private settleWatch(): void {
+    const w = this.watch;
+    if (!w) return;
+    const seq = this.lastSeq();
+    // Sampled, not read once at the end: an exclusion that has already lifted
+    // (expiry, map change, fire cap) is gone from the gate, and reading it then
+    // would report the refusals it made as zero.
+    w.exFires = Math.max(w.exFires, this.exclusionFires());
+    if (!w.reenteredSeq) {
+      const p = this.d.pos();
+      if (p.map !== w.map) w.offMapSamples++;
+      else if (w.keys.has(`${p.x},${p.y}`)) {
+        w.reenteredSeq = seq;
+        this.writeVerdict(w, "reentered");
+      }
+    }
+    if (seq > w.untilSeq) {
+      this.writeVerdict(w, "held");
+      this.watch = null;
+    }
+  }
+
+  /** One record per watched escape, at the first of re-entry / expiry /
+   *  supersession. THIS is the escape metric; the end record's `escaped` is the
+   *  run's own walk and cannot see what the brain does with the turn back. */
+  private writeVerdict(w: Watch, reason: "reentered" | "held" | "superseded"): void {
+    if (w.written) return;
+    w.written = true;
+    const seq = this.lastSeq();
+    let at: Tile | null = null;
+    try { at = this.d.pos(); } catch { at = null; }
+    w.exFires = Math.max(w.exFires, this.exclusionFires());
+    const rec = {
+      v: 1, ev: "verdict", fire: w.fire, reason, ts: Date.now(), iso: new Date().toISOString(),
+      map: w.map, tiles: w.tiles, at, seq, fromSeq: w.fromSeq, untilSeq: w.untilSeq,
+      heldSamples: seq - w.fromSeq, verdictTurns: this.d.cfg.verdictTurns,
+      offMapSamples: w.offMapSamples, reentered: w.reenteredSeq > 0,
+      reenteredSeq: w.reenteredSeq, exclusionFires: w.exFires,
+      escaped: w.reenteredSeq === 0,
+    };
+    appendOverrideLog(this.d.logFile, rec);
+    this.d.bus?.emit("exploration_override", { stage: "verdict", ...rec });
+  }
+
+  /** Refusals wq#1828's exclusion has issued, or 0 when none is wired. */
+  private exclusionFires(): number {
+    try { return this.d.exclusionFires?.() ?? 0; } catch { return 0; }
+  }
+
   private start(turn: number, v: StallVerdict): void {
     const cfg = this.d.cfg;
+    // A fresh stall while an escape is still being judged means the escape did
+    // not buy progress; settle it now rather than watch two at once.
+    if (this.watch) { this.writeVerdict(this.watch, "superseded"); this.watch = null; }
     this.d.map.build();
     const p = this.d.pos();
     const footprintHere = v.tiles.filter(t => t.map === p.map).map(t => ({ x: t.x, y: t.y }));
@@ -486,6 +623,25 @@ export class ExplorationOverride {
     return line;
   }
 
+  /** wq#1746: start judging the escape. The patch is the stall window's tiles
+   *  on the map the run started from — the same set wq#1828 excludes, so one
+   *  verdict covers both the harness's walk and the ban that followed it.
+   *  Nothing is watched if the run ended standing in the patch: there is no
+   *  re-entry to detect when it never left. */
+  private startWatch(run: Run, at: Tile, lastSeq: number):
+      { map: number; keys: string[]; fromSeq: number; untilSeq: number } | null {
+    const cfg = this.d.cfg;
+    if (cfg.verdictTurns <= 0 || !run.footprintHere.length) return null;
+    const keys = new Set(run.footprintHere.map(t => `${t.x},${t.y}`));
+    if (at.map === run.map && keys.has(`${at.x},${at.y}`)) return null;
+    this.watch = {
+      fire: run.fire, map: run.map, keys, tiles: keys.size, fromSeq: lastSeq,
+      untilSeq: lastSeq + cfg.verdictTurns, reenteredSeq: 0, offMapSamples: 0, exFires: 0,
+      written: false,
+    };
+    return { map: run.map, keys: [...keys], fromSeq: lastSeq, untilSeq: this.watch.untilSeq };
+  }
+
   /** Close the run: log the outcome, raise the sample floor, hand back. */
   private finish(reason: string, lastLine: string | null): string {
     const run = this.run!;
@@ -510,12 +666,16 @@ export class ExplorationOverride {
                            turns: cfg.excludeTurns, fromFire: run.fire });
       } catch { /* bookkeeping never breaks a turn */ }
     }
+    // wq#1746: and the escape is only an escape if the brain stays out. Watch
+    // the patch for verdictTurns samples and settle `escaped` from that.
+    const watch = escaped ? this.startWatch(run, at, lastSeq) : null;
     const rec = {
       v: 1, ev: "end", fire: run.fire, reason, ts: Date.now(), iso: new Date().toISOString(),
       from: run.from, at, stepsTaken: cfg.stepsK - run.stepsLeft, k: cfg.stepsK,
       mode: run.mode, target: run.target, executed: run.executed,
       distinctTiles: run.walked.size, newGround, mapChanged, escaped,
       excludeTiles: excludeUntil === null ? 0 : run.excludeTiles.length, excludeUntil,
+      provisional: watch !== null, watch,
       flushSeq: this.flushSeq,
     };
     appendOverrideLog(this.d.logFile, rec);
