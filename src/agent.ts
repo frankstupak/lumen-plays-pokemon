@@ -742,8 +742,9 @@ export class Agent {
           // wq#1828: the patch the exploration override just escaped is not a
           // destination for the next excludeTurns turns. Movement only — the
           // route may still cross it, so an escape cannot seal the map.
+          // wq#1839: counted in novelty seq, which survives a restart.
           {
-            const ex = this.exclusion.refuse(this.turn, st0.map, tx, ty,
+            const ex = this.exclusion.refuse(this.novelty.lastSeq(), st0.map, tx, ty,
               this.mapLabel(st0.map) ?? `map${st0.map}`);
             if (ex) return `goto: ${ex}`;
           }
@@ -1643,8 +1644,9 @@ export class Agent {
     try {
       const s = this.novelty.observe(this.turn, after);
       // wq#1828: the same sample decides whether the exclusion still holds —
-      // new ground inside the patch means it was not dead after all.
-      this.exclusion.observe(this.turn, s.map, s.x, s.y, s.newTiles);
+      // new ground inside the patch means it was not dead after all — and
+      // wq#1839: ages it, in the sample's own seq rather than in `this.turn`.
+      this.exclusion.observe(s.seq, s.map, s.x, s.y, s.newTiles);
     } catch { /* observe-only */ }
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;

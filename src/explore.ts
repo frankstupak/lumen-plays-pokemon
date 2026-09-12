@@ -380,7 +380,7 @@ export interface OverrideDeps {
   onFire?(): void;
   /** wq#1828: called once per END with the patch this run escaped, so goto can
    *  refuse it as a destination until it expires (src/exclusion.ts). */
-  exclude?(e: { tiles: string[]; map: number; turn: number; turns: number; fromFire: number }): void;
+  exclude?(e: { tiles: string[]; map: number; seq: number; turns: number; fromFire: number }): void;
   /** wq#1746: the live exclusion's refusal count, read (never mutated) when a
    *  verdict is written, so one record says both what the ban did and whether
    *  the escape held. Absent = no exclusion gate wired (probes, run_agent). */
@@ -656,13 +656,19 @@ export class ExplorationOverride {
     // wq#1828: the escape only holds if the brain does not walk back. Hand the
     // patch to the exclusion gate BEFORE the turn is handed back, so the very
     // next goto is already refused.
-    // A run that ended on another map needs no exclusion: goto is same-map only
-    // (crossMapRefusal in agent.ts), and a map change lifts it anyway.
-    const excludeUntil = cfg.excludeTurns > 0 && !mapChanged && run.excludeTiles.length
-      ? run.turn + cfg.excludeTurns : null;
-    if (excludeUntil !== null) {
+    // A run that ended on another map still writes none. Under wq#1839 such a
+    // ban would be legal (it would simply start out suspended), but no measured
+    // fire needs it: all nine historical fires read `mapChanged: false`, and the
+    // walk-back this refuses is the same-map one. Banning a patch the run left
+    // through a warp is a wider policy than the evidence asks for.
+    // wq#1839: the ban's budget is novelty seq, not `run.turn` — turn counters
+    // restart at 1 with the process and a recovered turn-keyed ban re-served
+    // its whole span (src/exclusion.ts header).
+    const excludeUntilSeq = cfg.excludeTurns > 0 && !mapChanged && run.excludeTiles.length
+      ? lastSeq + cfg.excludeTurns : null;
+    if (excludeUntilSeq !== null) {
       try {
-        this.d.exclude?.({ tiles: run.excludeTiles, map: run.map, turn: run.turn,
+        this.d.exclude?.({ tiles: run.excludeTiles, map: run.map, seq: lastSeq,
                            turns: cfg.excludeTurns, fromFire: run.fire });
       } catch { /* bookkeeping never breaks a turn */ }
     }
@@ -674,7 +680,7 @@ export class ExplorationOverride {
       from: run.from, at, stepsTaken: cfg.stepsK - run.stepsLeft, k: cfg.stepsK,
       mode: run.mode, target: run.target, executed: run.executed,
       distinctTiles: run.walked.size, newGround, mapChanged, escaped,
-      excludeTiles: excludeUntil === null ? 0 : run.excludeTiles.length, excludeUntil,
+      excludeTiles: excludeUntilSeq === null ? 0 : run.excludeTiles.length, excludeUntilSeq,
       provisional: watch !== null, watch,
       flushSeq: this.flushSeq,
     };
@@ -685,9 +691,10 @@ export class ExplorationOverride {
       `${rec.stepsTaken} steps, ${newGround} tiles outside the stalled patch` +
       `${mapChanged ? ", left the map" : ""}. You were pacing the same ground with no progress; ` +
       `do not walk back to it.` +
-      (excludeUntil === null ? "" :
-        ` goto() into those ${run.excludeTiles.length} tiles is REFUSED until turn ${excludeUntil} ` +
-        `(walking through them is still fine).`);
+      (excludeUntilSeq === null ? "" :
+        ` goto() into those ${run.excludeTiles.length} tiles is REFUSED for the next ` +
+        `${cfg.excludeTurns} turns (walking through them is still fine; leaving the map ` +
+        `only pauses it).`);
     return lastLine ? `${lastLine}\n${summary}` : summary;
   }
 }

@@ -239,9 +239,13 @@ function stubBrain(): Promise<number> {
   // The stub brain does nothing BUT pace the strip, so the turns after the end
   // are the walk-back this exclusion exists to refuse.
   const refusals = perTurn.filter(p => p.turn > endAt && /EXPLORATION EXCLUSION/.test(p.line));
+  // wq#1839: the expiry is a novelty seq, not a turn — turn counters restart at
+  // 1 with the process, and this file outlives the process by design.
   chk("R9 the escaped patch is persisted with its expiry", !!exAtEnd && exAtEnd.map === 35 &&
-    exAtEnd.tiles.length > 0 && exAtEnd.untilTurn === endAt + CFG.explore.excludeTurns,
-    JSON.stringify(exAtEnd && { tiles: exAtEnd.tiles.length, until: exAtEnd.untilTurn, endAt }));
+    exAtEnd.tiles.length > 0 && exAtEnd.v === 2 &&
+    exAtEnd.untilSeq === exAtEnd.fromSeq + CFG.explore.excludeTurns,
+    JSON.stringify(exAtEnd && { tiles: exAtEnd.tiles.length, from: exAtEnd.fromSeq,
+      until: exAtEnd.untilSeq, endAt }));
   chk("R10 the brain's goto back into it is refused, by name", refusals.length > 0,
     refusals[0]?.line.slice(0, 120) ?? "no refusal in the turns after the end");
   // wq#1746: and the escape is judged by where the brain actually stood, which

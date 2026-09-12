@@ -243,6 +243,9 @@ export class NoveltyTracker {
 
   uniqueTiles(): number { return this.tiles.size; }
   recent(): ProgressSample[] { return this.samples.slice(); }
+  /** The newest sample's seq — monotonic across restarts, unlike Agent.turn, so
+   *  it is what any budget that must survive one counts in (wq#1839). */
+  lastSeq(): number { return this.seq; }
   delta(windowTurns = this.window): DeltaP { return deltaP(this.samples, windowTurns); }
 
   /** Record one turn. Returns the sample; emits a `progress` event carrying the

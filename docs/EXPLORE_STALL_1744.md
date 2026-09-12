@@ -109,6 +109,7 @@ Persist it instead:
 - On `end`, write the footprint to `runtime/explore_exclusion.json` as
   `{ tiles: string[], untilTurn: number, fromFire: n }` with
   `untilTurn = turn + exclusionTurns` (start: 60, i.e. `LPP_EXPLORE_EXCLUDE_TURNS`).
+  *(The budget is a novelty seq, not a turn, since wq#1839 — see below.)*
 - While an exclusion is live, `goto` refuses a target whose tileKey is in
   `tiles` with a message naming the reason and the turn it expires — the same
   refusal shape wq#1181's loss ledger already uses, so the brain gets a
@@ -119,7 +120,8 @@ Persist it instead:
   bricks the run.
 - Expire on `untilTurn`, on a map change, or on any new tile inside the
   patch (the patch stopped being dead ground — clear it and let the brain
-  back in).
+  back in). *(A map change suspends rather than expires it since wq#1839 —
+  see below.)*
 
 Escape hatch: `LPP_EXPLORE_EXCLUDE_TURNS=0` is a full revert, matching the
 `LPP_EXPLORE_OVERRIDE=0` convention.
@@ -167,6 +169,46 @@ turns still END on patch tiles. That is the deliberate trade from the design
 above — the alternative bricks a run whose only corridor crosses the patch. What
 the refusal buys is that the patch can no longer be the *goal*, and the brain is
 told why in a sentence it can plan against.
+
+## Amended (wq#1839): the ban has to outlive the excursion and the restart
+
+Two holes in the wq#1828 exclusion, both found while building the wq#1746
+verdict (ISSUE-LOG 348) and both decided on the measurements already in this
+document.
+
+**A map change now SUSPENDS the ban; it no longer lifts it.** The stall this
+whole document is about *is* a shuttle: map35 holds 398 of 512 samples, and the
+pops to Route 25 / Bill's / Cerulean vetoed 259 of the 363 stall windows
+(§ root cause, above). Lifting on the first off-map sample therefore cancelled
+the ban on exactly the excursion it exists to survive — the agent hops to
+Route 25 for three turns, comes back, and the patch is a legal destination
+again. Off `map` the ban enforces nothing anyway (`goto` is same-map, and every
+key names that map), so it sleeps: `ExclusionGate.live()` returns null while
+off-map without touching the record, and the walk back wakes it with the same
+budget it had. Nothing sleeps forever — the budget runs in samples wherever the
+agent stands, so an excursion longer than the ban expires it off-map
+(`probe_explore1731` E5..E5d).
+
+**The budget is novelty seq, not an agent turn.** `untilTurn` was persisted to
+`runtime/explore_exclusion.json` while `Agent.turn` restarts at 1 on every
+process start, and the live unit restarts roughly every 2h — shorter than a
+60-turn ban. The three generations in
+`runtime/stuck_escalation_overrides.jsonl` fire at turns 1/184/364, then
+101/280/459, then 83/266/445; a ban recovered into any of those served its
+whole span again, bounded only by `EXCLUSION_MAX_FIRES` and the map-change lift
+that this same change removes. `seq` is monotonic across runs (novelty.ts:86),
+which is why the flush floor and the wq#1746 watch already key off it, so the
+record now carries `{ fromSeq, untilSeq }` and a recovered ban holds only what
+is left of it (E12). Two corollaries fall out: a `v: 1` (turn-keyed) file is
+dropped rather than reinterpreted, and a `seq` that went *backwards* — the
+progress store restored from a checkpoint — lifts the ban instead of holding an
+unknown span (E12c, E13).
+
+Unchanged: destination-only (walking through stays legal, for the reason under
+"Limitation, by design"), the 10-refusal cap, the new-ground-inside lift, and
+`LPP_EXPLORE_EXCLUDE_TURNS=0` as a full revert. A run that ends on another map
+still writes no exclusion at all: such a ban would now be legal, but all nine
+historical fires read `mapChanged: false` and no measurement asks for it.
 
 ## What this deliberately does not fix
 
