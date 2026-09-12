@@ -135,6 +135,18 @@ ended. New entries also carry an `episode` number, forensic only: the budget is
 scoped by the episode's start *timestamp*, because entries written before this
 shipped carry no episode number at all.
 
+The heartbeat is what the boundary is measured against, so stopping
+`lumen-lpp-stuck-supervisor.timer` for more than one gap (24h) and restarting it
+mid-freeze starts a new episode on a stall that never ended, and refunds K once.
+That is the intended reading rather than a hole to plug: nothing was intervening
+for those 24h either, so the budget on the other side is a budget for a stall
+nobody has tried anything against yet. The same logic covers a log rolled back
+or hand-edited — `log["keys"]` is the liveness record, and a key missing from it
+falls back to what its attempt timestamps alone can prove (see
+`_attempt_cluster_start`), which is how the 25-day-old `FIGHT_LOSS_LOOP@65`
+budget refunds on the first tick after this ships — the live log predates the
+`keys` block, so that key has no heartbeat to contradict its timestamps.
+
 Probe: `python3 tools/test_stuck1846.py` — 7 sections, A-G, holding both shapes
 at once: the 25-day-old spent key refunds (once, then re-exhausts at K), and the
 0.96h/2h re-freeze on a live key does not.
