@@ -19,7 +19,9 @@ names while frontier.json's next milestone, Route 5, lay south.
 The fix is not a better pin for that mode. It is that the mode cannot be true:
 src/ledger.ts's fight ledger holds a WIN on map65 at a lower badge count than the
 player now holds. Sections A-D pin the classifier, E-F the anchor, G-I the
-prescription that replaces it.
+prescription that replaces it, and J (wq#1872) the case none of them reach: a
+window spanning TWO towns, where the gym already beaten and the gym the run is
+stalled at are different gyms.
 """
 import json, os, re, sys
 
@@ -192,6 +194,57 @@ ok("I3: labelled EXHAUSTED, not attempt 3/3", "EXHAUSTED after 3/3" in tpin, tpi
 ok("I4: every other mode's terminal pin still formats",
    all(I._terminal_directive(t, m, 3, f"{m}@3", 3, NOW, STATE)["notepadPin"]
        for m, t in I.PRESCRIPTIONS.items() if t))
+
+# ── J. two towns in one window ───────────────────────────────────────────────
+print("\n-- J. a cleared gym in ANOTHER town does not clear this one --")
+# wq#1872. Every window above lives in one town, so the town fallback in
+# _drift_diagnosis could match "any town anywhere in the 64-warp window" and
+# still ship green. A window that spans the town just cleared and the town the
+# run has moved on to is the case that tells them apart: the run holds the
+# Cascade Badge (Cerulean, map65) and is now stalled at the UNBEATEN Vermilion
+# Gym, with a handful of stale Cerulean warps still in scope. There is a real
+# fight-readiness gate refusing entry here — map92's badge is not won.
+TWO_TOWN = ([3, 64, 3, 64, 3, 3, 64, 3] +
+            [5, 89, 5, 89, 5, 5, 89, 5, 5, 89, 5, 89, 5, 5, 89, 5, 5, 89, 5, 89, 5, 5, 89, 5])
+ok("J0: the slice really spans two towns and holds no gym warp",
+   {M.town_of(M.map_label(m, NAMES)) for m in TWO_TOWN} == {"cerulean", "vermilion"}
+   and not [m for m in TWO_TOWN if M.is_gym(m, NAMES)], TWO_TOWN)
+mode, ev, loc = M.classify_mode(TWO_TOWN, [], NAMES, cleared=CLEARED, badges=BADGES,
+                                next_milestone="Route 11")
+ok("J1: the unbeaten gym's stall keeps its readiness diagnosis",
+   mode == "FIGHT_LOSS_LOOP", f"got {mode}: {ev}")
+ok("J2: anchored on the town it is actually stalled in", loc == 5, f"got {loc}")
+vpin = I.decide(state=dict(STATE, mode=mode, modeLocation=loc, map=5,
+                           nextMilestone="Route 11", closedOffTurns=0),
+                log={"v": 1, "attempts": []}, now_ms=NOW)["directive"]["notepadPin"]
+ok("J3: so no pin tells the run the Thunder Badge is already won",
+   "ALREADY BEATEN" not in vpin, vpin)
+# The true positive the fallback exists for must survive: same window, and the
+# gym the loop orbits is the one whose badge IS won.
+vermilion_cleared = M.cleared_gyms([dict(WIN65, map=92)], BADGES, NAMES)
+ok("J4: the cleared gym in THIS town still reads as drift",
+   M.classify_mode(TWO_TOWN, [], NAMES, cleared=vermilion_cleared,
+                   badges=BADGES)[0::2] == ("OBJECTIVE_DRIFT", 5),
+   M.classify_mode(TWO_TOWN, [], NAMES, cleared=vermilion_cleared, badges=BADGES))
+# And so must the wq#1867 shape when the stale warps point the other way: the
+# loop is in Cerulean, the strays are from Vermilion.
+STRAY = [5, 89] + LIVE_WARPS[-M.WARP_OSC_WINDOW:]
+ok("J5: stale warps from a town the run has left do not block the real drift",
+   M.classify_mode(STRAY, [], NAMES, cleared=CLEARED, badges=BADGES)[0::2]
+   == ("OBJECTIVE_DRIFT", 3),
+   M.classify_mode(STRAY, [], NAMES, cleared=CLEARED, badges=BADGES))
+# The invariant behind all five: a drift verdict names one town twice — the hub
+# it anchors on and the gym its evidence calls already-won — so they must be the
+# same town, or the pin is asserting a badge the run does not hold.
+for label, warps, cl in (("live", LIVE_WARPS, CLEARED), ("tight", tight, CLEARED),
+                         ("two-town", TWO_TOWN, vermilion_cleared),
+                         ("stray", STRAY, CLEARED)):
+    m, e, l = M.classify_mode(warps, [], NAMES, cleared=cl, badges=BADGES)
+    if m != "OBJECTIVE_DRIFT":
+        continue
+    hub_town = M.town_of(M.map_label(l, NAMES))
+    ok(f"J6 ({label}): anchor town and won-badge town agree",
+       any(M.town_of(lbl) == hub_town and lbl in e for lbl in cl.values()), f"{e} @{l}")
 
 print(f"\n{PASS}/{PASS + FAIL} passed")
 sys.exit(1 if FAIL else 0)

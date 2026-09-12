@@ -630,14 +630,24 @@ def _drift_diagnosis(window, names, cleared, badges, next_milestone):
     """
     if not window or not cleared:
         return None
-    towns = {town_of(map_label(m, names)) for m in window}
+    cities = [m for m in window if map_label(m, names).lower().endswith(("city", "town"))]
+    hub = Counter(cities).most_common(1)[0][0] if cities else window[-1]
+    # wq#1872: the town fallback is anchored to the HUB's town, not to any town
+    # appearing anywhere in the window. A 64-warp window routinely spans two
+    # towns — the one just cleared and the one the run has moved on to — and
+    # matching "somewhere in the window" let a stale warp from the cleared town
+    # convert a genuine readiness-gate stall at the NEXT, unbeaten gym into
+    # "that gym is already beaten". That is the inverse of the wq#1867 failure
+    # (false all-clear instead of false grind order) and just as wrong: the pin
+    # named the hub's town while the ledger evidence came from another one.
+    # Only the gym standing IN the town the loop collapsed onto can be the gym
+    # this loop is orbiting.
+    hub_town = town_of(map_label(hub, names))
     hit = ([m for m in window if m in cleared] or
-           [m for m in sorted(cleared) if town_of(cleared[m]) in towns])
+           [m for m in sorted(cleared) if hub_town and town_of(cleared[m]) == hub_town])
     if not hit:
         return None
     gym_id = hit[0]
-    cities = [m for m in window if map_label(m, names).lower().endswith(("city", "town"))]
-    hub = Counter(cities).most_common(1)[0][0] if cities else window[-1]
     goal = (f"the next milestone the frontier engine names ({next_milestone})"
             if next_milestone else "the goal its own ROUTE line names")
     return "OBJECTIVE_DRIFT", (
