@@ -63,11 +63,11 @@ def main(argv=None):
         decision = I.decide(state=state, log=log)
         if not args.dry_run:
             I.save_log(log)
-            if decision.get("intervened"):
-                tmp = I.DIRECTIVE_PATH + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(decision["directive"], f, indent=1)
-                os.replace(tmp, I.DIRECTIVE_PATH)
+            # wq#1845: persist whenever decide() produced a directive at all —
+            # the intervening path AND the exhausted one. See
+            # I.persist_directive for the 246h this predicate cost.
+            if decision.get("directive"):
+                I.persist_directive(decision["directive"])
         out["intervention"] = {k: decision.get(k) for k in ("intervened", "mode", "attempt", "k", "exhausted")}
 
         escal = F.load_state()
