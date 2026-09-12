@@ -21,7 +21,9 @@ src/ledger.ts's fight ledger holds a WIN on map65 at a lower badge count than th
 player now holds. Sections A-D pin the classifier, E-F the anchor, G-I the
 prescription that replaces it, and J (wq#1872) the case none of them reach: a
 window spanning TWO towns, where the gym already beaten and the gym the run is
-stalled at are different gyms.
+stalled at are different gyms. K (wq#1874) holds that window to the harder
+ratio — the town just left still owning most of the warps, which is what the
+ordinary "arrived and was gated on the spot" stall looks like.
 """
 import json, os, re, sys
 
@@ -245,6 +247,60 @@ for label, warps, cl in (("live", LIVE_WARPS, CLEARED), ("tight", tight, CLEARED
     hub_town = M.town_of(M.map_label(l, NAMES))
     ok(f"J6 ({label}): anchor town and won-badge town agree",
        any(M.town_of(lbl) == hub_town and lbl in e for lbl in cl.values()), f"{e} @{l}")
+
+# ── K. which of the two towns, when the counts point the other way ───────────
+print("\n-- K. the town the run is in NOW, not the town it warped most --")
+# wq#1874. Section J spans two towns only in the direction the majority vote
+# happens to get right: 24 Vermilion warps against 8 Cerulean. The ordinary
+# shape of a stall is the opposite one — the run ARRIVES somewhere and is gated
+# on the spot, so the town it just left still owns most of the window. Same
+# ledger as A (Cascade Badge won, Cerulean map65 cleared), same real readiness
+# gate at the unbeaten Vermilion Gym; only the ratio is flipped.
+ARRIVED = [3, 64, 3, 64, 3, 64, 3, 64, 3] + [5, 89, 5, 89, 5]
+ok("K0: the cleared town really does outnumber the stalled one",
+   ARRIVED.count(3) > ARRIVED.count(5) and not [m for m in ARRIVED if M.is_gym(m, NAMES)],
+   ARRIVED)
+mode, ev, loc = M.classify_mode(ARRIVED, [], NAMES, cleared=CLEARED, badges=BADGES,
+                                next_milestone="Route 11")
+ok("K1: a minority of fresh warps still locates the stall",
+   (mode, loc) == ("FIGHT_LOSS_LOOP", 5), f"got {mode}@{loc}: {ev}")
+ok("K2: no badge the run already holds is offered as its resolution",
+   "ALREADY WON" not in ev, ev)
+kpin = I.decide(state=dict(STATE, mode=mode, modeLocation=loc, map=5,
+                           nextMilestone="Route 11", closedOffTurns=0),
+                log={"v": 1, "attempts": []}, now_ms=NOW)["directive"]["notepadPin"]
+ok("K3: so the pin does not tell the run the Thunder Badge is won",
+   "ALREADY BEATEN" not in kpin, kpin)
+# An exact tie is the same question with the arithmetic taken away: the window
+# is oldest-first, so most_common resolved a tie to the town left EARLIER.
+TIED = [3, 64, 3, 64, 3, 64, 3, 64, 3] + [5, 89, 5, 89, 5, 89, 5, 89, 5]
+ok("K4: a tied window resolves to the later town, not the earlier one",
+   TIED.count(3) == TIED.count(5)
+   and M.classify_mode(TIED, [], NAMES, cleared=CLEARED, badges=BADGES)[0::2]
+   == ("FIGHT_LOSS_LOOP", 5),
+   M.classify_mode(TIED, [], NAMES, cleared=CLEARED, badges=BADGES))
+# The fix is recency, not a blanket distrust of the newer town: with the badge
+# for THIS town in the bag, the same minority window is a real drift.
+ok("K5: the arrived-at town's own cleared gym still reads as drift",
+   M.classify_mode(ARRIVED, [], NAMES, cleared=vermilion_cleared, badges=BADGES)[0::2]
+   == ("OBJECTIVE_DRIFT", 5),
+   M.classify_mode(ARRIVED, [], NAMES, cleared=vermilion_cleared, badges=BADGES))
+# And the drift the count vote MISSED: the run came back to the town it has
+# already cleared, so the town it spent longest in is not the town it is in.
+RETURNED = [5, 89, 5, 89, 5, 89, 5, 89, 5] + [3, 64, 3, 64, 3]
+ok("K6: a return to the cleared town is drift, however stale the counts",
+   RETURNED.count(5) > RETURNED.count(3)
+   and M.classify_mode(RETURNED, [], NAMES, cleared=CLEARED, badges=BADGES)[0::2]
+   == ("OBJECTIVE_DRIFT", 3),
+   M.classify_mode(RETURNED, [], NAMES, cleared=CLEARED, badges=BADGES))
+# J6's invariant, over the windows the count vote broke it on.
+for label, warps, cl in (("arrived", ARRIVED, vermilion_cleared),
+                         ("returned", RETURNED, CLEARED)):
+    m, e, l = M.classify_mode(warps, [], NAMES, cleared=cl, badges=BADGES)
+    ok(f"K7 ({label}): anchor town and won-badge town agree",
+       m == "OBJECTIVE_DRIFT"
+       and any(M.town_of(lbl) == M.town_of(M.map_label(l, NAMES)) and lbl in e
+               for lbl in cl.values()), f"{m}: {e} @{l}")
 
 print(f"\n{PASS}/{PASS + FAIL} passed")
 sys.exit(1 if FAIL else 0)

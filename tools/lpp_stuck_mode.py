@@ -563,6 +563,29 @@ def load_recent_turn_summaries(base=BASE, n=50):
     return lines[-n:]
 
 
+def _hub_anchor(window, names, town=None):
+    """The hub map a stalled loop is orbiting RIGHT NOW: the last city/town warp
+    in the window, falling back to the last heal/hub map. Optionally restricted
+    to one town.
+
+    wq#1874: recency, never frequency. The old readings took
+    Counter(cities).most_common(1) over the whole 64-warp window, which is a
+    majority vote between towns whenever the window spans two of them — and the
+    ordinary shape of a stall is "just arrived somewhere and was immediately
+    gated", where the town just LEFT still holds more warps than the town the
+    run is stuck in. Counting warps then anchors the incident on the town the
+    run has already finished with. How recently the run warped into a town is
+    what says where it is; how often it did says only how long it was there.
+    """
+    scope = [m for m in window
+             if town is None or town_of(map_label(m, names)) == town]
+    cities = [m for m in scope if map_label(m, names).lower().endswith(("city", "town"))]
+    if cities:
+        return cities[-1]
+    heals = [m for m in scope if is_heal_or_city(m, names)]
+    return heals[-1] if heals else None
+
+
 def _readiness_stall(window, names):
     """wq#1081/#1084: the two "a map ban cannot help here" diagnoses, over an
     arbitrary slice of the warp history. Returns (mode, evidence, location) or
@@ -584,14 +607,14 @@ def _readiness_stall(window, names):
     # why this used to misclassify as WARP_OSC/NAV_LOOP and get prescribed a
     # map ban. Banning these maps can never help: they are the mandatory hub +
     # only heal point (the live WARP_OSC ban even targeted Route 25, the grind
-    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the
-    # most-frequent city/town hub — a STABLE location that collapses the two
+    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the city/town
+    # hub the loop is orbiting now (wq#1874: the most RECENT one, not the most
+    # frequent — a window that spans two towns must not anchor the stall on the
+    # one the run has already left) — a STABLE location that collapses the two
     # transient WARP_OSC endpoints into one incident / one ticket.
     heal_city = [m for m in window if is_heal_or_city(m, names)]
     if not gym_hits and len(heal_city) >= max(4, int(0.6 * len(window))):
-        cities = [m for m in heal_city
-                  if map_label(m, names).lower().endswith(("city", "town"))]
-        hub = Counter(cities or heal_city).most_common(1)[0][0]
+        hub = _hub_anchor(window, names) or heal_city[-1]
         labels = ", ".join(sorted({map_label(m, names) for m in heal_city}))
         return "FIGHT_LOSS_LOOP", (
             f"stalled loop collapses onto heal/hub maps ({labels}) with no gym warp "
@@ -630,8 +653,6 @@ def _drift_diagnosis(window, names, cleared, badges, next_milestone):
     """
     if not window or not cleared:
         return None
-    cities = [m for m in window if map_label(m, names).lower().endswith(("city", "town"))]
-    hub = Counter(cities).most_common(1)[0][0] if cities else window[-1]
     # wq#1872: the town fallback is anchored to the HUB's town, not to any town
     # appearing anywhere in the window. A 64-warp window routinely spans two
     # towns — the one just cleared and the one the run has moved on to — and
@@ -642,12 +663,30 @@ def _drift_diagnosis(window, names, cleared, badges, next_milestone):
     # named the hub's town while the ledger evidence came from another one.
     # Only the gym standing IN the town the loop collapsed onto can be the gym
     # this loop is orbiting.
-    hub_town = town_of(map_label(hub, names))
-    hit = ([m for m in window if m in cleared] or
-           [m for m in sorted(cleared) if hub_town and town_of(cleared[m]) == hub_town])
-    if not hit:
-        return None
-    gym_id = hit[0]
+    #
+    # wq#1874: and WHICH town that is is a question about now, not about the
+    # window's arithmetic. Picking the hub by Counter(...).most_common re-opened
+    # the same false all-clear one layer down, gated on warp COUNTS instead of
+    # warp PRESENCE: a run that just arrived in Vermilion and was gated at its
+    # unbeaten gym still carries more Cerulean warps than Vermilion ones, so the
+    # majority vote named Cerulean the hub and the Cascade Badge cleared a stall
+    # happening two towns away. The cleared gym the loop actually warped into
+    # settles it outright when there is one; with no gym warp at all — the
+    # readiness-gate shape, where the entry refusal keeps the gym out of the
+    # history — the last town warped into is the only honest answer.
+    seen = [m for m in window if m in cleared]
+    if seen:
+        # the cleared gym the loop orbits: the one warped into most often, and
+        # the most recent of those on a tie.
+        gym_id = max(reversed(seen), key=seen.count)
+        town = town_of(cleared[gym_id])
+    else:
+        town = town_of(map_label(_hub_anchor(window, names) or window[-1], names))
+        hit = [m for m in sorted(cleared) if town and town_of(cleared[m]) == town]
+        if not hit:
+            return None
+        gym_id = hit[0]
+    hub = _hub_anchor(window, names, town) or window[-1]
     goal = (f"the next milestone the frontier engine names ({next_milestone})"
             if next_milestone else "the goal its own ROUTE line names")
     return "OBJECTIVE_DRIFT", (
