@@ -182,6 +182,25 @@ export const CFG = {
     // the measurement; nothing else reads it, so nothing else changes.
     verdictTurns: envN0("LPP_EXPLORE_VERDICT_TURNS", 150),
   },
+  // wq#1840 SUPERVISOR PIN EXPIRY (src/pin.ts). The stuck supervisor's
+  // notepadPin used to lift on story advance ALONE, so the FIGHT_LOSS_LOOP@3
+  // pin whose own remedy was the blocked story advance sat in the prompt for
+  // fourteen days. maxHours retires the whole directive (pin AND gotoBan) on
+  // the wall clock: the supervisor re-affirms a live stall by rewriting the
+  // file every ~30 minutes (runtime/intervention_log.json), so 6h is twelve
+  // missed re-affirmations and four times the span of a whole K=3 ladder — it
+  // cannot cut an escalation short, because a new attempt rewrites generatedAt
+  // and resets this clock. maxTurns is the fallback for a file with no
+  // parseable timestamp (~300 turns = 6h at the measured 47 turns/h);
+  // it cannot be the primary, because live_agent builds a fresh Agent on every
+  // continue and the turn counter restarts with it. LPP_PIN_MAX_HOURS=0 /
+  // LPP_PIN_MAX_TURNS=0 / LPP_PIN_CONTRADICTION=0 revert each rule
+  // independently, no redeploy.
+  pin: {
+    maxHours: envN0("LPP_PIN_MAX_HOURS", 6),
+    maxTurns: envN0("LPP_PIN_MAX_TURNS", 300),
+    contradiction: envN0("LPP_PIN_CONTRADICTION", 1) > 0,
+  },
   // wq#1181 LOSS LEDGER + engagement gates (roadmap item 6). ON by default:
   // unlike the verdict above it cannot act on its own, it can only refuse a
   // re-entry the agent has already proven it loses, and every gate carries

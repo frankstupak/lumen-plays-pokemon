@@ -119,6 +119,52 @@ mode/location; and (wq#1162) a counter tick while the same key is still the
 live stall resolves nothing and leaves the ticket open, yet those same
 counters do resolve it once the stall clears.
 
+## How a directive stops being one (wq#1840)
+
+`runtime/supervisor_directive.json` is written here and consumed in
+`src/agent.ts`: `gotoBan` refuses `enter_warp` targets, `notepadPin` is the
+`!!` line of every overworld state block. Until wq#1840 both cleared on **one**
+condition — `storyScore`/`badgeCount`/`eventCount` rising past the baseline
+captured when the directive loaded.
+
+That is unsound for the directive class this supervisor mostly writes, because
+a stuck-remedy pin's exit condition *is* the story advance it is failing to
+produce. Measured: `FIGHT_LOSS_LOOP@3`, `generatedAt 2026-08-29T16:44:34Z`,
+attempt 3/3, still in the prompt on 2026-09-12 with `storyScore` stuck at 10
+since 09-02 — fourteen days of ordering grass-pacing on Route 24, while
+wq#1731's escape walked the agent out of that grass and wq#1828's exclusion
+refused `goto` back in, and wq#1829 measured $96 and zero balls against a $200
+ball, so the catch it demanded was unaffordable too.
+
+`src/pin.ts` gives a directive the three shapes every other harness override
+already has (cf. wq#1181's ledger, wq#1828's exclusion):
+
+- **Retire on age.** `LPP_PIN_MAX_HOURS` (6) from `generatedAt`, story advance
+  or not, and it retires the **whole** artifact — pin *and* bans, which share
+  one stamp and one K-attempt ladder. This cannot cut an escalation short: a
+  supervisor that still believes the stall rewrites the file (the `WARP_OSC@36`
+  attempts in `runtime/intervention_log.json` are 1837s apart), and a rewrite
+  resets the clock. Nothing rewrites a ladder that has finished at K/K.
+  `LPP_PIN_MAX_TURNS` (300) is the fallback for a file with no parseable stamp;
+  it cannot be primary, because `live_agent` builds a fresh `Agent` on every
+  continue and the turn counter restarts with it.
+- **Suppress on contradiction.** A pin ordering a CATCH while the bag holds
+  zero balls and the purse cannot buy one is withheld for the turn, replaced by
+  one line naming both numbers. It returns by itself the moment the money does.
+  `LPP_PIN_CONTRADICTION=0` reverts.
+- **Qualify, don't contradict.** A pin ordering the agent into tall grass while
+  a wq#1828 exclusion is live gets the excluded patch, its map and its expiry
+  appended — "grass, but not *that* grass" — instead of two harness voices
+  arguing. The rest of the pin is untouched.
+
+Events: `supervisor_directive_expired` (with `atBoot` — an already-dead
+directive never reaches the prompt even once), and
+`supervisor_pin_suppressed`/`_restored` on the rising edge only.
+
+Verification: `npx tsx src/probe_pin1840.ts` — **29/29**, pure, driven off the
+live `FIGHT_LOSS_LOOP` prescription text and the `WARP_OSC@36` pin that was on
+disk on 2026-09-12.
+
 ## Rollback
 
 Deleting `runtime/stuck_escalation.json` forgets all tracked incidents —
