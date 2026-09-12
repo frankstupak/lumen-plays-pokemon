@@ -249,15 +249,21 @@ PRESCRIPTIONS = {
     # wq#697: new signatures
     "WARP_OSC": {
         "action": "checkpoint_restore_then_goto_ban",
-        "summary": "Two-map warp oscillation detected — ban the bounce edge, try a different warp.",
+        "summary": "Two-map warp oscillation detected — ban the far side of the bounce edge, try a different warp.",
         "notepadPin": (
-            "PIN: SUPERVISOR ({attempt}/{k}): warp oscillation at {location}. "
-            "The last several warps alternate between exactly two maps. Do NOT "
-            "enter_warp the same index again this session; pick a different warp "
-            "or goto a non-warp tile first. If no other warp exists, resume from "
-            "an earlier checkpoint."
+            "PIN: SUPERVISOR ({attempt}/{k}): warp oscillation at {location}. Your "
+            "last several warps alternate between {osc_edge}. {osc_ban} Stop "
+            "re-entering the doorway you just came out of: goto a tile away from "
+            "the warp first, then pursue the objective on foot. If the map you are "
+            "standing on has no other warp, resume from an earlier checkpoint."
         ),
         "gotoBan": "__RESOLVE_FROM_WARPS__",
+        # wq#1826: rev 2 — the ban is now the detected edge's far side, not the
+        # wide window's top-2 maps. The three attempts WARP_OSC@36 spent under
+        # rev 1 banned Cerulean City and Route 25 against evidence that read
+        # "Route 25 <-> Bills House"; they do not count against the corrected
+        # remedy's K budget.
+        "rev": 2,
     },
     "NOISE_STORM": {
         "action": "history_clear_restart",
@@ -278,16 +284,21 @@ WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
 NAMES_FILE = f"{os.path.join(HERE, 'map_names.json')}"
 
 
-def _resolve_loop_maps():
-    """Extract the distinct map IDs from the recent warp history — these are
-    the maps the agent is looping between. Returns a sorted list of ints."""
+def _warp_history():
+    """The raw warp list, newest-last, or [] if unreadable."""
     try:
         with open(WARP_HISTORY) as f:
-            warps = json.load(f).get("warps", [])
+            return json.load(f).get("warps", []) or []
     except Exception:
         return []
+
+
+def _resolve_loop_maps():
+    """NAV_LOOP's ban list: the distinct map IDs the recent warp history
+    collapses onto — the maps the agent is looping between. Returns a sorted
+    list of ints. WARP_OSC does NOT use this; see _resolve_osc_ban (wq#1826)."""
     # Use the same window the classifier does (last 64 warps)
-    window = warps[-64:]
+    window = _warp_history()[-64:]
     if not window:
         return []
     distinct = sorted(set(window))
@@ -298,6 +309,50 @@ def _resolve_loop_maps():
     from collections import Counter
     counts = Counter(window)
     return sorted(m for m, _ in counts.most_common(2))
+
+
+def _resolve_osc_ban(location_id, warps=None):
+    """wq#1826: WARP_OSC's ban list — the FAR endpoint of the A<->B edge the
+    classifier actually detected, and nothing else.
+
+    Returns (ban, here, there): `here` is the endpoint the agent last warped to
+    (its current map, and the incident's location), `there` is the one it keeps
+    bouncing back into, `ban` is `[there]` or `[]` when there is nothing safe to
+    ban. Two rules, both learned from WARP_OSC@36 sitting frozen 242h:
+
+    1. **The ban is the edge.** This used to call _resolve_loop_maps(), which
+       reads a 4x wider window (64 warps) than detect_warp_osc (16) and, when
+       that window holds more than 3 maps, falls back to its two most FREQUENT
+       ids. Those need not be — and live, were not — the endpoints of the
+       oscillation: the directive's own evidence read "Route 25 <-> Bills House"
+       while its gotoBan read [Cerulean City, Route 25]. So the harness banned
+       the town it must heal and fight Misty in, never banned map 88 (the
+       doorway actually being re-entered), and the bounce continued through all
+       three K attempts. wq#1119 taught the classifier to demand a real edge;
+       this is the other half — the ban has to BE that edge.
+    2. **One side, never both.** The ban is a hard enter_warp refusal
+       (`src/agent.ts` supervisorBans) that lifts only on story advance, so
+       banning both endpoints seals the agent inside whichever one it is
+       standing in: from inside Bills House the only exit warp lands on Route
+       25, refused, and no story can advance from in there to lift it. Banning
+       the far side alone breaks the loop and leaves the agent free to walk.
+
+    A far side that is the town/heal hub is dropped rather than banned — the
+    wq#1081/#1084 rule that the mandatory hub and only heal point can never be
+    the answer. The directive then stands on its pin alone.
+    """
+    warps = _warp_history() if warps is None else warps
+    hit, here, there, _alt = M.detect_warp_osc(warps)
+    if not hit or here is None or there is None or here == there:
+        return [], here, there
+    if location_id is not None and here != location_id:
+        # The history has moved on since the classification this ban is being
+        # prescribed for; banning off a window that no longer describes the
+        # incident is the wq#1119 scope-mismatch bug in a new place.
+        return [], here, there
+    if M.is_heal_or_city(there, M.load_map_names()):
+        return [], here, there
+    return [there], here, there
 
 
 def _map_label(mid):
@@ -398,15 +453,25 @@ def resolve_pending(log, state):
     return changed
 
 
-def open_attempt_count(log, location_key):
+def open_attempt_count(log, location_key, rev=None):
     """Attempts logged for this key that have NOT yet been resolved as
     'advanced' — i.e. every try that either failed or is still pending,
     which is what K bounds. A 'superseded' close (agent moved to a different
     mode/location without advancing) does not reset the counter: it is not
     evidence the intervention worked, just that the incident's shape changed.
+
+    wq#1826: with `rev` given, only attempts made under that revision of the
+    mode's prescription count. K bounds tries of a remedy, and WARP_OSC@36 spent
+    all three of its on a ban that named the wrong maps (see _resolve_osc_ban):
+    a corrected remedy that can never be issued because the broken one used up
+    the budget is not a fix. Bumping a prescription's `rev` is therefore the
+    deliberate act of refunding K for that mode alone — entries written under
+    the old rev stay in the log as history, and every other mode's budget is
+    untouched. rev=None counts every entry (callers that only want the history).
     """
     return sum(1 for e in log["attempts"]
-               if e["locationKey"] == location_key and e.get("outcome") != "advanced")
+               if e["locationKey"] == location_key and e.get("outcome") != "advanced"
+               and (rev is None or e.get("rev", 1) == rev))
 
 
 def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
@@ -421,6 +486,8 @@ def _terminal_directive(template, mode, location_id, location_key, prior, now_ms
     pin = template["notepadPin"].format(
         attempt=prior, k=K, location=_located(location_id),
         loop_maps="unknown", loop_labels="unknown maps",
+        osc_edge="the same two maps",
+        osc_ban="No map is banned: the supervisor has stopped intervening on this key.",
         viable_pct=_viable_pct(), **_misty_gate())
     return {
         "v": 1,
@@ -461,7 +528,8 @@ def decide(state=None, log=None, now_ms=None):
     location_key = _key(mode, location_id)
     template = PRESCRIPTIONS.get(mode)
 
-    prior = open_attempt_count(log, location_key)
+    rev = (template or {}).get("rev", 1)
+    prior = open_attempt_count(log, location_key, rev)
     attempt = prior + 1
 
     if template is None:
@@ -496,7 +564,18 @@ def decide(state=None, log=None, now_ms=None):
     fmt_extras["location"] = _located(location_id)
     # wq#1118: the resume picker's own viability bar, same read-don't-retype rule.
     fmt_extras["viable_pct"] = _viable_pct()
-    if goto_ban == "__RESOLVE_FROM_WARPS__":
+    if goto_ban == "__RESOLVE_FROM_WARPS__" and mode == "WARP_OSC":
+        # wq#1826: the oscillation's own edge, not the wide window's top-2 maps.
+        goto_ban, here, there = _resolve_osc_ban(location_id)
+        fmt_extras["osc_edge"] = (f"{_located(here)} <-> {_located(there)}"
+                                  if here is not None and there is not None and here != there
+                                  else "the same two maps")
+        fmt_extras["osc_ban"] = (
+            f"{_located(goto_ban[0])} is BANNED by the harness until story advances — "
+            f"do not enter_warp back into it." if goto_ban else
+            "No map is banned: the far side of the bounce is one the run cannot do "
+            "without, so the loop is yours to break on foot.")
+    elif goto_ban == "__RESOLVE_FROM_WARPS__":
         loop_maps = _resolve_loop_maps()
         goto_ban = loop_maps if loop_maps else []
         fmt_extras["loop_maps"] = ",".join(f"map{m}" for m in loop_maps) if loop_maps else "unknown"
@@ -519,6 +598,7 @@ def decide(state=None, log=None, now_ms=None):
 
     entry = {
         "ts": now_ms, "mode": mode, "locationKey": location_key, "attempt": attempt,
+        "rev": rev,  # wq#1826: which revision of the mode's prescription this tried
         "directive": directive, "beforeState": _snapshot(state), "afterState": None,
         "outcome": None,
     }
