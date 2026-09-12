@@ -69,6 +69,8 @@ import { dirname } from "path";
 import { deltaP, tileKey, type ProgressSample } from "./novelty";
 import { BADGE_NAMES } from "./names";
 import { BALL_PRICE, ballMarts } from "./economy";   // wq#1829
+import { capsFromBadges, goalMap, legAction, legAim, mapLabel, routeBlock, routeTo,
+         type Leg, type WarpRef } from "./route";  // wq#1849
 
 export interface ExploreCfg {
   enabled: boolean;      // the override rung
@@ -228,11 +230,19 @@ export function footDistance(p: { x: number; y: number }, footprint: { x: number
  *  Route 24 save showed what that does: 22 steps north out of the strip, then
  *  the next nearest unvisited column led it 8 steps straight back south.
  *  Only the TARGET is constrained; the path may dip closer to get around a wall.
- *  null = nothing within maxLen steps; the caller falls back. */
+ *  null = nothing within maxLen steps; the caller falls back.
+ *
+ *  wq#1849: `aim` ranks the targets that are ALREADY acceptable — lower first —
+ *  so an escape that has a choice takes the one toward the next map on the way
+ *  to the gym (route.ts legAim). It breaks ties within the nearest BFS wave and
+ *  nothing more: it can neither reject a target nor make the walk longer, so a
+ *  map with no route knowledge escapes exactly as it did before. With no aim
+ *  the first target of that wave wins, which is the pre-wq#1849 answer. */
 export function planEscape(g: GridLike, sx: number, sy: number, avoid: Set<string>,
                            footprint: { x: number; y: number }[], maxLen: number,
                            clearance: number, blocked: Set<string> = new Set(),
-                           fromDist = 0): EscapePlan | null {
+                           fromDist = 0,
+                           aim: ((t: { x: number; y: number }) => number) | null = null): EscapePlan | null {
   const key = (x: number, y: number) => `${x},${y}`;
   const parent = new Map<string, string | null>([[key(sx, sy), null]]);
   const depth = new Map<string, number>([[key(sx, sy), 0]]);
@@ -250,13 +260,17 @@ export function planEscape(g: GridLike, sx: number, sy: number, avoid: Set<strin
     }
     return { target: { x, y }, path, source };
   };
+  let clear: { c: { x: number; y: number }; depth: number; score: number } | null = null;
   for (let qi = 0; qi < queue.length; qi++) {
     const c = queue[qi];
     const dc = depth.get(key(c.x, c.y))!;
+    // The nearest wave is closed: nothing deeper can beat what it holds.
+    if (clear && dc > clear.depth) return build(clear.c.x, clear.c.y, "clear_non_grass");
     if (dc > 0 && !g.isGrass(c.x, c.y) && !avoid.has(key(c.x, c.y))) {
       const dd = dist(c.x, c.y);
-      if (dd >= needClear) return build(c.x, c.y, "clear_non_grass");
-      if (!fallback && dd >= fromDist) fallback = c;
+      const score = aim ? aim(c) : 0;
+      if (dd >= needClear) { if (!clear || score < clear.score) clear = { c, depth: dc, score }; }
+      else if (!fallback && dd >= fromDist) fallback = c;
     }
     const next: { x: number; y: number; cost: number }[] = [];
     for (const d of Object.values(DIR_DELTA)) {
@@ -274,6 +288,7 @@ export function planEscape(g: GridLike, sx: number, sy: number, avoid: Set<strin
       queue.push({ x: n.x, y: n.y });
     }
   }
+  if (clear) return build(clear.c.x, clear.c.y, "clear_non_grass");
   return fallback ? build(fallback.x, fallback.y, "non_grass") : null;
 }
 
@@ -385,6 +400,10 @@ export interface OverrideDeps {
    *  verdict is written, so one record says both what the ban did and whether
    *  the escape held. Absent = no exclusion gate wired (probes, run_agent). */
   exclusionFires?(): number;
+  /** wq#1849: wObtainedBadges, which names the gym the escape should head
+   *  toward (route.ts). Absent = no route knowledge; escapes pick their target
+   *  by clean ground alone, as they did before. */
+  badges?(): number;
   bus?: { emit(kind: any, data: object): void };
   logFile: string;
   cfg: ExploreCfg;
@@ -409,6 +428,9 @@ interface Run {
   learnedBlocked: Set<string>;
   walked: Set<string>;
   executed: string[];
+  /** wq#1849: the route leg the last replan aimed at, for the log and the
+   *  hand-back line. null = no route knowledge for this map. */
+  leg: { next: number; via: string } | null;
 }
 
 export class ExplorationOverride {
@@ -530,6 +552,7 @@ export class ExplorationOverride {
       footprint: new Set(v.tiles.map(t => tileKey(t.map, t.x, t.y))),
       footprintHere, excludeTiles, stepsLeft: cfg.stepsK, queue: [], mode: "target", target: null,
       fallbackIdx: 0, legs: 0, learnedBlocked: new Set(), walked: new Set(), executed: [],
+      leg: null,
     };
     this.run = run;
     const planned = this.replan();
@@ -543,12 +566,22 @@ export class ExplorationOverride {
                                     share: +v.patch.share.toFixed(3), samples: v.patch.samples,
                                     newTiles: v.patch.newTiles, cells: v.patch.cells.length } },
       k: cfg.stepsK, mode: run.mode, source: planned?.source ?? "fallback",
-      target: run.target, sequence: run.mode === "target"
+      leg: run.leg, target: run.target, sequence: run.mode === "target"
         ? run.queue.map(q => q.hop ? `${q.dir}^` : q.dir)
         : FALLBACK_SEQUENCE.slice(),
     };
     appendOverrideLog(this.d.logFile, rec);
     this.d.bus?.emit("exploration_override", { stage: "fire", ...rec });
+  }
+
+  /** wq#1849: the next map toward the gym the badges name, or null when the
+   *  harness was wired without badges, the map is off the travel graph (an
+   *  interior, a cave floor), or nothing connects it to the goal. */
+  private routeLeg(map: number): Leg | null {
+    try {
+      const b = this.d.badges?.();
+      return b === undefined ? null : routeTo(map, goalMap(b), capsFromBadges(b));
+    } catch { return null; }
   }
 
   /** Plan the next leg toward non-grass ground outside the stall window and
@@ -565,8 +598,10 @@ export class ExplorationOverride {
       if (m === p.map) avoid.add(`${x},${y}`);
     }
     const fromDist = run.footprintHere.length ? footDistance(p, run.footprintHere) : 0;
+    const leg = this.routeLeg(p.map);
+    run.leg = leg ? { next: leg.next, via: leg.via } : null;
     const plan = planEscape(this.d.map, p.x, p.y, avoid, run.footprintHere,
-      run.stepsLeft, this.d.cfg.clearance, run.learnedBlocked, fromDist);
+      run.stepsLeft, this.d.cfg.clearance, run.learnedBlocked, fromDist, legAim(leg));
     if (plan && plan.path.length) {
       run.legs++;
       run.target = plan.target;
@@ -642,6 +677,14 @@ export class ExplorationOverride {
     return { map: run.map, keys: [...keys], fromSeq: lastSeq, untilSeq: this.watch.untilSeq };
   }
 
+  /** wq#1849: " The way on is <tool call> into <map>." — or "" when the map is
+   *  off the travel graph, so the sentence simply does not appear. */
+  private handBackBearing(map: number): string {
+    const leg = this.routeLeg(map);
+    if (!leg || leg.next === map) return "";
+    return ` The way on toward the gym is ${legAction(leg)} into ${mapLabel(leg.next)}.`;
+  }
+
   /** Close the run: log the outcome, raise the sample floor, hand back. */
   private finish(reason: string, lastLine: string | null): string {
     const run = this.run!;
@@ -694,7 +737,13 @@ export class ExplorationOverride {
       (excludeUntilSeq === null ? "" :
         ` goto() into those ${run.excludeTiles.length} tiles is REFUSED for the next ` +
         `${cfg.excludeTurns} turns (walking through them is still fine; leaving the map ` +
-        `only pauses it).`);
+        `only pauses it).`) +
+      // wq#1849: the hand-back is the turn the brain decides what to do next,
+      // so it is the one place where "do not walk back" is worth a "go THERE"
+      // beside it. Re-resolved from where the run ENDED, not from run.leg: the
+      // escape may have crossed into the next map already, and repeating the
+      // old map's bearing would send it back.
+      this.handBackBearing(at.map);
     return lastLine ? `${lastLine}\n${summary}` : summary;
   }
 }
@@ -720,6 +769,10 @@ export interface ProgressCtx {
   // possible — a default would have preserved exactly that.
   balls: number;           // POKE + GREAT + ULTRA, from the bag
   money: number;
+  /** wq#1849: the live warp table, so a route leg through a door can name the
+   *  enter_warp INDEX the WARPS list is printed with. Optional: without it the
+   *  leg names the door's tile instead, which is still in that list. */
+  warps?: readonly WarpRef[];
 }
 
 /** Trailing samples on `map`, and trailing samples since a new tile. Both
@@ -750,6 +803,15 @@ export function progressBlock(c: ProgressCtx, cfg: Pick<ExploreCfg, "urgencyTurn
       ? `GOAL: all 8 badges - Victory Road and the Pokemon League.`
       : `GOAL: Gym #${next + 1}, ${GYMS[next].city} (${GYMS[next].leader}, ${BADGE_NAMES[next]} Badge).`,
   ];
+  // wq#1849: the goal line above names a CITY. On its own that is a wish: the
+  // live run knew "Gym #3, Vermilion" for days on Route 24 and never took the
+  // south edge, because nothing said which of this map's exits leads there.
+  // routeBlock() is that sentence, and it goes directly under the goal it
+  // serves. Null on a map the travel graph does not hold (interiors, cave
+  // floors) — those exit by their door warps, which the WARPS list already
+  // gives, and inventing a bearing for them is how wq#564 got started.
+  const route = routeBlock(c.map, c.badges, capsFromBadges(c.badges), c.warps);
+  if (route) lines.push(route);
   if (k.sinceNew >= cfg.urgencyTurns && k.onMap >= cfg.urgencyTurns)
     lines.push(`!! NO NEW GROUND in ${n(k.sinceNew, k.sinceNewCapped)} turns: leaving this map is high value. ` +
       `Fights are only worth it when they block the path.`);
