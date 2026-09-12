@@ -42,11 +42,14 @@ import { ExclusionGate, exclusionFile, exclusionLift, exclusionSuspended } from 
 import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
-import { warpViews, renderWarps, stuckHint, edgeStuckHint, WarpView, EdgeDir } from "./reach";   // wq#538, wq#1870
+import { warpViews, renderWarps, stuckHint, edgeStuckHint, reachableEdges, WarpView, EdgeDir,
+         type BlockedCrossing } from "./reach";   // wq#538, wq#1870, wq#1877
+import { clearedByLine } from "./unblock";   // wq#1877
 import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
-import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits } from "./objects";  // wq#607
+import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits,
+         toggleableGlobalIds } from "./objects";  // wq#607, wq#1877
 import { nearbyHiddenItems, hiddenItemLine, hiddenItemFlags } from "./hidden_items";  // wq#622
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
@@ -410,6 +413,19 @@ export class Agent {
     return this.names ? this.names.mapName(id) : null;
   }
 
+  /** wq#1877: the second half of a blocked-crossing refusal — where the game
+   *  itself clears the NPC that is holding the region's one door. Read off the
+   *  ROM (unblock.ts): the brain is told to go do that, instead of being left
+   *  with an obstacle and no lever. Silent whenever the ROM does not answer —
+   *  an invented prerequisite is worse than none (wq#1091). */
+  private clearedByHint(bc: BlockedCrossing): string | null {
+    try {
+      const gid = toggleableGlobalIds(this.emu.mem(), this.sym).get(bc.by.slot);
+      if (gid === undefined) return null;
+      return clearedByLine(this.rom, this.sym, gid, id => this.mapLabel(id));
+    } catch { return null; }
+  }
+
   /** wq#538: the warp list annotated with reachability from where the player is
    *  standing right now, resolved through the same astar that goto() uses. */
   private currentWarpViews(): WarpView[] {
@@ -552,12 +568,17 @@ export class Agent {
     // above returns before this.
     if (CFG.explore.prompt) {
       try {
+        const here = this.nav.posChecked();
         block += `\n${progressBlock({ badges: st.badges, partyCount: st.partyCount,
           map: st.map, samples: this.novelty.recent(),
           balls: this.ballCount(), money: st.money,
           // wq#1849: the same table the WARPS list above is indexed by, so a
           // route leg through a door names the index rather than only the tile.
-          warps: this.map.warps }, CFG.explore)}`;
+          warps: this.map.warps,
+          // wq#1877: which edges are walkable from HERE, so the ROUTE line can
+          // stop ordering a leg that starts across a seam.
+          edges: reachableEdges(this.map, here.x, here.y),
+        }, CFG.explore)}`;
       } catch { /* prompt salience must never cost the turn */ }
     }
 
@@ -884,7 +905,7 @@ export class Agent {
             this.map.build();
             return `goto -> stuck now ${JSON.stringify(p)}` +
               stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews(),
-                        this.nav.lastGotoObstacle(), p.map);
+                        this.nav.lastGotoObstacle(), p.map, bc => this.clearedByHint(bc));
           }
           // wq#674: "warped" lands on the new map's arrival tile with zero
           // steps taken there yet; anything else that actually got the player
@@ -1052,7 +1073,8 @@ export class Agent {
             const p = this.nav.posChecked();
             this.map.build();
             return `leave_edge -> stuck now ${JSON.stringify(p)}` +
-              edgeStuckHint(this.map, p.x, p.y, dir as EdgeDir, this.currentWarpViews(), p.map);
+              edgeStuckHint(this.map, p.x, p.y, dir as EdgeDir, this.currentWarpViews(), p.map,
+                            bc => this.clearedByHint(bc));
           }
           // wq#674: edge crossings land off any warp tile, so they can't
           // trigger the door-bounce refusal above - but they DO count as

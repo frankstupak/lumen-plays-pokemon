@@ -58,8 +58,12 @@ export class MapModel {
   grid: boolean[][] = [];         // [y][x] true = walkable terrain
   tileIds: number[][] = [];       // [y][x] the collision tile id sampled per cell
   /** wq#607: pic = wSpriteStateData1 picture id, so callers can give
-   *  sprites IDENTITY (0x3D = ground item ball; see objects.ts). */
-  sprites: { y: number; x: number; pic: number }[] = [];
+   *  sprites IDENTITY (0x3D = ground item ball; see objects.ts).
+   *  wq#1877: slot = the wSpriteStateData index, which IS the map's own object
+   *  index (probe_pocket1870 §A re-checks that against the ROM table on every
+   *  run). It is what turns "an NPC is in the way" into "object 11, global flag
+   *  9, cleared at Bill's House" — see unblock.ts. */
+  sprites: { y: number; x: number; pic: number; slot: number }[] = [];
   warps: Warp[] = [];
   tilesetId = 0;
   /** wq#1565: the tile id the ENGINE tests for a wild encounter, and the map's
@@ -186,7 +190,7 @@ export class MapModel {
       const pic = m[d1 + i * 16];
       if (pic === 0 || pic === 0xff || hidden.has(i)) continue;
       const sy = m[d2 + i * 16 + 4] - 4, sx = m[d2 + i * 16 + 5] - 4;
-      if (sy >= 0 && sy < this.gh && sx >= 0 && sx < this.gw) this.sprites.push({ y: sy, x: sx, pic });
+      if (sy >= 0 && sy < this.gh && sx >= 0 && sx < this.gw) this.sprites.push({ y: sy, x: sx, pic, slot: i });
     }
 
     const n = m[s.addr("wNumberOfWarps")];

@@ -162,17 +162,28 @@ MODES = ("FIGHT_LOSS_LOOP", "OBJECTIVE_DRIFT", "WARP_OSC", "NOISE_STORM", "NAV_L
          "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
 
 # wq#1867: reach.ts's verdict when the A* cannot leave the region the agent is
-# standing in ("...you are in a closed-off part of this map. Reachable warps: ...
-# Use enter_warp to leave, not goto"). Matched as a phrase because that is all it
-# is — src/reach.ts builds it inline, so there is no constant to read;
-# tools/test_stuck1867.py fails if the wording there moves.
+# standing in. Matched as a phrase because that is all it is — src/reach.ts
+# builds it inline, so there is no constant to read; tools/test_stuck1867.py
+# fails if the wording there moves.
 #
-# STOPS ONE WORD SHORT OF THE SENTENCE ON PURPOSE. What this module reads is the
-# turn_summary line, and that is truncated to a fixed width: of the 33 renders in
-# events/live-agent-1789229078967.jsonl, only 21 still had the word "map" on the
-# end. Matching the full phrase would have counted two thirds of them and left
-# the clause dark on the turns whose prefix ran longest.
-CLOSED_OFF_RE = re.compile(r"closed-off part of this", re.I)
+# STOPS SHORT OF THE FULL SENTENCE ON PURPOSE. What this module reads is the
+# turn_summary line, and that is truncated to a fixed width (200 chars live), so
+# a phrase matched near the end of the refusal is a phrase matched on only some
+# of the renders.
+#
+# wq#1877: THE WORDING DID MOVE, and this went dark for it. wq#1870 replaced
+# "you are in a closed-off part of this map. Reachable warps: ..." with two new
+# refusals — "this map is SPLIT and (x,y) is in a part of it you cannot walk to"
+# (stuckHint) and "no opening on the S edge is reachable" (edgeStuckHint) — and
+# nothing here followed. Measured over the six newest live event files at the
+# time of the wq#1877 stall: 68 turn summaries, 0 matching the old phrase, 18
+# matching SPLIT and 9 the edge one. So the pocket clause was silent through the
+# whole 4.6h freeze it exists for. All three shapes are matched now; the old one
+# stays for fixtures written against it.
+CLOSED_OFF_RE = re.compile(
+    r"closed-off part of this"
+    r"|this map is split"
+    r"|no opening on the \S+ edge", re.I)
 
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

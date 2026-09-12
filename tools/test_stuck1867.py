@@ -158,26 +158,39 @@ ok("G10: and those two regexes are still the ones pin.ts matches on",
 
 # ── H. the local blocker, only when the evidence is there ────────────────────
 print("\n-- H. the closed-off pocket clause --")
-ok("H1: present while goto keeps failing that way",
-   "CLOSED-OFF" in pin and "enter_warp" not in pin.lower().replace("warps", ""), pin)
+ok("H1: present while the harness keeps refusing that way",
+   "walking cannot leave the part of this map" in pin, pin)
+# wq#1877: the clause used to answer "try a different door", which on the map it
+# was written for is the loop itself — every reachable warp there is a shop that
+# returns you to the tile you left. It may point at the refusal; it may not
+# prescribe a door of its own.
+ok("H1b: and it prescribes no door of its own",
+   "enter_warp" not in pin.lower().replace("warps", "")
+   and not re.search(r"take one of the warps|a different door from", pin, re.I), pin)
 quiet = I.decide(state=dict(STATE, closedOffTurns=0), log={"v": 1, "attempts": []},
                  now_ms=NOW)["directive"]["notepadPin"]
-ok("H2: absent when it is not happening", "CLOSED-OFF" not in quiet, quiet)
+ok("H2: absent when it is not happening", "walking cannot leave" not in quiet, quiet)
 ok("H3: and the pin stays a whole sentence either way, with no dangling space",
    quiet.endswith("take that leg.") and "  " not in quiet, repr(quiet[-60:]))
 reach_ts = open(os.path.join(SRC, "reach.ts")).read()
-ok("H4: reach.ts still emits the phrase closed_off_turns counts",
-   "closed-off part of this map" in reach_ts)
-# Both live shapes, verbatim: the turn_summary line is truncated to a fixed
-# width, so the word "map" survives on some renders and not on others (21 of 33
-# in events/live-agent-1789229078967.jsonl kept it). The counter must see both.
-ok("H5: and the counter reads both truncations out of turn summaries",
+# wq#1877: assert against the phrases reach.ts emits TODAY. This check was
+# already red on main — wq#1870 rewrote both refusals and the counter kept
+# reading for the pre-wq#1870 sentence, so the clause was dark for the whole
+# freeze that produced wq#1877.
+ok("H4: reach.ts still emits the phrases closed_off_turns counts",
+   "this map is SPLIT" in reach_ts and "no opening on the ${dir} edge" in reach_ts)
+# Every live shape, verbatim: the turn_summary line is truncated to a fixed
+# width (200 chars), so a phrase near the end of the refusal survives on some
+# renders and not on others. The counter must see all of them.
+ok("H5: and the counter reads every truncation out of turn summaries",
    M.closed_off_turns([
        "T49 [map3 25,26] goto(2,35) => goto -> stuck now {\"map\":3,\"x\":25,\"y\":26} — no "
        "path to (2,35) from where you stand; you are in a closed-off part of this",
-       "T52 [map3 25,26] goto(25,30) => goto -> stuck — you are in a closed-off part of "
-       "this map. Reachable warps: 0:(27,25)->67",
-       "T51 [map3 25,26] leave_edge(S) => leave_edge -> stuck"]) == 2)
+       "T52 [map3 25,26] goto(25,30) => goto -> stuck now {\"map\":3,\"x\":25,\"y\":26} — no "
+       "path to (25,30) from where you stand: this map is SPLIT and (25,30) is in a part",
+       "T5 [map3 19,18] leave_edge(S) => leave_edge -> stuck now {\"map\":3,\"x\":19,\"y\":18}"
+       " — no opening on the S edge is reachable from where you stand: this map i",
+       "T51 [map3 25,26] leave_edge(S) => leave_edge -> stuck"]) == 3)
 
 # ── I. the exhausted directive ───────────────────────────────────────────────
 print("\n-- I. the terminal directive formats for the new mode --")

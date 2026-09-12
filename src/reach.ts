@@ -166,6 +166,84 @@ function crossingHint(views: WarpView[], curMap?: number): string {
   }).join("; ")}.`;
 }
 
+/** wq#1877: a door that WOULD cross the split, standing one NPC away.
+ *
+ *  crossingSibling only pairs warps the player can walk to, so a pass-through
+ *  whose near door is blocked is invisible: on Cerulean the Trashed House at
+ *  (27,11) is the region's one exit and a STAY guard holds (27,12), its only
+ *  approach cell, so the state block named the shops, named the edges, and
+ *  never named the door. The brain cannot decide to deal with an obstacle it is
+ *  never told about — three supervisor interventions and 4.6h went past it.
+ *
+ *  Deliberately narrow: the door must be unreachable, its far side must open,
+ *  and the ONLY thing standing between the player's region and its approach
+ *  must be a sprite. A door walled off by terrain is not one NPC away and
+ *  saying so would be the same confident lie stuckHint refuses elsewhere. */
+export interface BlockedCrossing {
+  /** the near door, and the far door it would put you out of */
+  i: number; x: number; y: number;
+  far: { x: number; y: number; edges: EdgeDir[] };
+  /** the sprite in the way, and the approach cell it is standing on */
+  by: { x: number; y: number; pic: number; slot: number };
+}
+
+export function blockedCrossings(map: MapModel, px: number, py: number): BlockedCrossing[] {
+  const mine = reachableCells(map, px, py);
+  const out: BlockedCrossing[] = [];
+  for (let i = 0; i < map.warps.length; i++) {
+    const w = map.warps[i];
+    if (mine.has(`${w.x},${w.y}`) || pathTo(map, px, py, w.x, w.y)) continue;
+    // a second door to the same building, somewhere this region cannot walk
+    const sib = map.warps.findIndex((o, k) =>
+      k !== i && o.destMap === w.destMap && w.destMap !== LAST_MAP && !mine.has(`${o.x},${o.y}`));
+    if (sib < 0) continue;
+    const far = reachableCells(map, map.warps[sib].x, map.warps[sib].y);
+    const edges = edgesOf(map, far);
+    const opensOnward = edges.length > 0
+      || map.warps.some((o, k) => k !== i && k !== sib && far.has(`${o.x},${o.y}`));
+    if (!opensOnward) continue;
+    for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0]] as const) {
+      const ax = w.x + dx, ay = w.y + dy;
+      if (ax < 0 || ay < 0 || ax >= map.gw || ay >= map.gh) continue;
+      if (!map.grid[ay][ax]) continue;                       // terrain, not an NPC
+      const sp = map.sprites.find(s => s.x === ax && s.y === ay);
+      if (!sp) continue;                                     // free approach: not this case
+      // the sprite is the seam only if the player's own region touches it
+      const touches = ([[0, 1], [0, -1], [1, 0], [-1, 0]] as const)
+        .some(([qx, qy]) => mine.has(`${ax + qx},${ay + qy}`));
+      if (!touches) continue;
+      out.push({
+        i, x: w.x, y: w.y,
+        far: { x: map.warps[sib].x, y: map.warps[sib].y, edges },
+        by: { x: ax, y: ay, pic: sp.pic, slot: sp.slot },
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+/** How a BlockedCrossing is named to the brain. The caller supplies the second
+ *  half — where the game clears that object (unblock.ts reads it off the ROM) —
+ *  because reach.ts has neither the ROM nor the symbol table. */
+export type ClearNamer = (bc: BlockedCrossing) => string | null;
+
+function blockedCrossingHint(map: MapModel, px: number, py: number, views: WarpView[],
+                             namer: ClearNamer, curMap?: number): string {
+  const blocked = blockedCrossings(map, px, py);
+  if (!blocked.length) return "";
+  return " " + blocked.map(bc => {
+    const dest = views.find(v => v.i === bc.i)?.dest;
+    const onward = bc.far.edges.length
+      ? `, from which ${edgeMenu(bc.far.edges, curMap)} work` : "";
+    const clears = namer(bc);
+    return `The one door out of the part you are in is warp ${bc.i} at (${bc.x},${bc.y})`
+      + `${dest ? ` -> ${dest}` : ""}, whose second door comes out at (${bc.far.x},${bc.far.y})`
+      + `${onward} — and you cannot reach it: an NPC is standing on (${bc.by.x},${bc.by.y}),`
+      + ` its only approach tile. Walking into it will never move it.${clears ? ` ${clears}` : ""}`;
+  }).join(" ");
+}
+
 /** Why the rest of the reachable warps are not an answer: a shop's only door
  *  back onto this map is the one you walk in by, and a pass-through whose far
  *  door opens on a fenced yard is the same trap one step further away. */
@@ -212,7 +290,8 @@ export function renderWarps(views: WarpView[]): string {
 /** The reply a failed goto gets. Says why it failed and what would work. */
 export function stuckHint(map: MapModel, px: number, py: number,
                           tx: number, ty: number, views: WarpView[],
-                          obstacle?: Obstacle | null, curMap?: number): string {
+                          obstacle?: Obstacle | null, curMap?: number,
+                          namer: ClearNamer = () => null): string {
   const p = pathTo(map, px, py, tx, ty);
   // wq#583: a sprite standing ON the target makes pathTo's goal-cell
   // exemption report "reachable" forever while the engine refuses every
@@ -266,7 +345,8 @@ export function stuckHint(map: MapModel, px: number, py: number,
   const out = edges.length
     ? `${head} Ways out of the part you are in: ${edgeMenu(edges, curMap)}.`
     : `${head} No map edge is reachable from here either.`;
-  const body = crossingHint(views, curMap) + deadEndHint(views);
+  const body = crossingHint(views, curMap)
+    + blockedCrossingHint(map, px, py, views, namer, curMap) + deadEndHint(views);
   return body ? out + body
     : out + (edges.length ? "" : " Nothing reachable from here leaves this part of the map.");
 }
@@ -277,7 +357,8 @@ export function stuckHint(map: MapModel, px: number, py: number,
  *  leave_edge(S) and the south edge is in the half of the map the player cannot
  *  walk to, so the retry was doomed and the refusal said nothing about that. */
 export function edgeStuckHint(map: MapModel, px: number, py: number, dir: EdgeDir,
-                              views: WarpView[], curMap?: number): string {
+                              views: WarpView[], curMap?: number,
+                              namer: ClearNamer = () => null): string {
   if (!(map.connections & CONN_BIT[dir]))
     return ` — this map has no ${dir} connection at all; nothing to walk off that side.`;
   const all = reachableEdges(map, px, py);
@@ -293,5 +374,6 @@ export function edgeStuckHint(map: MapModel, px: number, py: number, dir: EdgeDi
   const head = ` — no opening on the ${dir} edge is reachable from where you stand:` +
     ` this map is split and that edge is in a part of it you cannot walk to.`;
   const alt = edges.length ? ` Edges that DO work from here: ${edgeMenu(edges, curMap)}.` : "";
-  return head + alt + crossingHint(views, curMap) + deadEndHint(views);
+  return head + alt + crossingHint(views, curMap)
+    + blockedCrossingHint(map, px, py, views, namer, curMap) + deadEndHint(views);
 }

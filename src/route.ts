@@ -184,7 +184,8 @@ export function legAction(leg: Leg, warps: readonly WarpRef[] = []): string {
  *  orientation, because a map-to-map graph cannot promise the walk inside any
  *  of those maps is clear (see the header). */
 export function routeBlock(from: number, badges: number, caps = capsFromBadges(badges),
-                           warps: readonly WarpRef[] = []): string | null {
+                           warps: readonly WarpRef[] = [],
+                           reachableEdges?: readonly string[]): string | null {
   const goal = goalMap(badges);
   const dest = mapLabel(goal);
   if (!dest) return null;
@@ -202,6 +203,20 @@ export function routeBlock(from: number, badges: number, caps = capsFromBadges(b
   ];
   if (leg.gates.length)
     lines.push(`ROUTE IS GATED: ${leg.gates[0].why}. Expect to be turned back until that is dealt with.`);
+  // wq#1877: a map-to-map graph cannot see INSIDE a map, and on a split one the
+  // leg it names can start in a part of the map the player cannot walk to. That
+  // is not hypothetical: for 4.6h this line told an agent in Cerulean's north
+  // region "NEXT LEG: leave_edge(S) into Route 5" while the S edge sat behind a
+  // seam, the supervisor pin repeated it, and 70 gotos and two leave_edge(S)
+  // calls went into proving it. The caller knows which edges are walkable from
+  // where the player stands (reach.ts reachableEdges); when it says so, the leg
+  // stops being an order the map refuses.
+  const dir = leg.via === "warp" ? null : DIR_LETTER[leg.via];
+  if (dir && reachableEdges && !reachableEdges.includes(dir))
+    lines.push(`NEXT LEG IS NOT STARTABLE from where you stand: the ${dir} edge is in a part of `
+      + `this map you cannot walk to${reachableEdges.length
+        ? ` (only ${reachableEdges.join("/")} work from here)` : ""}. Your goto/leave_edge refusal `
+      + `names the way out of the part you are in — deal with that first, then take this leg.`);
   return lines.join("\n");
 }
 

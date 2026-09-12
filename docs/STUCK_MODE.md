@@ -183,6 +183,13 @@ fail-closed on partial/unverifiable windows, observe-only default vs
   `verify_489` were already using); the old nesting is still accepted for
   fixtures. The same lines feed `OBJECTIVE_DRIFT`'s closed-off-pocket clause,
   which is how the dead read was caught.
+- A phrase match against another module's prose is a live dependency, and
+  wq#1877 is the second time it broke: `CLOSED_OFF_RE` was still reading for
+  "closed-off part of this", the wording wq#1870 replaced, so the clause was
+  silent through the whole 4.6h Cerulean freeze (68 live turn summaries, 0
+  matches). It now matches all three shapes reach.ts has emitted, and
+  `test_stuck1867.py` H4 asserts against the phrases in `src/reach.ts` itself
+  rather than against a copy of them.
 - The badge test behind `OBJECTIVE_DRIFT` is only as good as the ledger. A
   missing, empty or rotated-past ledger (`KEEP_RECORDS = 200` in
   `src/ledger.ts`) clears no gym, and the classifier degrades to exactly the
