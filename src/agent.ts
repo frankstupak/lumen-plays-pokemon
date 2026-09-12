@@ -38,7 +38,7 @@ import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
 import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";   // wq#1731
-import { ExclusionGate, exclusionFile, exclusionLift } from "./exclusion";        // wq#1828
+import { ExclusionGate, exclusionFile, exclusionLift, exclusionSuspended } from "./exclusion";   // wq#1828
 import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
@@ -520,9 +520,12 @@ export class Agent {
     // ordering the agent into tall grass while wq#1828's exclusion refuses that
     // patch gets the exclusion named rather than left to contradict it.
     if (this.supervisorPin) {
+      // wq#1839: `peek()` plus the pure rules, so rendering a prompt line never
+      // moves gate state. A ban asleep on another map refutes nothing here.
       const ex = this.exclusion.peek();
-      const live = ex && !exclusionLift(ex, this.turn, st.map)
-        ? { tiles: ex.tiles.length, map: ex.map, untilTurn: ex.untilTurn } : null;
+      const seq = this.novelty.lastSeq();
+      const live = ex && !exclusionLift(ex, seq) && !exclusionSuspended(ex, st.map)
+        ? { tiles: ex.tiles.length, map: ex.map, turnsLeft: Math.max(0, ex.untilSeq - seq) } : null;
       const r = renderPin(this.supervisorPin,
         { balls: this.ballCount(), money: st.money, ballPrice: BALL_PRICE }, live, CFG.pin);
       if (r) block += `\n!! ${r.text}`;
@@ -816,8 +819,9 @@ export class Agent {
           // wq#1828: the patch the exploration override just escaped is not a
           // destination for the next excludeTurns turns. Movement only — the
           // route may still cross it, so an escape cannot seal the map.
+          // wq#1839: counted in novelty seq, which survives a restart.
           {
-            const ex = this.exclusion.refuse(this.turn, st0.map, tx, ty,
+            const ex = this.exclusion.refuse(this.novelty.lastSeq(), st0.map, tx, ty,
               this.mapLabel(st0.map) ?? `map${st0.map}`);
             if (ex) return `goto: ${ex}`;
           }
@@ -1717,8 +1721,9 @@ export class Agent {
     try {
       const s = this.novelty.observe(this.turn, after);
       // wq#1828: the same sample decides whether the exclusion still holds —
-      // new ground inside the patch means it was not dead after all.
-      this.exclusion.observe(this.turn, s.map, s.x, s.y, s.newTiles);
+      // new ground inside the patch means it was not dead after all — and
+      // wq#1839: ages it, in the sample's own seq rather than in `this.turn`.
+      this.exclusion.observe(s.seq, s.map, s.x, s.y, s.newTiles);
     } catch { /* observe-only */ }
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;

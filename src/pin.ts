@@ -65,11 +65,14 @@ export interface PinRam {
   ballPrice: number;
 }
 
-/** wq#1828's exclusion, as much of it as a pin needs to defer to. */
+/** wq#1828's exclusion, as much of it as a pin needs to defer to. The budget is
+ *  a count of turns left, not the turn it lifts on: wq#1839 keys the ban to
+ *  novelty seq precisely because an agent turn number means nothing across a
+ *  restart, and a number the brain cannot check is worse than none. */
 export interface PinExclusion {
   tiles: number;
   map: number;
-  untilTurn: number;
+  turnsLeft: number;
 }
 
 /** A pin ordering a CATCH. The FIGHT_LOSS_LOOP prescription is the only one of
@@ -140,7 +143,8 @@ export function pinContradiction(pin: string, ram: PinRam, cfg: PinCfg): string 
 export function pinQualifier(pin: string, ex: PinExclusion | null): string | null {
   if (!pin || !ex || !PIN_GRASS_RE.test(pin)) return null;
   return `PIN QUALIFIED: the grass it means is NOT the ${ex.tiles}-tile patch on map${ex.map} ` +
-    `the harness escape just walked you out of — goto refuses that patch until turn ${ex.untilTurn}. ` +
+    `the harness escape just walked you out of — goto refuses that patch for another ` +
+    `${ex.turnsLeft} turns. ` +
     `Grass anywhere else, or on the other side of the map, still counts.`;
 }
 

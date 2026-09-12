@@ -9,14 +9,14 @@
 const TAG = `${process.pid}-${Date.now()}`;
 process.env.LPP_OVERRIDE_LOG = `/tmp/explore1731-${TAG}.jsonl`;
 
-import { existsSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import type { ProgressSample } from "./novelty";
 import {
   assessStall, dominantPatch, planEscape, pathToDirs, footDistance, progressBlock, progressCounters,
   ExplorationOverride, overrideLogFile, recoverFlushSeq, recoverWatch, FALLBACK_SEQUENCE,
   type ExploreCfg, type GridLike,
 } from "./explore";
-import { ExclusionGate, exclusionLift, loadExclusion, EXCLUSION_MAX_FIRES,
+import { ExclusionGate, exclusionLift, exclusionSuspended, loadExclusion, EXCLUSION_MAX_FIRES,
          type Exclusion } from "./exclusion";
 import { STALL_WINDOW, PROGRESS_WINDOW, rehydrate } from "./fixture_stall1828";
 
@@ -273,12 +273,15 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     const r = await ov.tick(t);
     const s = sample(w.pos.map, w.pos.x, w.pos.y);
     w.samples.push(s);
-    gate.observe(t, s.map, s.x, s.y, s.newTiles);
+    gate.observe(s.seq, s.map, s.x, s.y, s.newTiles);
     return r;
   };
+  /** Newest novelty seq — what the gate ages in (wq#1839), never the turn `t`,
+   *  which restarts at 1 with the process. */
+  const seqNow = () => w.samples[w.samples.length - 1].seq;
   const records = () => existsSync(w.log)
     ? readFileSync(w.log, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
-  return { w, ov, turn, records, gate };
+  return { w, ov, turn, records, gate, seqNow };
 }
 
 (async () => {
@@ -441,66 +444,112 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
   // out worked and the brain walked back. These cover the refusal that stops it.
   console.log("=== E. ExclusionGate ===");
   {
-    const { w, turn, records, gate } = stripWorld();
-    let endTurn = 0;
-    for (let t = 1; t <= 40; t++) { const r = await turn(t); if (r && /ended/.test(r) && !endTurn) endTurn = t; }
+    const { w, turn, records, gate, seqNow } = stripWorld();
+    let endTurn = 0, endSeq = 0;
+    for (let t = 1; t <= 40; t++) {
+      const before = seqNow();                      // the seq finish() will budget from
+      const r = await turn(t);
+      if (r && /ended/.test(r) && !endTurn) { endTurn = t; endSeq = before; }
+    }
     const end = records().find(r => r.ev === "end");
     const e = gate.current();
-    chk("E1 the escaped patch is persisted on END", !!e && e.map === 35 && e.fromFire === 1 &&
-      e.tiles.includes("35,5,24") && e.untilTurn === endTurn + CFG.excludeTurns,
-      JSON.stringify(e && { tiles: e.tiles.length, until: e.untilTurn, endTurn }));
-    chk("E1b the end record says so too", !!end && end.excludeUntil === e!.untilTurn &&
-      end.excludeTiles === e!.tiles.length, JSON.stringify(end && { u: end.excludeUntil, n: end.excludeTiles }));
+    chk("E1 the escaped patch is persisted on END, budgeted in novelty seq",
+      !!e && e.map === 35 && e.fromFire === 1 && e.tiles.includes("35,5,24") &&
+      e.fromSeq === endSeq && e.untilSeq === endSeq + CFG.excludeTurns,
+      JSON.stringify(e && { tiles: e.tiles.length, from: e.fromSeq, until: e.untilSeq, endSeq }));
+    chk("E1b the end record says so too", !!end && end.excludeUntilSeq === e!.untilSeq &&
+      end.excludeTiles === e!.tiles.length, JSON.stringify(end && { u: end.excludeUntilSeq, n: end.excludeTiles }));
     chk("E1c only the stalled map's tiles are in it", !!e && e.tiles.every(t => t.startsWith("35,")));
     const onDisk = loadExclusion(w.exFile);
     chk("E2 a restarted agent recovers it from runtime/explore_exclusion.json",
-      !!onDisk && onDisk.untilTurn === e!.untilTurn && onDisk.tiles.length === e!.tiles.length &&
+      !!onDisk && onDisk.untilSeq === e!.untilSeq && onDisk.fromSeq === e!.fromSeq &&
+      onDisk.tiles.length === e!.tiles.length &&
       new ExclusionGate(w.exFile).current()?.fromFire === 1);
 
-    const ref = gate.refuse(endTurn + 1, 35, 5, 24, "Route 24 (map35)");
-    chk("E3 goto INTO the patch is refused, naming the reason and the expiry",
+    const seq = seqNow();
+    const ref = gate.refuse(seq, 35, 5, 24, "Route 24 (map35)");
+    chk("E3 goto INTO the patch is refused, naming the reason and what is left of it",
       !!ref && /EXPLORATION EXCLUSION on Route 24 \(map35\) \(5,24\)/.test(ref) &&
-      ref.includes(`lifts at turn ${e!.untilTurn}`), String(ref).slice(0, 120));
-    chk("E3b the refusal states the three ways out and that walking through is legal",
-      !!ref && /leave map35/.test(ref) && /somewhere new inside it/.test(ref) && /THROUGH/.test(ref));
+      ref.includes(`lifts in ${e!.untilSeq - seq} turns`), String(ref).slice(0, 120));
+    chk("E3b the refusal says leaving only pauses it, and walking through stays legal",
+      !!ref && /Leaving map35 only PAUSES it/.test(ref) && /somewhere new inside it/.test(ref) &&
+      /THROUGH/.test(ref));
     chk("E4 a destination outside the patch is untouched — advisory for movement only",
-      gate.refuse(endTurn + 1, 35, 12, 12, "Route 24 (map35)") === null);
+      gate.refuse(seq, 35, 12, 12, "Route 24 (map35)") === null);
     chk("E4b and the refusal is a function of the TARGET, not of where you stand",
-      gate.refuse(endTurn + 1, 35, 5, 25, "Route 24 (map35)") !== null &&
-      gate.refuse(endTurn + 1, 35, 0, 0, "Route 24 (map35)") === null);
-    chk("E5 it lifts on the map the escape was trying to reach",
-      gate.refuse(endTurn + 1, 36, 5, 24, "Route 25 (map36)") === null && gate.current() === null);
+      gate.refuse(seq, 35, 5, 25, "Route 24 (map35)") !== null &&
+      gate.refuse(seq, 35, 0, 0, "Route 24 (map35)") === null);
     try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
   }
   {
-    const { w, turn, gate } = stripWorld();
+    // wq#1839 (1), on the shape the live run actually has: the agent pops to
+    // Route 25 for a few turns and comes back. map35 held 398 of 512 samples
+    // and that excursion vetoed 259 of 363 stall windows
+    // (docs/EXPLORE_STALL_1744.md:26,48) — so wq#1828's lift-on-map-change
+    // cancelled the ban on the very cycle it was written to survive.
+    const { w, turn, gate, seqNow } = stripWorld();
+    for (let t = 1; t <= 40; t++) await turn(t);
+    const until = gate.current()!.untilSeq;
+    w.pos = { map: 36, x: 3, y: 3 };                          // off to Route 25
+    for (let t = 41; t <= 44; t++) await turn(t);
+    chk("E5 leaving the map SUSPENDS the ban, it does not lift it",
+      gate.current() !== null && gate.suspended() && existsSync(w.exFile) &&
+      gate.current()!.untilSeq === until, JSON.stringify(gate.current() && { until }));
+    chk("E5b it refuses nothing while it sleeps — goto is same-map anyway",
+      gate.refuse(seqNow(), 36, 5, 24, "Route 25 (map36)") === null && gate.current() !== null);
+    w.pos = { map: 35, x: 5, y: 22 };                         // ...and back to the strip
+    await turn(45);
+    chk("E5c coming back wakes it: the walk-back is refused, on the same budget",
+      !gate.suspended() && gate.refuse(seqNow(), 35, 5, 24, "map35") !== null &&
+      gate.current()!.untilSeq === until);
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    // Sleeping is not a stay of execution: the budget runs in samples wherever
+    // the agent stands, so an excursion longer than it expires the ban off-map.
+    const { w, turn, gate, seqNow } = stripWorld({ cfg: { excludeTurns: 5 } });
     let endTurn = 0;
-    for (let t = 1; t <= 40; t++) { const r = await turn(t); if (r && /ended/.test(r) && !endTurn) endTurn = t; }
-    const until = gate.current()!.untilTurn;
-    chk("E6 it holds right up to untilTurn", gate.refuse(until - 1, 35, 5, 24, "map35") !== null);
-    chk("E6b and lifts on it", gate.refuse(until, 35, 5, 24, "map35") === null && !existsSync(w.exFile),
-      `until=${until}`);
+    for (let t = 1; t <= 40 && !endTurn; t++) { const r = await turn(t); if (r && /ended/.test(r)) endTurn = t; }
+    const until = gate.current()!.untilSeq;
+    w.pos = { map: 36, x: 3, y: 3 };
+    for (let t = endTurn + 1; t <= endTurn + 5; t++) await turn(t);
+    chk("E5d an excursion longer than the budget expires it where it sleeps",
+      gate.current() === null && !existsSync(w.exFile), `until=${until} seq=${seqNow()}`);
     try { unlinkSync(w.log); } catch {}
   }
   {
     const { w, turn, gate } = stripWorld();
     for (let t = 1; t <= 40; t++) await turn(t);
-    const lift = gate.observe(41, 35, 5, 24, 1);
+    const until = gate.current()!.untilSeq;
+    chk("E6 it holds right up to untilSeq", gate.refuse(until - 1, 35, 5, 24, "map35") !== null);
+    chk("E6b and lifts on it", gate.refuse(until, 35, 5, 24, "map35") === null && !existsSync(w.exFile),
+      `until=${until}`);
+    try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, gate, seqNow } = stripWorld();
+    for (let t = 1; t <= 40; t++) await turn(t);
+    const lift = gate.observe(seqNow(), 35, 5, 24, 1);
     chk("E7 new ground INSIDE the patch lifts it — the patch stopped being dead",
       !!lift && /new ground/.test(lift) && gate.current() === null &&
-      gate.refuse(42, 35, 5, 24, "map35") === null, String(lift));
-    chk("E7b new ground outside it does not", (() => {
-      const g2 = stripWorld(); return g2.gate.observe(1, 35, 9, 9, 1) === null;
-    })());
+      gate.refuse(seqNow(), 35, 5, 24, "map35") === null, String(lift));
     try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
   }
   {
-    const { w, turn, records, gate } = stripWorld({ cfg: { excludeTurns: 0 } });
+    const { w, turn, gate, seqNow } = stripWorld();
+    for (let t = 1; t <= 40; t++) await turn(t);
+    chk("E7b new ground outside it does not",
+      gate.observe(seqNow(), 35, 9, 9, 1) === null && gate.current() !== null &&
+      gate.refuse(seqNow(), 35, 5, 24, "map35") !== null);
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, records, gate, seqNow } = stripWorld({ cfg: { excludeTurns: 0 } });
     for (let t = 1; t <= 40; t++) await turn(t);
     const end = records().find(r => r.ev === "end");
     chk("E8 LPP_EXPLORE_EXCLUDE_TURNS=0 is a full revert: nothing recorded, nothing refused",
-      gate.current() === null && !existsSync(w.exFile) && !!end && end.excludeUntil === null &&
-      gate.refuse(99, 35, 5, 24, "map35") === null);
+      gate.current() === null && !existsSync(w.exFile) && !!end && end.excludeUntilSeq === null &&
+      gate.refuse(seqNow(), 35, 5, 24, "map35") === null);
     try { unlinkSync(w.log); } catch {}
   }
   {
@@ -519,10 +568,10 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     try { unlinkSync(w.log); } catch {}
   }
   {
-    const { w, turn, gate } = stripWorld();
+    const { w, turn, gate, seqNow } = stripWorld();
     for (let t = 1; t <= 40; t++) await turn(t);
     const said: (string | null)[] = [];
-    for (let i = 0; i < EXCLUSION_MAX_FIRES + 2; i++) said.push(gate.refuse(41, 35, 5, 24, "map35"));
+    for (let i = 0; i < EXCLUSION_MAX_FIRES + 2; i++) said.push(gate.refuse(seqNow(), 35, 5, 24, "map35"));
     chk("E11 it gives itself up after EXCLUSION_MAX_FIRES refusals (the wq#1181 anti-wedge)",
       said.filter(Boolean).length === EXCLUSION_MAX_FIRES && said[EXCLUSION_MAX_FIRES] === null &&
       gate.current() === null, `${said.filter(Boolean).length} refusals`);
@@ -533,12 +582,53 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
   }
   {
-    const e: Exclusion = { v: 1, tiles: ["35,5,24"], map: 35, untilTurn: 100, fromFire: 2, fires: 0, iso: "" };
+    const e: Exclusion = { v: 2, tiles: ["35,5,24"], map: 35, fromSeq: 40, untilSeq: 100,
+                           fromFire: 2, fires: 0, iso: "" };
     chk("E10 the lift rule is pure and states which rule fired",
-      exclusionLift(e, 99, 35) === null && /expired/.test(exclusionLift(e, 100, 35) ?? "") &&
-      /left map35/.test(exclusionLift(e, 99, 36) ?? ""));
-    chk("E10b a missing or corrupt file excludes nothing",
+      exclusionLift(e, 99) === null && /expired/.test(exclusionLift(e, 100) ?? "") &&
+      /counter reset/.test(exclusionLift(e, 39) ?? "") &&
+      /without steering/.test(exclusionLift({ ...e, fires: EXCLUSION_MAX_FIRES }, 99) ?? ""));
+    chk("E10b leaving the map is no lift at all — it is a separate, reversible state",
+      exclusionLift(e, 99) === null && exclusionSuspended(e, 36) && !exclusionSuspended(e, 35));
+    chk("E10c a missing or corrupt file excludes nothing",
       loadExclusion(`/tmp/explore1828-missing-${TAG}.json`) === null);
+  }
+  {
+    // wq#1839 (2). `Agent.turn` restarts at 1 with the process and the live unit
+    // restarts about every 2h — shorter than a 60-turn ban. The three
+    // generations in the live stuck_escalation_overrides.jsonl fire at turns
+    // 1/184/364, then 101/280/459, then 83/266/445: a turn-keyed ban recovered
+    // at turn 1 therefore served its whole span again. Seq does not restart.
+    const file = `/tmp/explore1839-${TAG}.json`;
+    const e = { v: 2, tiles: ["35,5,24"], map: 35, fromSeq: 21000, untilSeq: 21060,
+                fromFire: 3, fires: 0, iso: "" };
+    writeFileSync(file, JSON.stringify(e));
+    const fresh = new ExclusionGate(file);                 // turn 1 of the next process
+    chk("E12 a ban recovered across a restart holds only its REMAINING samples",
+      fresh.refuse(21059, 35, 5, 24, "map35") !== null &&
+      fresh.refuse(21060, 35, 5, 24, "map35") === null && fresh.current() === null);
+    writeFileSync(file, JSON.stringify(e));
+    const late = new ExclusionGate(file);
+    chk("E12b one whose budget ran out while the process was down is dead on arrival",
+      late.refuse(21500, 35, 5, 24, "map35") === null && late.current() === null &&
+      !existsSync(file));
+    writeFileSync(file, JSON.stringify({ v: 1, tiles: ["35,5,24"], map: 35, untilTurn: 100,
+                                         fromFire: 1, fires: 0, iso: "" }));
+    chk("E12c a wq#1828 turn-keyed v1 file is dropped, never read as if it were seq",
+      loadExclusion(file) === null && new ExclusionGate(file).current() === null);
+    try { unlinkSync(file); } catch {}
+  }
+  {
+    // The progress store can also go backwards (restored from a checkpoint).
+    // Then the recorded budget is measured against a counter that no longer
+    // exists, and holding it would be holding an unknown span.
+    const file = `/tmp/explore1839b-${TAG}.json`;
+    writeFileSync(file, JSON.stringify({ v: 2, tiles: ["35,5,24"], map: 35, fromSeq: 21000,
+                                         untilSeq: 21060, fromFire: 3, fires: 0, iso: "" }));
+    const g = new ExclusionGate(file);
+    chk("E13 a novelty counter that went backwards lifts it instead of banning for ever",
+      g.refuse(12, 35, 5, 24, "map35") === null && g.current() === null && !existsSync(file));
+    try { unlinkSync(file); } catch {}
   }
 
   // --------------------------------------------------- F. the verdict (wq#1746)
@@ -607,10 +697,10 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
   }
   {
-    const { w, turn, records, gate } = stripWorld({ cfg: { verdictTurns: 5 } });
+    const { w, turn, records, gate, seqNow } = stripWorld({ cfg: { verdictTurns: 5 } });
     const { turn: endTurn } = await runOut(turn);
-    gate.refuse(endTurn + 1, 35, 5, 24, "map35");
-    gate.refuse(endTurn + 1, 35, 4, 24, "map35");
+    gate.refuse(seqNow(), 35, 5, 24, "map35");
+    gate.refuse(seqNow(), 35, 4, 24, "map35");
     for (let t = endTurn + 1; t <= endTurn + 7; t++) await turn(t);
     const v = records().find(r => r.ev === "verdict");
     chk("F5 the verdict carries what the wq#1828 exclusion did beside its own answer",
