@@ -143,9 +143,13 @@ assert r["intervened"] is True and r["attempt"] == 1, \
     f"J3: the corrected remedy gets a fresh budget, got {r.get('attempt')}/{r.get('exhausted')}"
 assert r["directive"]["gotoBan"] == [88], "J4: and it bans the edge"
 assert legacy["attempts"][-1]["rev"] == 2, "J5: new attempts are stamped with the rev they tried"
-# a mode whose prescription did not change keeps its spent budget
+# a mode whose prescription did not change keeps its spent budget. The three
+# entries are stamped NOW because wq#1846 scopes K to one stall episode: the
+# claim under test is "the budget this stall already spent is still spent", and
+# a placeholder ts (this fixture used 1.0 — 1970) would instead be asserting
+# that a 56-year-old spent budget never refunds, which is the bug wq#1846 fixed.
 spent = {"v": 1, "attempts": [
-    {"ts": 1.0, "mode": "FIGHT_LOSS_LOOP", "locationKey": "FIGHT_LOSS_LOOP@3",
+    {"ts": I._now_ms(), "mode": "FIGHT_LOSS_LOOP", "locationKey": "FIGHT_LOSS_LOOP@3",
      "attempt": n, "directive": {}, "beforeState": {"storyScore": 10},
      "afterState": {"storyScore": 10}, "outcome": "superseded"} for n in (1, 2, 3)]}
 r = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 3), log=spent)

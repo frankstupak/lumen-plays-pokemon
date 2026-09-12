@@ -160,8 +160,17 @@ def build_report(mode, location_key, location, state, intervention_log, now_ms):
 
     So split the list on the freeze boundary the same sentence already names:
     attempts since `lastAdvanceAt` were tried against THIS stall, and anything
-    older is prior history, counted (it still costs K) but never presented as a
-    remedy this freeze has resisted.
+    older is prior history — disclosed, but never presented as a remedy this
+    freeze has resisted.
+
+    wq#1846: the older half no longer carries a claim about K. That claim used
+    to read "and still hold its K budget", which was true only while the budget
+    ran over a key's whole lifetime. K is now scoped to a stall EPISODE, whose
+    boundary is deliberately NOT this freeze boundary — `lastAdvanceAt` moves on
+    any partial counter tick, and scoping the budget to it re-opens wq#1162 — so
+    an attempt printed here as "earlier" may or may not still cost K, and this
+    line is not the place that knows. It states what it can see: the attempt
+    exists, and it was not tried against this stall.
     """
     attempts = [e for e in intervention_log.get("attempts", []) if e.get("locationKey") == location_key]
     frozen = state.get("frozenHours", 0.0)
@@ -179,8 +188,8 @@ def build_report(mode, location_key, location, state, intervention_log, now_ms):
         for a in current
     ) or "(none tried against this freeze)"
     if stale:
-        outcomes += (f" [+{stale} earlier attempt(s) on this key predate the freeze "
-                     f"and still hold its K budget — none was tried against this stall]")
+        outcomes += (f" [+{stale} earlier attempt(s) on this key predate the freeze — "
+                     f"none was tried against this stall]")
     prescription = I.PRESCRIPTIONS.get(mode)
     proposed = prescription["summary"] if prescription else "(no automated prescription for this mode)"
     return (

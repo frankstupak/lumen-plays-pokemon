@@ -84,10 +84,24 @@ def spent_log(key="FIGHT_LOSS_LOOP@65", mode="FIGHT_LOSS_LOOP", ts=1787060000000
          "outcome": "superseded"} for n in (1, 2, 3)]}
 
 
+def spent_this_freeze():
+    """The same three attempts, spent inside the freeze that is running NOW.
+
+    wq#1846 scopes K to one stall episode, so "this key's budget is spent" is a
+    claim about the current stall, not about the key's whole history: the
+    2026-08-18 stamps that used to produce an exhausted key now (correctly)
+    refund it. Stamped relative to now rather than to a fixed date, so the
+    sections below keep testing the exhausted path tomorrow as well as today.
+    The 2026-08-18 log stays where the report sections need it — G and I test
+    that boundary itself.
+    """
+    return spent_log(ts=I._now_ms() - 3 * 3.6e6)
+
+
 def seed(directive=STALE_WARP_PIN, log=None):
     with open(I.DIRECTIVE_PATH, "w") as f:
         json.dump(directive, f)
-    I.save_log(log if log is not None else spent_log())
+    I.save_log(log if log is not None else spent_this_freeze())
 
 
 def directive_on_disk():
@@ -106,8 +120,8 @@ def run_supervisor(state, argv=("--json",)):
 # ---------------------------------------------------------------- A
 # decide() itself was never the broken half — wq#1091's terminal directive is
 # produced exactly as designed. The loss happened downstream of this return.
-r = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 65), log=spent_log())
-assert r.get("exhausted") is True, "A1: K spent on 2026-08-18 still bars the key"
+r = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 65), log=spent_this_freeze())
+assert r.get("exhausted") is True, "A1: K spent during this freeze bars the key"
 assert r.get("intervened") is not True, "A2: and it does not intervene"
 assert r.get("directive"), "A3: but it still carries a directive to write"
 assert "EXHAUSTED" in r["directive"]["notepadPin"], "A4: labelled EXHAUSTED, not 'attempt 3/3'"
@@ -172,7 +186,10 @@ assert "attempt 1: grind_sub_objective (superseded)" not in rep, \
     "G2: 2026-08-18 attempts are not this freeze's interventions"
 assert "(none tried against this freeze)" in rep, "G3: say so plainly"
 assert "+3 earlier attempt(s)" in rep, "G4: the spent budget is still disclosed"
-assert "still hold its K budget" in rep, "G5: and named as the reason the key is barred"
+# wq#1846: the bracket used to add "and still hold its K budget". Once K is
+# scoped to a stall episode, attempts this old do NOT bar the key, and a ticket
+# body that says they do sends the next reader after the wrong thing again.
+assert "K budget" not in rep, "G5: and makes no claim about K it cannot see"
 print("G: the report no longer credits a prior freeze's attempts to this one")
 
 # ---------------------------------------------------------------- H
