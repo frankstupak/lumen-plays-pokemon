@@ -17,6 +17,8 @@ const envS = (k: string, d: string) => process.env[k] ?? d;
 const envN = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : d; };
 // zero-permitted variant: 0 is a meaningful value (off), unlike envN where 0 falls to default
 const envN0 = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v >= 0 ? Math.floor(v) : d; };
+// ...and the fractional one, for a share (wq#1828 LPP_EXPLORE_PATCH_SHARE): 0 is off
+const envF0 = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v >= 0 ? v : d; };
 const envEffort = (k: string, d?: "low" | "medium" | "high") => {
   const v = process.env[k];
   if (v === "none") return undefined;            // explicit provider-default
@@ -148,6 +150,17 @@ export const CFG = {
   // tiles) or never left one map, then drives K directional steps with no
   // brain call. LPP_EXPLORE_OVERRIDE=0 reverts the rung, LPP_EXPLORE_PROMPT=0
   // drops the PROGRESS/GOAL lines, both without a redeploy.
+  //
+  // wq#1828 added the two knob groups at the end. patch* is the third trigger:
+  // the first two fired ZERO times in 6.7h of live play because the agent
+  // shuttles off the stalled strip every ~50 turns, and one sample anywhere in
+  // the window clears a whole-window AND. patchShare is the share of a window
+  // one Chebyshev-patchRadius patch must hold; radius 5 is the measured live
+  // stall (map35 x=4..5, y=19..29). Below radius 4 the trigger stops firing on
+  // that run at all (6/363 windows at r=3, 0/363 at r=2), at 5 it fires on
+  // 260/363. excludeTurns is how long goto refuses the escaped patch after a
+  // fire. LPP_EXPLORE_PATCH_SHARE=0 reverts the trigger,
+  // LPP_EXPLORE_EXCLUDE_TURNS=0 reverts the exclusion, both independently.
   explore: {
     enabled: envN0("LPP_EXPLORE_OVERRIDE", 1) > 0,
     prompt: envN0("LPP_EXPLORE_PROMPT", 1) > 0,
@@ -158,6 +171,10 @@ export const CFG = {
     expireFactor: envN("LPP_EXPLORE_EXPIRE_FACTOR", 3),
     urgencyTurns: envN("LPP_EXPLORE_URGENCY_TURNS", 60),
     catchParty: envN("LPP_EXPLORE_CATCH_PARTY", 3),
+    patchShare: envF0("LPP_EXPLORE_PATCH_SHARE", 0.5),
+    patchRadius: envN0("LPP_EXPLORE_PATCH_RADIUS", 5),
+    patchNew: envN0("LPP_EXPLORE_PATCH_NEW", 0),
+    excludeTurns: envN0("LPP_EXPLORE_EXCLUDE_TURNS", 60),
   },
   // wq#1181 LOSS LEDGER + engagement gates (roadmap item 6). ON by default:
   // unlike the verdict above it cannot act on its own, it can only refuse a

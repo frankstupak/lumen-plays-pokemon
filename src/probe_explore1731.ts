@@ -12,10 +12,13 @@ process.env.LPP_OVERRIDE_LOG = `/tmp/explore1731-${TAG}.jsonl`;
 import { existsSync, readFileSync, unlinkSync } from "fs";
 import type { ProgressSample } from "./novelty";
 import {
-  assessStall, planEscape, pathToDirs, footDistance, progressBlock, progressCounters,
+  assessStall, dominantPatch, planEscape, pathToDirs, footDistance, progressBlock, progressCounters,
   ExplorationOverride, overrideLogFile, recoverFlushSeq, FALLBACK_SEQUENCE,
   type ExploreCfg, type GridLike,
 } from "./explore";
+import { ExclusionGate, exclusionLift, loadExclusion, EXCLUSION_MAX_FIRES,
+         type Exclusion } from "./exclusion";
+import { STALL_WINDOW, PROGRESS_WINDOW, rehydrate } from "./fixture_stall1828";
 
 let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => {
@@ -26,6 +29,7 @@ const chk = (n: string, ok: boolean, d = "") => {
 const CFG: ExploreCfg = {
   enabled: true, prompt: true, windowTurns: 150, minTiles: 5, stepsK: 30,
   clearance: 3, expireFactor: 3, urgencyTurns: 60, catchParty: 3,
+  patchShare: 0.5, patchRadius: 5, patchNew: 0, excludeTurns: 60,
 };
 
 let seqCounter = 0;
@@ -76,6 +80,51 @@ console.log("=== A. assessStall ===");
 
   const grind = strip(150).map((x, i) => ({ ...x, P: 10000 + i * 10 }));
   chk("A7 rising levels (a grind) on the same strip still stalls", assessStall(grind, 0, CFG).stalled);
+}
+
+// ------------------------------------------- A-live. the wq#1828 falsifier
+// Both windows are slices of the live run's own novelty samples
+// (src/fixture_stall1828.ts). The claim under test: the dominant_patch trigger
+// fires on the shuttle that defeated wq#1731, and stays silent on the stretch
+// of the SAME run where the agent was genuinely covering ground.
+console.log("=== A-live. dominant_patch vs the live samples ===");
+{
+  const stall = rehydrate(STALL_WINDOW);
+  const prog = rehydrate(PROGRESS_WINDOW);
+  const off = { ...CFG, patchShare: 0 };
+
+  const miss = assessStall(stall, 0, off);
+  chk("A8 wq#1731's two triggers miss this window — the measured defect",
+    !miss.stalled && miss.complete && miss.maps.length > 1 && miss.newTiles > 0 &&
+    miss.uniqueTiles >= CFG.minTiles,
+    JSON.stringify({ maps: miss.maps.length, newTiles: miss.newTiles, tiles: miss.uniqueTiles }));
+
+  const v = assessStall(stall, 0, CFG);
+  chk("A9 dominant_patch fires on it", v.stalled && v.trigger === "dominant_patch" && !!v.patch &&
+    v.patch.map === 35 && v.patch.share >= CFG.patchShare && v.patch.newTiles === 0,
+    JSON.stringify(v.patch && { at: [v.patch.map, v.patch.x, v.patch.y],
+                                share: +v.patch.share.toFixed(3), fresh: v.patch.newTiles }));
+  chk("A9b every new tile it holds was earned OUTSIDE the patch (the laundering it stops)",
+    v.newTiles > 0 && v.patch!.newTiles === 0, `newTiles=${v.newTiles}`);
+
+  const pcfg = { ...CFG, windowTurns: PROGRESS_WINDOW.length };
+  const pv = assessStall(prog, 0, pcfg);
+  chk("A10 it stays silent on the same run's progressing Route 25 stretch",
+    pv.complete && !pv.stalled && !!pv.patch && pv.patch.newTiles > 0,
+    JSON.stringify(pv.patch && { at: [pv.patch.map, pv.patch.x, pv.patch.y],
+                                 share: +pv.patch.share.toFixed(3), fresh: pv.patch.newTiles }));
+  chk("A10b and density alone would have convicted it — new ground inside the patch is the acquittal",
+    pv.patch!.share >= CFG.patchShare, String(+pv.patch!.share.toFixed(3)));
+
+  chk("A11 LPP_EXPLORE_PATCH_SHARE=0 reverts the trigger", !assessStall(stall, 0, off).stalled);
+  chk("A12 a radius below the stalled strip's height does not find it",
+    !assessStall(stall, 0, { ...CFG, patchRadius: 2 }).stalled);
+  chk("A13 a partial window has no patch and no verdict",
+    (() => { const p = assessStall(stall.slice(0, 149), 0, CFG); return !p.stalled && !p.complete && p.patch === null; })());
+  chk("A14 dominantPatch on an empty window is null, not a throw", dominantPatch([], 5) === null);
+  const one = dominantPatch(strip(1), 0);
+  chk("A14b radius 0 is the single cell it stood on",
+    !!one && one.samples === 1 && one.share === 1 && one.cells.length === 1, JSON.stringify(one?.cells));
 }
 
 // ------------------------------------------------------------- grid double
@@ -195,10 +244,13 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     for (let y = 18; y <= 30; y++) { g.walls.add(`3,${y}`); g.walls.add(`6,${y}`); }
     for (const x of [4, 5]) { g.walls.add(`${x},18`); g.walls.add(`${x},30`); }
   }
+  const uniq = `${TAG}-${Math.random().toString(36).slice(2)}`;
   const w = {
     g, foot, pos: { map: 35, x: 5, y: 24 }, battle: false, fires: 0,
-    samples: strip(150), log: `/tmp/explore1731-${TAG}-${Math.random().toString(36).slice(2)}.jsonl`,
+    samples: strip(150), log: `/tmp/explore1731-${uniq}.jsonl`,
+    exFile: `/tmp/explore1828-${uniq}.json`,
   };
+  const gate = new ExclusionGate(w.exFile);
   const move = async (dx: number, dy: number, n: number) => {
     if (w.battle) return "battle";
     const nx = w.pos.x + dx * n, ny = w.pos.y + dy * n;
@@ -211,17 +263,21 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
     map: g, pos: () => ({ ...w.pos }),
     step: (dx, dy) => move(dx, dy, 1), hop: (dx, dy) => move(dx, dy, 2),
     samples: () => w.samples, blocked: () => (w.battle ? "battle" : null),
-    onFire: () => { w.fires++; }, logFile: w.log, cfg: { ...CFG, ...(opts.cfg ?? {}) },
+    onFire: () => { w.fires++; }, exclude: e => gate.set(e),
+    logFile: w.log, cfg: { ...CFG, ...(opts.cfg ?? {}) },
   });
-  /** One harness turn, then the end-of-turn novelty sample the agent takes. */
+  /** One harness turn, then the end-of-turn novelty sample the agent takes —
+   *  which is also what the exclusion gate ages off (agent.ts runTurn). */
   const turn = async (t: number) => {
     const r = await ov.tick(t);
-    w.samples.push(sample(w.pos.map, w.pos.x, w.pos.y));
+    const s = sample(w.pos.map, w.pos.x, w.pos.y);
+    w.samples.push(s);
+    gate.observe(t, s.map, s.x, s.y, s.newTiles);
     return r;
   };
   const records = () => existsSync(w.log)
     ? readFileSync(w.log, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
-  return { w, ov, turn, records };
+  return { w, ov, turn, records, gate };
 }
 
 (async () => {
@@ -352,6 +408,111 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
       /party 0, 0 turns on this map, 0 turns since/.test(progressBlock({ badges: 0, partyCount: 0, map: 1, samples: [] }, CFG)));
     const k = progressCounters(s.slice(-10).concat([sample(12, 1, 1)]), 12);
     chk("D11 onMap stops at the last map change", k.onMap === 1 && !k.onMapCapped, JSON.stringify(k));
+  }
+
+  // ------------------------------------------------------- E. exclusion (wq#1828)
+  // All nine historical fires read `escaped: true, mapChanged: false`: the walk
+  // out worked and the brain walked back. These cover the refusal that stops it.
+  console.log("=== E. ExclusionGate ===");
+  {
+    const { w, turn, records, gate } = stripWorld();
+    let endTurn = 0;
+    for (let t = 1; t <= 40; t++) { const r = await turn(t); if (r && /ended/.test(r) && !endTurn) endTurn = t; }
+    const end = records().find(r => r.ev === "end");
+    const e = gate.current();
+    chk("E1 the escaped patch is persisted on END", !!e && e.map === 35 && e.fromFire === 1 &&
+      e.tiles.includes("35,5,24") && e.untilTurn === endTurn + CFG.excludeTurns,
+      JSON.stringify(e && { tiles: e.tiles.length, until: e.untilTurn, endTurn }));
+    chk("E1b the end record says so too", !!end && end.excludeUntil === e!.untilTurn &&
+      end.excludeTiles === e!.tiles.length, JSON.stringify(end && { u: end.excludeUntil, n: end.excludeTiles }));
+    chk("E1c only the stalled map's tiles are in it", !!e && e.tiles.every(t => t.startsWith("35,")));
+    const onDisk = loadExclusion(w.exFile);
+    chk("E2 a restarted agent recovers it from runtime/explore_exclusion.json",
+      !!onDisk && onDisk.untilTurn === e!.untilTurn && onDisk.tiles.length === e!.tiles.length &&
+      new ExclusionGate(w.exFile).current()?.fromFire === 1);
+
+    const ref = gate.refuse(endTurn + 1, 35, 5, 24, "Route 24 (map35)");
+    chk("E3 goto INTO the patch is refused, naming the reason and the expiry",
+      !!ref && /EXPLORATION EXCLUSION on Route 24 \(map35\) \(5,24\)/.test(ref) &&
+      ref.includes(`lifts at turn ${e!.untilTurn}`), String(ref).slice(0, 120));
+    chk("E3b the refusal states the three ways out and that walking through is legal",
+      !!ref && /leave map35/.test(ref) && /somewhere new inside it/.test(ref) && /THROUGH/.test(ref));
+    chk("E4 a destination outside the patch is untouched — advisory for movement only",
+      gate.refuse(endTurn + 1, 35, 12, 12, "Route 24 (map35)") === null);
+    chk("E4b and the refusal is a function of the TARGET, not of where you stand",
+      gate.refuse(endTurn + 1, 35, 5, 25, "Route 24 (map35)") !== null &&
+      gate.refuse(endTurn + 1, 35, 0, 0, "Route 24 (map35)") === null);
+    chk("E5 it lifts on the map the escape was trying to reach",
+      gate.refuse(endTurn + 1, 36, 5, 24, "Route 25 (map36)") === null && gate.current() === null);
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, gate } = stripWorld();
+    let endTurn = 0;
+    for (let t = 1; t <= 40; t++) { const r = await turn(t); if (r && /ended/.test(r) && !endTurn) endTurn = t; }
+    const until = gate.current()!.untilTurn;
+    chk("E6 it holds right up to untilTurn", gate.refuse(until - 1, 35, 5, 24, "map35") !== null);
+    chk("E6b and lifts on it", gate.refuse(until, 35, 5, 24, "map35") === null && !existsSync(w.exFile),
+      `until=${until}`);
+    try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, gate } = stripWorld();
+    for (let t = 1; t <= 40; t++) await turn(t);
+    const lift = gate.observe(41, 35, 5, 24, 1);
+    chk("E7 new ground INSIDE the patch lifts it — the patch stopped being dead",
+      !!lift && /new ground/.test(lift) && gate.current() === null &&
+      gate.refuse(42, 35, 5, 24, "map35") === null, String(lift));
+    chk("E7b new ground outside it does not", (() => {
+      const g2 = stripWorld(); return g2.gate.observe(1, 35, 9, 9, 1) === null;
+    })());
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, records, gate } = stripWorld({ cfg: { excludeTurns: 0 } });
+    for (let t = 1; t <= 40; t++) await turn(t);
+    const end = records().find(r => r.ev === "end");
+    chk("E8 LPP_EXPLORE_EXCLUDE_TURNS=0 is a full revert: nothing recorded, nothing refused",
+      gate.current() === null && !existsSync(w.exFile) && !!end && end.excludeUntil === null &&
+      gate.refuse(99, 35, 5, 24, "map35") === null);
+    try { unlinkSync(w.log); } catch {}
+  }
+  {
+    // The escape that left the map has nothing to refuse: goto is same-map only.
+    const probe = stripWorld();
+    await probe.turn(1);
+    const seq: string[] = probe.records().find(r => r.ev === "fire")?.sequence ?? [];
+    try { unlinkSync(probe.w.log); } catch {}
+    let x = 5, y = 24;
+    const d = (s: string) => ({ U: [0, -1], D: [0, 1], L: [-1, 0], R: [1, 0] } as any)[s[0]];
+    for (const s of seq.slice(0, 2)) { x += d(s)[0]; y += d(s)[1]; }
+    const { w, turn, gate } = stripWorld({ warpAt: `${x},${y}` });
+    for (let t = 1; t <= 3; t++) await turn(t);
+    chk("E9 a run that ended on another map writes no exclusion",
+      gate.current() === null && !existsSync(w.exFile));
+    try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const { w, turn, gate } = stripWorld();
+    for (let t = 1; t <= 40; t++) await turn(t);
+    const said: (string | null)[] = [];
+    for (let i = 0; i < EXCLUSION_MAX_FIRES + 2; i++) said.push(gate.refuse(41, 35, 5, 24, "map35"));
+    chk("E11 it gives itself up after EXCLUSION_MAX_FIRES refusals (the wq#1181 anti-wedge)",
+      said.filter(Boolean).length === EXCLUSION_MAX_FIRES && said[EXCLUSION_MAX_FIRES] === null &&
+      gate.current() === null, `${said.filter(Boolean).length} refusals`);
+    chk("E11b and it counts them down out loud, so the last one says so",
+      /after 1 more refusals/.test(said[EXCLUSION_MAX_FIRES - 2] ?? "") &&
+      /after 0 more refusals/.test(said[EXCLUSION_MAX_FIRES - 1] ?? ""),
+      String(said[EXCLUSION_MAX_FIRES - 1]).slice(0, 200).split(".")[1]);
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    const e: Exclusion = { v: 1, tiles: ["35,5,24"], map: 35, untilTurn: 100, fromFire: 2, fires: 0, iso: "" };
+    chk("E10 the lift rule is pure and states which rule fired",
+      exclusionLift(e, 99, 35) === null && /expired/.test(exclusionLift(e, 100, 35) ?? "") &&
+      /left map35/.test(exclusionLift(e, 99, 36) ?? ""));
+    chk("E10b a missing or corrupt file excludes nothing",
+      loadExclusion(`/tmp/explore1828-missing-${TAG}.json`) === null);
   }
 
   try { unlinkSync(process.env.LPP_OVERRIDE_LOG!); } catch {}

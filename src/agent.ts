@@ -37,6 +37,7 @@ import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
 import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";   // wq#1731
+import { ExclusionGate, exclusionFile } from "./exclusion";        // wq#1828
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
 import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
@@ -206,6 +207,9 @@ export class Agent {
   private novelty!: NoveltyTracker;
   // wq#1731: the hard exploration rung in runTurn's ladder (src/explore.ts).
   private explore!: ExplorationOverride;
+  // wq#1828: the patch that rung just escaped, refused as a goto destination
+  // until it expires (src/exclusion.ts).
+  private exclusion!: ExclusionGate;
   // wq#1181: the fight loss ledger + its gates. Unlike the tracker files above
   // this one gates travel — enter_warp consults it (CFG.fightGate) — which is why every
   // gate it hands out carries three expiries and a fire cap (ledger.ts header).
@@ -233,6 +237,7 @@ export class Agent {
     // one-off drivers that run from a different cwd than the live deployment.
     this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
     this.ledger = new FightLedger({ dir: join(checkpointDir, "..", "runtime"), bus });
+    this.exclusion = new ExclusionGate(exclusionFile(join(checkpointDir, "..", "runtime")), bus);
     this.explore = new ExplorationOverride({
       map: this.map,
       pos: () => this.nav.posChecked(),
@@ -245,6 +250,9 @@ export class Agent {
       // An interrupted goto the transit policy would resume is the brain's
       // stalled intent; resuming it after the escape walks straight back.
       onFire: () => this.transit.clear(),
+      // wq#1828: every historical fire read `escaped: true, mapChanged: false` —
+      // the escape worked and the brain walked back. Now it is refused.
+      exclude: e => this.exclusion.set(e),
       bus,
       logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
       cfg: CFG.explore,
@@ -689,6 +697,14 @@ export class Agent {
           const xref = crossMapRefusal(tgt, st0.map, id => this.mapLabel(id));
           if (xref) return `goto: ${xref}`;
           const tx = tgt.x, ty = tgt.y;
+          // wq#1828: the patch the exploration override just escaped is not a
+          // destination for the next excludeTurns turns. Movement only — the
+          // route may still cross it, so an escape cannot seal the map.
+          {
+            const ex = this.exclusion.refuse(this.turn, st0.map, tx, ty,
+              this.mapLabel(st0.map) ?? `map${st0.map}`);
+            if (ex) return `goto: ${ex}`;
+          }
           // wq#601: past the cave, the Mt Moon re-entry warp tile is refused
           // here, not in prose. reader.read() is fresh RAM; map15 is ranked on
           // every tile so corridorPhase needs no prev there.
@@ -1575,7 +1591,12 @@ export class Agent {
     // arriving map's id (the wq#699 class) and invent tiles that do not exist.
     // Wrapped because bookkeeping may never break a turn; the tracker's own file
     // I/O is fail-soft too, so this catch is for arithmetic on a torn read.
-    try { this.novelty.observe(this.turn, after); } catch { /* observe-only */ }
+    try {
+      const s = this.novelty.observe(this.turn, after);
+      // wq#1828: the same sample decides whether the exclusion still holds —
+      // new ground inside the patch means it was not dead after all.
+      this.exclusion.observe(this.turn, s.map, s.x, s.y, s.newTiles);
+    } catch { /* observe-only */ }
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;
     this.hist.push(line);
