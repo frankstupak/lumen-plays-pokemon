@@ -398,6 +398,30 @@ def save_log(log, path=LOG_PATH):
     os.replace(tmp, path)
 
 
+def persist_directive(directive, path=DIRECTIVE_PATH):
+    """Write the pin the live agent reads. The ONE writer of DIRECTIVE_PATH.
+
+    wq#1845: this used to be two copies — main() below and the same five lines
+    inlined in tools/lpp-stuck-supervisor — and the copies drifted. wq#1091
+    taught main() to persist on the exhausted path too (a key past K still has a
+    standing requirement, and a pin frozen at "attempt 3/3" is worse than none);
+    the supervisor's copy kept writing only when decide() said `intervened`.
+    The supervisor is the copy the systemd timer runs, so in production the
+    exhausted directive was computed on every tick and dropped on the floor,
+    leaving the file at whatever a DIFFERENT incident last wrote. FIGHT_LOSS_LOOP@65
+    spent 246h that way: the agent stood in Cerulean Gym losing to Misty while
+    its every-turn pin described a warp oscillation on Route 25 (WARP_OSC@36,
+    written 2026-09-12T10:55Z and never replaced).
+
+    One writer, two callers, so the next rule about WHEN to write can only be
+    written once.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(directive, f, indent=1)
+    os.replace(tmp, path)
+
+
 def _key(mode, location_id):
     return f"{mode}@{location_id}"
 
@@ -624,10 +648,7 @@ def main(argv=None):
         # is now the intervening path AND the exhausted path, which must be
         # able to correct a stale pin it can no longer replace via an attempt.
         if result.get("directive"):
-            tmp = DIRECTIVE_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(result["directive"], f, indent=1)
-            os.replace(tmp, DIRECTIVE_PATH)
+            persist_directive(result["directive"])
 
     if args.json:
         print(json.dumps(result, indent=1))

@@ -144,13 +144,43 @@ def get_detail(ticket_id, wq_call):
 
 
 def build_report(mode, location_key, location, state, intervention_log, now_ms):
+    """The ticket body a human (or a dispatched agent) reads to decide what to do.
+
+    wq#1845: the attempt list used to be every entry ever logged for the key,
+    unfiltered, printed under a sentence that dates the freeze to
+    `since {lastAdvanceAt}`. A (mode, location) key outlives one freeze —
+    `open_attempt_count` never forgets a spent budget — so the two halves
+    routinely disagreed. FIGHT_LOSS_LOOP@65 filed "frozen since 2026-09-02 ...
+    interventions: attempt 1, 2, 3 grind_sub_objective (superseded)" whose three
+    attempts were all made 2026-08-18, against a save a checkpoint restore later
+    rolled back (eventFlags 43 -> 39). Zero interventions had been tried against
+    the freeze being reported. Three redispatches read that line, believed the
+    grind remedy had been tried three times, and went looking for a harder grind
+    instead of at the plumbing.
+
+    So split the list on the freeze boundary the same sentence already names:
+    attempts since `lastAdvanceAt` were tried against THIS stall, and anything
+    older is prior history, counted (it still costs K) but never presented as a
+    remedy this freeze has resisted.
+    """
     attempts = [e for e in intervention_log.get("attempts", []) if e.get("locationKey") == location_key]
     frozen = state.get("frozenHours", 0.0)
+    try:
+        since_ms = _parse_iso_ms(state.get("lastAdvanceAt"))
+    except Exception:
+        # No parseable freeze start — report every attempt rather than none.
+        since_ms = None
+    current = [a for a in attempts
+               if since_ms is None or (a.get("ts") or 0) >= since_ms]
+    stale = len(attempts) - len(current)
     outcomes = "; ".join(
         f"attempt {a['attempt']}: {a['directive']['action']} "
         f"({'advanced' if a.get('outcome') == 'advanced' else a.get('outcome') or 'no result yet'})"
-        for a in attempts
-    ) or "(no logged attempts)"
+        for a in current
+    ) or "(none tried against this freeze)"
+    if stale:
+        outcomes += (f" [+{stale} earlier attempt(s) on this key predate the freeze "
+                     f"and still hold its K budget — none was tried against this stall]")
     prescription = I.PRESCRIPTIONS.get(mode)
     proposed = prescription["summary"] if prescription else "(no automated prescription for this mode)"
     return (
