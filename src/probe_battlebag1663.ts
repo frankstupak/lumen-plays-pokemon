@@ -46,6 +46,7 @@ const sym = new SymbolTable(`${BASE}/roms/pokeblue.sym`);
 const rom = new Rom(ROM);
 const CK = `${BASE}/checkpoints`;
 const ROUTE_MAPS = new Set([35]);   // Route 24/25 - the map35 grass strip
+const MAX_FIXTURES = 8;             // wq#1744: bound the walk when the RNG is cold
 
 let pass = 0, fail = 0, skip = 0;
 const chk = (l: string, c: boolean, d = "") => {
@@ -77,7 +78,17 @@ function rig(statePath: string): Rig | null {
   return { emu, map, nav, rd, items, bat, pos, r };
 }
 
-function findFixture(): { path: string; r: Rig } | null {
+/** wq#1744: every qualifying fixture, grass-standing ones FIRST, not just the
+ *  alphabetically first one. Gen 1 rolls an encounter only when a step lands on
+ *  the tileset's grass tile (MapModel.isGrass), so a fixture parked on the
+ *  Nugget Bridge path can never produce one no matter how long it paces — and
+ *  `findFixture` returning exactly that fixture (auto-mtxytpwj-map35, (11,35))
+ *  is why this probe reported SKIP B "rerun" on every run: the snapshot set is
+ *  fixed, so the "rerun" advice could never change the outcome. Verified live
+ *  2026-09-12 (wq#1744): 3 PASS / 1 SKIP, section C never executed, so the
+ *  fix it covers had no live cover at all. */
+function fixtureCandidates(): { path: string; r: Rig; onGrass: boolean }[] {
+  const out: { path: string; r: Rig; onGrass: boolean }[] = [];
   for (const f of readdirSync(CK).filter(f => f.endsWith(".state.gz")).sort()) {
     const r = rig(`${CK}/${f}`);
     if (!r) continue;
@@ -86,9 +97,11 @@ function findFixture(): { path: string; r: Rig } | null {
     if (r.map.warps.some((w: Warp) => w.x === p.x && w.y === p.y)) continue;
     const st = r.rd.read();
     if (st.inBattle !== 0 || st.partyCount < 1) continue;
-    return { path: f, r };
+    const onGrass = r.map.isGrass(p.x, p.y) ||
+      [[0, 1], [0, -1], [1, 0], [-1, 0]].some(([dx, dy]) => r.map.isGrass(p.x + dx, p.y + dy));
+    out.push({ path: f, r, onGrass });
   }
-  return null;
+  return out.sort((a, b) => Number(b.onGrass) - Number(a.onGrass));
 }
 
 /** Append N filler items then a POKE_BALL stack, so POKe BALL always lands
@@ -118,6 +131,10 @@ async function forceEncounter(r: Rig): Promise<boolean> {
       (r.map as any).passableFrom?.(nx, ny, p0.x, p0.y) &&
       !r.map.warps.some((w: Warp) => w.x === nx && w.y === ny);
   });
+  // wq#1744: pace onto grass first — a step onto dead ground cannot roll an
+  // encounter, so an ungrassed neighbour only burns the 80-step budget.
+  cands.sort(([ax, ay], [bx, by]) =>
+    Number(r.map.isGrass(p0.x + bx, p0.y + by)) - Number(r.map.isGrass(p0.x + ax, p0.y + ay)));
   for (const [dx, dy] of cands) {
     const nb = { x: p0.x + dx, y: p0.y + dy };
     for (let i = 0; i < 80; i++) {
@@ -136,26 +153,36 @@ async function forceEncounter(r: Rig): Promise<boolean> {
 
 (async () => {
   console.log("== probe_battlebag1663: bag opens + selects past page 1 in a real wild battle ==");
-  const fx = findFixture();
-  if (!fx) {
-    chk("A1 map35 fixture (off-warp, out of battle) resolves", false, "none on disk");
+  const cands = fixtureCandidates();
+  chk("A1 map35 fixture (off-warp, out of battle) resolves", cands.length > 0,
+      cands.length ? `${cands.length} candidates, ${cands.filter(c => c.onGrass).length} on/next to grass`
+                   : "none on disk");
+  if (!cands.length) {
     console.log(`\nRESULT pass=${pass} fail=${fail} skip=${skip}`);
     process.exit(1);
   }
-  const { path, r } = fx;
-  chk("A1 map35 fixture (off-warp, out of battle) resolves", true,
-      `${path}: (${r.pos().x},${r.pos().y})`);
 
-  const idx = stackDeepBall(r, ITEM.ANTIDOTE, 6, 3);
-  chk("A2 POKe BALL forced to a deep, must-scroll bag index", idx >= 6, `idx=${idx}`);
-  chk("A3 production reader agrees on the stack", r.items.has(ITEM.POKE_BALL) === 3,
-      `has=${r.items.has(ITEM.POKE_BALL)}`);
-
-  if (!await forceEncounter(r)) {
-    skipped("B wild encounter on map35", "no encounter across pair-safe neighbours - rerun");
+  // wq#1744: the encounter roll is RNG per step, so walk down the candidate
+  // list (grass first) until one fixture actually produces a battle. A single
+  // fixture failing is not evidence about the bag driver, which is what this
+  // probe exists to cover.
+  let used: { path: string; r: Rig } | null = null;
+  let idx = -1;
+  for (const c of cands.slice(0, MAX_FIXTURES)) {
+    idx = stackDeepBall(c.r, ITEM.ANTIDOTE, 6, 3);
+    if (await forceEncounter(c.r)) { used = c; break; }
+  }
+  if (!used) {
+    skipped("B wild encounter on map35",
+            `no encounter across ${Math.min(cands.length, MAX_FIXTURES)} fixtures - rerun`);
     console.log(`\nRESULT pass=${pass} fail=${fail} skip=${skip}`);
     process.exit(fail ? 1 : 0);
   }
+  const { path, r } = used;
+  console.log(`   fixture: ${path} (${r.pos().x},${r.pos().y})`);
+  chk("A2 POKe BALL forced to a deep, must-scroll bag index", idx >= 6, `idx=${idx}`);
+  chk("A3 production reader agrees on the stack", r.items.has(ITEM.POKE_BALL) === 3,
+      `has=${r.items.has(ITEM.POKE_BALL)}`);
   const w = await r.bat.waitForMenu?.();
   chk("B battle reaches the main menu", w === "menu", String(w));
   if (w !== "menu") {
