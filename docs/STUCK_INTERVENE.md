@@ -53,6 +53,7 @@ already-firing valve, not a repair to the valve itself.
 | Mode | Action | Notes |
 |---|---|---|
 | `FIGHT_LOSS_LOOP` | `grind_sub_objective` | pins the harness's own gym-entry gate — level, potions, roster, type counter — read from `src/guidance.ts` (wq#1091) |
+| `OBJECTIVE_DRIFT` | `advance_to_next_objective` | wq#1867; the same loop shape with the badge already won. Pins no preparation at all — the blocker is gone and the only thing left is to leave. Names the frontier engine's `nextMilestone` and defers the leg to `route.ts`'s own ROUTE line rather than inventing a target, and adds `reach.ts`'s closed-off-region advice when the turn summaries show goto failing that way. `gotoBan: []`: the maps on offer are the town hub and its only heal point |
 | `NAV_LOOP` | `checkpoint_restore_then_goto_ban` | pins a goto-ban + fallback-checkpoint instruction |
 | `OBJECTIVE_UNREACHABLE` | `replan_verify_map_data` | pins a re-verify instruction against the frontier's `pathExhausted` milestone |
 | `RESUME_DEADEND` | `advance_past_boot_state` | pins the three conditions `src/resume.ts`'s picker applies to a replacement save — newer than the boot state, not written on a warp tile, at or above `VIABLE_HP_PCT` (read, not retyped). The old `alternate_checkpoint` pin asked the brain to resume from a different checkpoint: it does not choose the save, and the harness's repeat guard had already tried that and found nothing to take (wq#1118) |
@@ -342,6 +343,18 @@ inside one episode while 24.1h opens a new one; the boundary scales with
 freeze (1200 exhausted ticks) refunds nothing while 25 days of silence does; the
 heartbeat stays out of `log["attempts"]`; a prior episode's orphaned open attempt
 gets closed; and wq#1826's `rev` refund still composes inside an episode.
+
+`python3 tools/test_stuck1867.py` — sections G-I cover this module: the
+`OBJECTIVE_DRIFT` directive is `advance_to_next_objective` with `gotoBan: []`,
+its pin names the frontier's milestone and the town it is orbiting, no grind
+text survives into it, and it deliberately trips neither `PIN_CATCH_RE` nor
+`PIN_GRASS_RE` in `src/pin.ts` (both regex literals are re-read from that file,
+so a change there fails the test rather than the run). The closed-off-pocket
+sentence appears only when `closedOffTurns` is non-zero and leaves no dangling
+space when it does not, and the EXHAUSTED directive still renders for every
+mode — that last one now shares one `_fmt_extras()` with the attempt path, so
+a template that names a new field can no longer `KeyError` only on the
+terminal path.
 
 ## Rollback
 
