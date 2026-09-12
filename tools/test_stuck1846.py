@@ -165,6 +165,13 @@ assert list(log["keys"]) == ["FIGHT_LOSS_LOOP@65"], "F2: liveness lives in log['
 assert log["keys"]["FIGHT_LOSS_LOOP@65"]["lastLiveAt"] == NOW + 4 * 1800e3, \
     "F3: every tick heartbeats, exhausted ones included"
 assert json.loads(json.dumps(log)) == log, "F4: the log stays JSON-serialisable"
+# the heartbeat only works if it survives the file the timer writes each tick
+roundtrip = os.path.join(tmpdir, "intervention_log.json")
+I.save_log(log, path=roundtrip)
+reloaded = I.load_log(path=roundtrip)
+assert reloaded["keys"] == log["keys"], "F4b: and survives save_log/load_log"
+r = I.decide(state=stalled_state("FIGHT_LOSS_LOOP", 65), log=reloaded, now_ms=NOW + 5 * 1800e3)
+assert r.get("exhausted") is True, "F4c: a reloaded log keeps the episode it was saved in"
 # an open attempt orphaned by a finished episode is closed, not held open forever
 log = {"v": 1, "attempts": [
     {"ts": NOW - 30 * DAY, "mode": "FIGHT_LOSS_LOOP", "locationKey": "FIGHT_LOSS_LOOP@65",
