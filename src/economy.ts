@@ -24,7 +24,7 @@
 // Item ids come from src/items.ts — the single source of truth. An earlier
 // draft of this module duplicated them from memory and got POTION and ANTIDOTE
 // backwards; probe_economy caught it on the first run. Do not re-duplicate.
-import { ITEM, MART_ORDER, MART_CITY } from "./items";
+import { ITEM, MART_ORDER, MART_CITY, Sellable } from "./items";
 
 export const BALL = ITEM.POKE_BALL;
 
@@ -93,6 +93,11 @@ export interface EconomyCtx {
   martStock?: readonly number[];   // MART_ORDER[map] when inMart
   /** Level the campaign wants before the next gym (guidance.MISTY_MIN_LEVEL). */
   gymMinLevel: number;
+  /** wq#1835: bag entries a clerk will pay for that the campaign does not need,
+   *  richest first (items.sellables()). Prices come from the ROM's own
+   *  ItemPrices table, never from PRICE above — PRICE only knows mart stock,
+   *  and the item this branch exists for is a NUGGET, which no mart sells. */
+  sellables?: readonly Sellable[];
 }
 
 /**
@@ -103,6 +108,25 @@ export interface EconomyCtx {
  */
 export function economyAdvice(c: EconomyCtx): string | null {
   const canBuyBall = c.money >= BALL_PRICE;
+
+  // 0. BROKE WHILE RICH. Outranks BROKE because BROKE's advice ("money comes
+  //    ONLY from beating TRAINERS") is FALSE while the bag holds treasure, and
+  //    a directive that sends the run grinding past $5000 of nugget is worse
+  //    than silence. Measured 2026-09-12: $96 for 318 turns, carrying item 49.
+  //    Only a sale that clears one ball's price qualifies -- selling $50 of
+  //    junk does not relieve the binding constraint, it just spends the turn.
+  const best = (c.sellables ?? []).find(s => s.value >= BALL_PRICE);
+  if (!canBuyBall && best) {
+    const balls = Math.floor(best.value / BALL_PRICE);
+    const head = `! BROKE AT $${c.money} BUT CARRYING $${best.value}: your ${best.name}` +
+      ` sells for $${best.unit}${best.qty > 1 ? ` each (${best.qty} of them)` : ""} at any Poke Mart` +
+      ` counter -- ${balls} Poke Ball${balls === 1 ? "" : "s"} worth, more than the trainers between`+
+      ` here and the next town pay.`;
+    return c.inMart
+      ? `${head} You are STANDING IN ONE: sell_item(${best.name}, ${best.qty}) right now.`
+      : `${head} Route to a Mart and sell_item(${best.name}, ${best.qty}) there.` +
+        ` Balls and healing items are deliberately NOT on this list -- they are worth more than their resale.`;
+  }
 
   // 1. BROKE. The condition that has held for ~81 hours of play. Nothing else
   //    matters until it changes, so say so in the loudest slot and name the

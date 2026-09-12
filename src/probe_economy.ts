@@ -3,6 +3,11 @@
 // directions (fires when it should, stays silent when it should not), because
 // the defect this module exists to fix was three guards silently returning
 // null in exactly the state where they most needed to speak.
+//
+// wq#1835 added branch 0 (broke while carrying a sellable). Its red/green lives
+// in probe_sell1835 section C, next to the ROM price table the branch's numbers
+// come from — asserting the directive apart from the prices that feed it would
+// pin the sentence and not the claim.
 import { economyAdvice, cheapestInStock, affordable, PRICE, BALL, BALL_PRICE,
          MIN_SAFE_PARTY, ballMarts, EconomyCtx } from "./economy";
 import { ITEM, MART_ORDER, MART_CITY } from "./items";

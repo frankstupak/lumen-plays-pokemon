@@ -46,6 +46,12 @@ export function verifyFailed(tool: string, result: string): boolean {
       // guards ("buy_item: not during a battle" / unknown item) are equally
       // pointless to retry verbatim.
       return !result.startsWith("bought");
+    case "sell_item":
+      // successes: "sold 1x nugget for 5000; purse 5096, 0 left". Everything
+      // items.sell returns otherwise is a "sell: <reason>" failure, including
+      // the two refusals that are permanent for that item (unpriced, or a ball)
+      // and so are the most pointless of all to retry.
+      return !result.startsWith("sold");
     case "use_item":
       // failures are prefixed "use_item:"; successes read "use_item done:",
       // "used ... in battle", "caught it...", "... thrown - ...".
