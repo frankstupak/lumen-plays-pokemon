@@ -79,6 +79,18 @@ BOUNDING (K=3)
   a raw counter tick refunded the budget mid-stall and made K unbounded in
   practice; see resolve_pending's own note for the failure it produced.
 
+  wq#1846: and the budget is scoped to ONE STALL EPISODE, not to the key for
+  all time. The count used to run over the key's whole history, so a key that
+  spent K once was barred from issuing a numbered attempt ever again:
+  FIGHT_LOSS_LOOP@65 spent its three on 2026-08-18 (all closed "superseded"
+  when a checkpoint restore rolled the save back, eventFlags 43->39), and the
+  unrelated freeze that began 2026-09-02 got ZERO interventions across 246h —
+  decide() answered exhausted on its first tick and every tick after. An
+  episode ends when the key stops being the live stall for longer than the
+  classifier's own freeze clock can account for (see episode_start). That is
+  the one boundary a mid-stall partial tick cannot manufacture, which is what
+  keeps wq#1162's ladder shut while the 25-day-old spent key gets a fresh K.
+
 READ+WRITE, LOCAL FILES ONLY. Reads runtime/stuck_mode.json (or recomputes it
 live via lpp_stuck_mode), checkpoints/**/*.json. Writes only
 runtime/intervention_log.json (append-only history) and
@@ -98,6 +110,24 @@ LOG_PATH = f"{BASE}/runtime/intervention_log.json"
 DIRECTIVE_PATH = f"{BASE}/runtime/supervisor_directive.json"
 
 K = 3  # spec wq#672: "INTERVENE (K=3)"
+
+# wq#1846: how long a key must stop being the live stall before its next freeze
+# counts as a NEW episode, and therefore as a fresh K budget. Expressed in
+# multiples of the classifier's own freeze window (lpp_stuck_mode's windowHours,
+# 2h today) rather than as a bare hour count, so the two move together.
+#
+# WHY 12 WINDOWS AND NOT 1. A partial tick — eventFlags rising while story_score
+# stays frozen — restarts that freeze clock (lpp_stuck_mode.advances), so the
+# quiet a mid-stall tick can manufacture is bounded by one window plus the
+# supervisor's own poll gap (~30min live). A boundary anywhere near one window
+# would therefore re-open wq#1162: the live FIGHT_LOSS_LOOP@3 ladder re-froze on
+# the SAME key 9.2h and 7.7h after its previous attempt
+# (runtime/intervention_log.json, 2026-08-28T22:53 -> 08-29T08:05 -> 16:14) and
+# every one of those re-freezes has to stay inside one episode. 24h clears the
+# widest of them with room to spare, while the boundary this ticket exists to
+# cross — FIGHT_LOSS_LOOP@65's last attempt 2026-08-18, next freeze 2026-09-02 —
+# is 15 days, an order of magnitude past it.
+EPISODE_GAP_WINDOWS = 12
 
 # wq#1091: the gym-readiness bar the HARNESS enforces, read from its single
 # source of truth (src/guidance.ts) instead of retyped here. The original
@@ -388,7 +418,9 @@ def load_log(path=LOG_PATH):
             return j
     except Exception:
         pass
-    return {"v": 1, "attempts": []}
+    # "keys" (wq#1846) is the per-key episode/liveness block; it is additive and
+    # optional, so a log written before it existed loads unchanged.
+    return {"v": 1, "attempts": [], "keys": {}}
 
 
 def save_log(log, path=LOG_PATH):
@@ -433,7 +465,82 @@ def _snapshot(state):
             "eventFlags": state.get("eventFlags"), "map": state.get("map")}
 
 
-def resolve_pending(log, state):
+def _episode_gap_ms(state):
+    """The quiet gap that ends an episode, in ms, read off the live classifier
+    window the state was computed with (falling back to lpp_stuck_mode's own
+    default when a caller hands us a state without one)."""
+    try:
+        window_h = float(state.get("windowHours"))
+    except (TypeError, ValueError):
+        window_h = M.DEFAULT_WINDOW_H
+    if window_h <= 0:
+        window_h = M.DEFAULT_WINDOW_H
+    return EPISODE_GAP_WINDOWS * window_h * 3.6e6
+
+
+def _attempt_cluster_start(log, location_key, now_ms, gap_ms):
+    """Episode start inferred from attempt timestamps alone — the fallback for a
+    key with no recorded liveness yet (a log written before wq#1846, or a key's
+    first sighting in this log).
+
+    Walks the key's attempts newest-first, keeping each one that lands within
+    gap_ms of the one after it, and returns the oldest still in that run. None
+    means even the newest attempt is older than gap_ms, i.e. nothing logged for
+    this key belongs to the episode starting now.
+    """
+    stamps = sorted(e.get("ts") or 0 for e in log["attempts"]
+                    if e.get("locationKey") == location_key)
+    start, nxt = None, now_ms
+    for ts in reversed(stamps):
+        if nxt - ts > gap_ms:
+            break
+        start, nxt = ts, ts
+    return start
+
+
+def episode_start(log, location_key, now_ms, gap_ms):
+    """When the stall episode this key is in RIGHT NOW began. Returns
+    (started_at_ms, episode_number) and records the sighting.
+
+    An EPISODE is one continuous run of the key being the live stall. It ends
+    only when the key stops being the live stall for longer than gap_ms — the
+    one boundary a mid-stall partial tick cannot manufacture. The obvious
+    alternative, counting attempts made since state.lastAdvanceAt, re-opens
+    wq#1162 exactly: advances() restarts the freeze clock on ANY of
+    storyScore/badges/eventFlags rising, so a partial tick would refund K and
+    the 1,2,3,2,3 ladder comes back.
+
+    Liveness is heartbeated into log["keys"][key]["lastLiveAt"] on EVERY call,
+    including the exhausted ticks that deliberately append no attempt (wq#673
+    keys its one ticket off that invariant, so the heartbeat lives outside
+    log["attempts"] and leaves it untouched). Without it, an unbroken freeze on
+    an exhausted key would be indistinguishable — from the attempt timestamps
+    alone — from a key that had been quiet for a month, and K would be refunded
+    to a stall that never ended.
+    """
+    keys = log.get("keys")
+    if not isinstance(keys, dict):
+        keys = log["keys"] = {}
+    st = keys.get(location_key)
+    if not isinstance(st, dict):
+        # No heartbeat to trust: believe what the attempts themselves say. A key
+        # with attempts on record but none inside the window is on at least its
+        # second episode — how many more, a log that predates the heartbeat
+        # cannot say, so "2" is the honest floor.
+        cluster = _attempt_cluster_start(log, location_key, now_ms, gap_ms)
+        older = any(e.get("locationKey") == location_key for e in log["attempts"])
+        st = {"episode": 1 if cluster is not None or not older else 2,
+              "episodeStartedAt": now_ms if cluster is None else cluster}
+    elif now_ms - (st.get("lastLiveAt") or 0) > gap_ms:
+        st = {"episode": (st.get("episode") or 1) + 1, "episodeStartedAt": now_ms}
+    st.setdefault("episode", 1)
+    st.setdefault("episodeStartedAt", now_ms)
+    st["lastLiveAt"] = now_ms
+    keys[location_key] = st
+    return st["episodeStartedAt"], st["episode"]
+
+
+def resolve_pending(log, state, episode_start_ms=None):
     """Close out any open (afterState=None) attempts the current stall has
     moved past. Called on every decide() so the log never accumulates stale
     opens across an intervention that quietly worked.
@@ -455,6 +562,13 @@ def resolve_pending(log, state):
     grind prescription reissued indefinitely instead of exhausting once and
     handing off to wq#673. FIGHT_LOSS_LOOP@3 spent 4.9h and seven supervisor
     ticks in that shape.
+
+    wq#1846: "still the live stall" is scoped to the CURRENT episode
+    (`episode_start_ms`, from episode_start). An attempt left open by an EARLIER
+    episode of the same key — the supervisor stopped ticking while the key was
+    quiet, so nothing was ever there to close it — says nothing about the stall
+    running now, and holding it open forever would leave exactly the stale opens
+    this function exists to prevent.
     """
     cur_key = _key(state.get("mode"), state.get("modeLocation")) if state.get("stalled") else None
     now_snap = _snapshot(state)
@@ -462,9 +576,11 @@ def resolve_pending(log, state):
     for entry in log["attempts"]:
         if entry.get("afterState") is not None:
             continue
-        if entry["locationKey"] == cur_key:
-            # Still the live stall. Whatever the counters read, this attempt
-            # has not resolved anything — leave it open so it keeps costing K.
+        if entry["locationKey"] == cur_key and (
+                episode_start_ms is None or (entry.get("ts") or 0) >= episode_start_ms):
+            # Still the live stall, this episode. Whatever the counters read,
+            # this attempt has not resolved anything — leave it open so it
+            # keeps costing K.
             continue
         advanced = (
             (now_snap.get("storyScore") or 0) > (entry["beforeState"].get("storyScore") or 0)
@@ -477,7 +593,7 @@ def resolve_pending(log, state):
     return changed
 
 
-def open_attempt_count(log, location_key, rev=None):
+def open_attempt_count(log, location_key, rev=None, since=None):
     """Attempts logged for this key that have NOT yet been resolved as
     'advanced' — i.e. every try that either failed or is still pending,
     which is what K bounds. A 'superseded' close (agent moved to a different
@@ -492,10 +608,17 @@ def open_attempt_count(log, location_key, rev=None):
     deliberate act of refunding K for that mode alone — entries written under
     the old rev stay in the log as history, and every other mode's budget is
     untouched. rev=None counts every entry (callers that only want the history).
+
+    wq#1846: `since` scopes the count to ONE stall episode — episode_start()'s
+    timestamp. Without it the count runs over the key's entire lifetime, and a
+    key that spent K in some long-finished stall can never issue a numbered
+    attempt again (FIGHT_LOSS_LOOP@65, 246h of silence; see the module header).
+    since=None counts every episode, for callers that want the history.
     """
     return sum(1 for e in log["attempts"]
                if e["locationKey"] == location_key and e.get("outcome") != "advanced"
-               and (rev is None or e.get("rev", 1) == rev))
+               and (rev is None or e.get("rev", 1) == rev)
+               and (since is None or (e.get("ts") or 0) >= since))
 
 
 def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
@@ -542,18 +665,25 @@ def decide(state=None, log=None, now_ms=None):
         log = load_log()
     now_ms = now_ms if now_ms is not None else _now_ms()
 
-    resolve_pending(log, state)
+    mode = state.get("mode")
+    location_id = state.get("modeLocation")
+    location_key = _key(mode, location_id) if state.get("stalled") else None
+
+    # wq#1846: which episode of this key we are in has to be settled BEFORE
+    # anything reads the log, because both readers below are scoped to it — the
+    # resolver's "still the live stall" guard and the K count itself.
+    ep_start, episode = ((None, None) if location_key is None else
+                         episode_start(log, location_key, now_ms, _episode_gap_ms(state)))
+
+    resolve_pending(log, state, episode_start_ms=ep_start)
 
     if not state.get("stalled"):
         return {"intervened": False, "reason": "not stalled", "mode": None}
 
-    mode = state["mode"]
-    location_id = state.get("modeLocation")
-    location_key = _key(mode, location_id)
     template = PRESCRIPTIONS.get(mode)
 
     rev = (template or {}).get("rev", 1)
-    prior = open_attempt_count(log, location_key, rev)
+    prior = open_attempt_count(log, location_key, rev, since=ep_start)
     attempt = prior + 1
 
     if template is None:
@@ -570,9 +700,11 @@ def decide(state=None, log=None, now_ms=None):
         # intervene again. The requirement outlives the attempt budget.
         return {"intervened": False, "exhausted": True, "mode": mode,
                 "locationKey": location_key, "attempts": prior, "k": K,
+                "episode": episode,
                 "directive": _terminal_directive(template, mode, location_id,
                                                  location_key, prior, now_ms),
-                "reason": f"{prior} attempts already logged for {location_key} — "
+                "reason": f"{prior} attempts already logged for {location_key} in the "
+                          f"stall episode running since {_iso(ep_start)} — "
                           f"handing off to the wq#673 feedback loop"}
 
     # wq#724: resolve gotoBan — the old symbolic "last_loop_target" was never
@@ -623,13 +755,18 @@ def decide(state=None, log=None, now_ms=None):
     entry = {
         "ts": now_ms, "mode": mode, "locationKey": location_key, "attempt": attempt,
         "rev": rev,  # wq#1826: which revision of the mode's prescription this tried
+        # wq#1846: which stall episode of this key it belonged to. Forensic
+        # only — the budget is scoped by the episode's START TIMESTAMP, since
+        # entries written before this shipped carry no episode number at all.
+        "episode": episode,
         "directive": directive, "beforeState": _snapshot(state), "afterState": None,
         "outcome": None,
     }
     log["attempts"].append(entry)
 
     return {"intervened": True, "mode": mode, "locationKey": location_key,
-            "attempt": attempt, "k": K, "directive": directive, "exhausted": False}
+            "attempt": attempt, "k": K, "episode": episode,
+            "directive": directive, "exhausted": False}
 
 
 def main(argv=None):

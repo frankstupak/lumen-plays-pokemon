@@ -63,8 +63,9 @@ already-firing valve, not a repair to the valve itself.
 ## Bounding and resolution
 
 Each `(mode, locationId)` — the same key wq#671 exposes as `modeLocation` —
-gets up to **K=3** logged attempts. A 4th `decide()` call for the same open
-key returns `exhausted: true` and appends **nothing** to the log; that is the
+gets up to **K=3** logged attempts **per stall episode** (wq#1846). A 4th
+`decide()` call for the same open key returns `exhausted: true` and appends
+**nothing** to the log; that is the
 signal wq#673 uses to file (or append to) its one ticket and stop trying
 locally. An attempt is only eligible to close **once the classifier stops
 naming its key as the live stall** (wq#1162). It then resolves as `"advanced"`
@@ -96,6 +97,47 @@ current counters against the incident's baseline and would `wq done` the
 ticket on a mid-stall tick — retracting an escalation for a stall the
 classifier reported live in that very call. It now skips the key that is
 stalled right now, and resolves it the moment the stall genuinely clears.
+
+### The budget belongs to an episode, not to the key forever (wq#1846)
+
+`open_attempt_count()` counted every attempt ever logged for a key whose outcome
+was not `advanced`, with no window of any kind, while this document and the
+module header both described the budget as counted "since the key's last
+resolution". So a key that spent K once was barred from issuing a numbered
+attempt again, permanently. `FIGHT_LOSS_LOOP@65` spent its three on 2026-08-18
+— all closed `superseded` when a checkpoint restore rolled the save back
+(eventFlags 43→39) — and the unrelated freeze that began 2026-09-02 got **zero**
+interventions across 246h: `decide()` answered `exhausted` on its first tick and
+every tick after. wq#1845 fixed the downstream half, so the key is no longer
+silent; this is the half that lets it try again.
+
+The window is a **stall episode**: one continuous run of the key being the live
+stall. It ends when the key stops being the live stall for longer than the
+classifier's own freeze clock can account for —
+`EPISODE_GAP_WINDOWS`(=12) × the `windowHours` the state was computed with, so
+24h at today's 2h window. The obvious alternative, counting attempts newer than
+`state.lastAdvanceAt`, re-opens wq#1162 exactly: `advances()` restarts the freeze
+clock on *any* of `storyScore`/`badges`/`eventFlags` rising, so a partial tick
+would refund K and bring the ladder back. A gap cannot be manufactured that way —
+after a partial tick the same key re-freezes within one window plus the
+supervisor's ~30min poll. The live ladder's own re-freezes were 9.2h and 7.7h
+apart (`runtime/intervention_log.json`, 2026-08-28T22:53 → 08-29T08:05 → 16:14),
+all comfortably inside one 24h episode; the boundary this fix exists to cross was
+15 days wide.
+
+Liveness is heartbeated into `log["keys"][key]` on **every** `decide()` tick,
+including the exhausted ones that deliberately append no attempt — wq#673 keys
+its one ticket off that invariant, so the heartbeat lives outside
+`log["attempts"]` and leaves it untouched. Without it, an unbroken freeze on an
+exhausted key would look, from the attempt timestamps alone, exactly like a key
+that had been quiet for a month, and K would be refunded to a stall that never
+ended. New entries also carry an `episode` number, forensic only: the budget is
+scoped by the episode's start *timestamp*, because entries written before this
+shipped carry no episode number at all.
+
+Probe: `python3 tools/test_stuck1846.py` — 7 sections, A-G, holding both shapes
+at once: the 25-day-old spent key refunds (once, then re-exhausts at K), and the
+0.96h/2h re-freeze on a live key does not.
 
 ## A pin the agent obeys must agree with the gate that refuses it (wq#1091)
 
@@ -279,10 +321,23 @@ of resetting, logs exactly K entries, credits no win while the key is still
 stalled — and still closes all three as `"advanced"` (refunding K) the moment
 the stall clears, or as `"superseded"` if it clears with nothing moved.
 
+`python3 tools/test_stuck1846.py` — 7 sections. The live `FIGHT_LOSS_LOOP@65`
+and `WARP_OSC@36` log entries are replayed verbatim (timestamps included):
+the 599h-old spent budget refunds and then re-exhausts at K, the 0.96h-old one
+does not; the live ladder's 9.2h/7.7h re-freeze gaps and a 23.9h gap all stay
+inside one episode while 24.1h opens a new one; the boundary scales with
+`windowHours` rather than being a hardcoded day; 25 days of polling an *unbroken*
+freeze (1200 exhausted ticks) refunds nothing while 25 days of silence does; the
+heartbeat stays out of `log["attempts"]`; a prior episode's orphaned open attempt
+gets closed; and wq#1826's `rev` refund still composes inside an episode.
+
 ## Rollback
 
 Deleting `runtime/intervention_log.json` resets every K counter to zero —
 safe, no live consumer depends on its history yet (see "what this does not
-do yet"). Deleting `runtime/supervisor_directive.json` costs nothing; it is
+do yet"). The wq#1846 `keys` block inside it is additive and optional: a log
+written before it existed loads unchanged, and deleting just that block costs
+only the liveness heartbeat, after which the episode falls back to what the
+attempt timestamps say. Deleting `runtime/supervisor_directive.json` costs nothing; it is
 overwritten in full on every intervening call. Nothing in this module
 touches the game, the service, checkpoints, `events/`, or the work queue.
