@@ -67,6 +67,17 @@ CONSUMPTION (was "not wired yet"; it is wired now)
   stuck. Any number a prescription states must be READ FROM the code that
   enforces it, never retyped alongside it.
 
+  wq#1867 is the same lesson one level up: not a wrong NUMBER in the pin but a
+  wrong OBJECTIVE. The Cascade Badge landed at 2026-09-12T13:29:40Z and the
+  classifier went on calling the aftermath FIGHT_LOSS_LOOP@65, so all three K
+  attempts told an agent holding that badge to prepare for the fight that had
+  won it. It obeyed — 26 turns north to the grind routes the pin names, while
+  frontier.json's next milestone, Route 5, lay south, and its own ROUTE line
+  said so every turn. A pin outranks the prompt it contradicts. The fix is in
+  the classifier (see OBJECTIVE_DRIFT in lpp_stuck_mode), and the prescription
+  it routes to here names no destination of its own: the goal comes from the
+  frontier engine and the leg from route.ts's ROUTE line.
+
 BOUNDING (K=3)
   Each (mode, locationId) pair — wq#671's own dedup key — gets up to K=3
   prescribed attempts. `decide()` counts prior LOGGED attempts for that exact
@@ -224,6 +235,32 @@ PRESCRIPTIONS = {
             "the loop or pursue a different objective."
         ),
         "gotoBan": "__RESOLVE_FROM_WARPS__",
+    },
+    # wq#1867: the mode that exists because the FIGHT_LOSS_LOOP prescription
+    # above was being handed to an agent that had ALREADY WON the fight. Three
+    # attempts told it to prepare for Misty while the Cascade Badge was on its
+    # card; it obeyed, walked 26 turns north to the grind routes the pin names,
+    # came back, and the badge-shaped hole in the diagnosis was still there. So
+    # this prescription prescribes no preparation at all: the blocker is gone,
+    # and the only thing left to do is leave.
+    #
+    # It names no destination of its own. The goal comes from the frontier engine
+    # (state["nextMilestone"]) and the leg from route.ts's own ROUTE line, for the
+    # same reason _misty_gate reads guidance.ts: a target the supervisor invents
+    # is a target the harness can disagree with, and the pin loses.
+    "OBJECTIVE_DRIFT": {
+        "action": "advance_to_next_objective",
+        "summary": "Badge here is already won — stop orbiting the town, travel to the next objective.",
+        "notepadPin": (
+            "PIN: SUPERVISOR ({attempt}/{k}): the gym in {location} is ALREADY BEATEN — "
+            "its badge is on your trainer card and the fight ledger holds the win. There "
+            "is nothing left to prepare for here and no gate refusing you anything, so "
+            "stop cycling this town's doors: re-entering the Pokecenter at full HP, the "
+            "Mart with nothing to buy, or the gym you already cleared each cost a turn and "
+            "move nothing. {next_objective} The ROUTE line in your prompt names that goal "
+            "and the NEXT LEG that starts it — take that leg. {pocket}"
+        ),
+        "gotoBan": [],
     },
     "OBJECTIVE_UNREACHABLE": {
         "action": "replan_verify_map_data",
@@ -621,7 +658,48 @@ def open_attempt_count(log, location_key, rev=None, since=None):
                and (since is None or (e.get("ts") or 0) >= since))
 
 
-def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
+def _fmt_extras(location_id, state=None):
+    """Every field a prescription template may name, resolved from live state.
+
+    wq#1867: one home for this, shared by the attempt directives and the
+    terminal one. Two things follow. An EXHAUSTED pin can no longer say
+    something different from the attempts it succeeds (it used to rebuild the
+    kwargs by hand), and a template that names a NEW field can no longer take
+    the terminal path down with a KeyError — the field is defined once, for both.
+
+    Mode-specific fields are defaults here; decide() overwrites the two that have
+    something live to say (the WARP_OSC edge, the NAV_LOOP ban list).
+    """
+    state = state or {}
+    # wq#1091: the harness's own gym-entry thresholds, so a pin that names a
+    # level can only ever name the level the gate actually enforces.
+    extras = dict(_misty_gate())
+    # wq#1091: "the gym fight at 3" is a bare map id sitting next to several
+    # level numbers in the same sentence. Name it.
+    extras["location"] = _located(location_id)
+    # wq#1118: the resume picker's own viability bar, same read-don't-retype rule.
+    extras["viable_pct"] = _viable_pct()
+    extras["loop_maps"] = "unknown"
+    extras["loop_labels"] = "unknown maps"
+    extras["osc_edge"] = "the same two maps"
+    extras["osc_ban"] = "No map is banned."
+    milestone = state.get("nextMilestone")
+    extras["next_objective"] = (
+        f"Your next objective is {milestone}." if milestone else
+        "Your next objective is whatever your ROUTE line is pointing at.")
+    # wq#1867: the local half. reach.ts has already told the agent, on every one
+    # of these turns, that walking cannot leave the region it is standing in; a
+    # pin that answers "walk to the next town" without this is prescribing the
+    # move that just failed. Silent when the evidence is absent.
+    extras["pocket"] = (
+        "Note: goto keeps answering that you are in a CLOSED-OFF part of this map — from "
+        "where you stand, walking cannot leave it. Take one of the warps the harness lists "
+        "as reachable, a different door from the one you just came out of, and try the leg "
+        "from there." if (state.get("closedOffTurns") or 0) else "")
+    return extras
+
+
+def _terminal_directive(template, mode, location_id, location_key, prior, now_ms, state=None):
     """wq#1091: the directive written once the K budget is spent.
 
     Carries the same standing requirement as the attempts did, but labelled
@@ -630,12 +708,11 @@ def _terminal_directive(template, mode, location_id, location_key, prior, now_ms
     deliberately empty: a ban is an active intervention, and the supervisor has
     stopped intervening on this key — only the guidance stands.
     """
-    pin = template["notepadPin"].format(
-        attempt=prior, k=K, location=_located(location_id),
-        loop_maps="unknown", loop_labels="unknown maps",
-        osc_edge="the same two maps",
-        osc_ban="No map is banned: the supervisor has stopped intervening on this key.",
-        viable_pct=_viable_pct(), **_misty_gate())
+    extras = _fmt_extras(location_id, state)
+    extras["osc_ban"] = "No map is banned: the supervisor has stopped intervening on this key."
+    # .strip(): a template whose last field is conditional (OBJECTIVE_DRIFT's
+    # {pocket}) would otherwise end in a space on every turn it has nothing to say.
+    pin = template["notepadPin"].format(attempt=prior, k=K, **extras).strip()
     return {
         "v": 1,
         "generatedAt": _iso(now_ms),
@@ -702,7 +779,7 @@ def decide(state=None, log=None, now_ms=None):
                 "locationKey": location_key, "attempts": prior, "k": K,
                 "episode": episode,
                 "directive": _terminal_directive(template, mode, location_id,
-                                                 location_key, prior, now_ms),
+                                                 location_key, prior, now_ms, state),
                 "reason": f"{prior} attempts already logged for {location_key} in the "
                           f"stall episode running since {_iso(ep_start)} — "
                           f"handing off to the wq#673 feedback loop"}
@@ -711,15 +788,9 @@ def decide(state=None, log=None, now_ms=None):
     # consumed because it never named actual map IDs. Now we read the warp
     # history and extract the maps the agent is genuinely looping between.
     goto_ban = template["gotoBan"]
-    # wq#1091: the harness's own gym-entry thresholds, so a pin that names a
-    # level can only ever name the level the gate actually enforces. Templates
-    # that reference none of these keys simply ignore them.
-    fmt_extras = dict(_misty_gate())
-    # wq#1091: "the gym fight at 3" is a bare map id sitting next to several
-    # level numbers in the same sentence. Name it.
-    fmt_extras["location"] = _located(location_id)
-    # wq#1118: the resume picker's own viability bar, same read-don't-retype rule.
-    fmt_extras["viable_pct"] = _viable_pct()
+    # wq#1867: every field a template may name, resolved once (see _fmt_extras).
+    # Templates that reference none of them simply ignore them.
+    fmt_extras = _fmt_extras(location_id, state)
     if goto_ban == "__RESOLVE_FROM_WARPS__" and mode == "WARP_OSC":
         # wq#1826: the oscillation's own edge, not the wide window's top-2 maps.
         goto_ban, here, there = _resolve_osc_ban(location_id)
@@ -748,7 +819,7 @@ def decide(state=None, log=None, now_ms=None):
         "k": K,
         "action": template["action"],
         "summary": template["summary"],
-        "notepadPin": template["notepadPin"].format(attempt=attempt, k=K, **fmt_extras),
+        "notepadPin": template["notepadPin"].format(attempt=attempt, k=K, **fmt_extras).strip(),
         "gotoBan": goto_ban,
     }
 

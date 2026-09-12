@@ -47,10 +47,20 @@ this. Priority order below (first match wins):
 | Mode | Fires when |
 |---|---|
 | `FIGHT_LOSS_LOOP` | among the most recent persisted warps (`runtime/warp_history.json`, capped at 64 by wq#517), a **gym** map (label containing "Gym") appears >=2x **and** a heal/city map for that trip (Pokecenter or a `*City`/`*Town` label) also appears >=2x — walked into the gym, walked back out, more than once |
+| `OBJECTIVE_DRIFT` | the `FIGHT_LOSS_LOOP` shape (either the gym bounce above or one of the two hub/route readiness reads) around a gym whose **badge is already won** — `runtime/fight_ledger.json` holds a `win` on that gym map recorded at a *lower* badge count than the player now holds (wq#1867). Anchored on the town the loop collapsed onto, never the gym, so the incident key does not move when the winning visit's two warps age out of the window |
 | `RESUME_DEADEND` | the same `resumedFrom` checkpoint booted on **more than `RESUME_REPEAT_LIMIT` consecutive** boots (`runtime/resume_history.json`; the bar is parsed out of `src/resume.ts`, never retyped). At exactly the limit the harness's own repeat guard is about to demote that file, so a run of exactly the limit is a remedy already in flight — only a longer run proves the guard ran and found no newer non-warp state to take (wq#1118). Deferred below the fight-readiness reads (wq#1081/#1084) because any long freeze re-resumes its own checkpoint; anchored on the map the agent is standing on, never `None` |
 | `OBJECTIVE_UNREACHABLE` | the frontier engine reports `pathExhausted` while this axis is *also* stalled — no further `CRITICAL_PATH` milestone is encoded to aim at |
 | `NAV_LOOP` | no gym involved, but the warp window collapses onto <=3 distinct maps with >=4 warps — an overworld/dungeon loop, not a gym fight |
 | `IDLE` | stalled but nothing above matched — catch-all, deliberately last |
+
+`FIGHT_LOSS_LOOP` is checked first but **cannot** be returned for a gym the
+ledger says is beaten: a win on that map at a lower badge count than the
+player's current one takes the gym out of the bounce set, and the same shape
+resolves to `OBJECTIVE_DRIFT` instead. Read the two rows together — they are
+one branch with a badge test in the middle, not two competing signatures. The
+stall that forced this (wq#1867) had won the Cascade Badge three hours earlier
+and was still being told to grind for Misty, because two warps to Cerulean Gym
+— the winning visit's own way in and way out — never left the 64-warp window.
 
 Classification runs over the **full persisted `warp_history.json` window**
 (64 entries), not a tighter recent slice. A 20-entry slice was tried first and
@@ -75,7 +85,20 @@ and classifies; a story_score rise, a badge-only rise, and a sub-window gap
 all stay silent), then two graceful-degradation cases (no sidecars, no warp
 history). A final SKIP-shaped live-corpus check (never fails the suite on its
 own — see `src/fixtures.ts`'s own doctrine on corpus rot) confirms the real
-`runtime/` still reproduces the incident today.
+`runtime/` still reproduces the incident today. Since wq#1867 that check
+reports `OBJECTIVE_DRIFT`, which is the corrected verdict on the same corpus.
+
+`python3 tools/test_stuck1867.py` — **39/39**, sections A-I: the live 64-warp
+window plus the live ledger record reclassify (A); the same window with the
+badge not yet won still reads `FIGHT_LOSS_LOOP@65` (B); a missing, empty or
+junk ledger degrades to that too (C); what does and does not clear a gym —
+a junior trainer's defeat does not, a checkpoint restore un-clears (D); the
+hub-orbit read defers the same way with no gym warp in the slice at all (E);
+both paths return one anchor, so one incident key (F); the prescription names
+the frontier's milestone, orders no grind, bans nothing, and trips neither of
+`src/pin.ts`'s two pin regexes (G); the closed-off-pocket clause appears only
+on the evidence, matching both truncations of `reach.ts`'s phrase (H); and the
+EXHAUSTED directive formats for every mode (I).
 
 ## The dP axis — composite progress in turns, not hours (wq#1179)
 
@@ -148,8 +171,23 @@ fail-closed on partial/unverifiable windows, observe-only default vs
   in a detector that cannot yet see a fight's shape. Items 5-6 landed in
   wq#1181 (`docs/FIGHT_GATES.md`) and now emit the two signals that gate would
   need — a per-battle-turn `winnability` verdict and a `fight_ledger` outcome
-  record — but this module does not consume them yet, so the false-positive
-  path above is unchanged.
+  record. wq#1867 consumes the second one, but only for the badge test that
+  separates `FIGHT_LOSS_LOOP` from `OBJECTIVE_DRIFT`; the `winnability` verdict
+  is still unread here, so the false-positive path above is unchanged.
+- `NOISE_STORM` (wq#697) could not fire at all between shipping and wq#1867:
+  `load_recent_turn_summaries()` looked for `ev["k"] == "turn_summary"` and
+  `ev["d"]["line"]`, while `src/events.ts` writes `{ t, ...data, kind }` — flat,
+  envelope last (wq#522). It returned an empty list on every live run, the
+  detector read that as a streak of 0, and nothing ever said so. Fixed by
+  reading `kind` + a flat `line` (the shape `turncost_487`, `backtest_520` and
+  `verify_489` were already using); the old nesting is still accepted for
+  fixtures. The same lines feed `OBJECTIVE_DRIFT`'s closed-off-pocket clause,
+  which is how the dead read was caught.
+- The badge test behind `OBJECTIVE_DRIFT` is only as good as the ledger. A
+  missing, empty or rotated-past ledger (`KEEP_RECORDS = 200` in
+  `src/ledger.ts`) clears no gym, and the classifier degrades to exactly the
+  `FIGHT_LOSS_LOOP` behaviour it had before wq#1867 — wrong in the same way,
+  never worse.
 - `OBJECTIVE_UNREACHABLE` degrades to "never selected" (not a crash) if
   `lpp_frontier` fails to import, matching `lpp-sentinel`'s own
   `frontier_unavailable` precedent of reporting failure loudly rather than
