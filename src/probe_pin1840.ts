@@ -126,15 +126,16 @@ const directive = (o: Partial<PinnedDirective> = {}): PinnedDirective => ({
 
 // --- D. deference to wq#1828's exclusion ----------------------------------
 {
-  // The live stall: map35 x=4..5, y=19..29, escaped by fire #3, refused until turn 505.
-  const ex = { tiles: 22, map: 35, untilTurn: 505 };
+  // The live stall: map35 x=4..5, y=19..29, escaped by fire #3, 45 turns of the
+  // ban left to run (wq#1839: what is left, never the turn number it lifts on).
+  const ex = { tiles: 22, map: 35, turnsLeft: 45 };
   chk("D0 the grass regex matches the live prescription, not the warp one",
     PIN_GRASS_RE.test(FIGHT_PIN) && !PIN_GRASS_RE.test(WARP_PIN));
 
   const q = pinQualifier(FIGHT_PIN, ex);
   chk("D1 a live exclusion qualifies the grass order", !!q);
-  chk("D1b the qualifier names the patch, its map and its expiry",
-    /22-tile/.test(q ?? "") && /map35/.test(q ?? "") && /turn 505/.test(q ?? ""), q ?? "null");
+  chk("D1b the qualifier names the patch, its map and what is left of its budget",
+    /22-tile/.test(q ?? "") && /map35/.test(q ?? "") && /another 45 turns/.test(q ?? ""), q ?? "null");
   chk("D2 no exclusion, no qualifier", pinQualifier(FIGHT_PIN, null) === null);
   chk("D3 a non-grass pin is never qualified", pinQualifier(WARP_PIN, ex) === null);
 
@@ -149,7 +150,7 @@ const directive = (o: Partial<PinnedDirective> = {}): PinnedDirective => ({
 // --- E. render composition ------------------------------------------------
 {
   const broke = { balls: 0, money: 96, ballPrice: 200 };
-  const ex = { tiles: 22, map: 35, untilTurn: 505 };
+  const ex = { tiles: 22, map: 35, turnsLeft: 45 };
   const r = renderPin(FIGHT_PIN, broke, ex, CFG)!;
   chk("E1 suppression outranks qualification: an impossible remedy is not qualified, it is withheld",
     !!r.suppressed && !r.text.includes("PIN QUALIFIED") && !r.text.includes("lead level >= 30"));

@@ -38,7 +38,7 @@ import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
 import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";   // wq#1731
-import { ExclusionGate, exclusionFile, exclusionLift } from "./exclusion";        // wq#1828
+import { ExclusionGate, exclusionFile, exclusionLift, exclusionSuspended } from "./exclusion";   // wq#1828
 import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
@@ -520,9 +520,12 @@ export class Agent {
     // ordering the agent into tall grass while wq#1828's exclusion refuses that
     // patch gets the exclusion named rather than left to contradict it.
     if (this.supervisorPin) {
+      // wq#1839: `peek()` plus the pure rules, so rendering a prompt line never
+      // moves gate state. A ban asleep on another map refutes nothing here.
       const ex = this.exclusion.peek();
-      const live = ex && !exclusionLift(ex, this.turn, st.map)
-        ? { tiles: ex.tiles.length, map: ex.map, untilTurn: ex.untilTurn } : null;
+      const seq = this.novelty.lastSeq();
+      const live = ex && !exclusionLift(ex, seq) && !exclusionSuspended(ex, st.map)
+        ? { tiles: ex.tiles.length, map: ex.map, turnsLeft: Math.max(0, ex.untilSeq - seq) } : null;
       const r = renderPin(this.supervisorPin,
         { balls: this.ballCount(), money: st.money, ballPrice: BALL_PRICE }, live, CFG.pin);
       if (r) block += `\n!! ${r.text}`;
