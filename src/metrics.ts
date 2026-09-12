@@ -8,7 +8,7 @@ import { BlackoutDetector } from "./blackout";
 // Canonical brain-facing tool names (the SYSTEM_PREFIX tool list, exactly).
 const BRAIN_TOOLS = new Set([
   "goto", "enter_warp", "leave_edge", "interact", "talk", "choose",
-  "battle_move", "flee", "press", "use_item", "buy_item", "heal_at_center", "note",
+  "battle_move", "flee", "press", "use_item", "buy_item", "sell_item", "heal_at_center", "note",
 ]);
 
 // wq#612: rolling window size for the kiosk tok/turn + tok/call tile. Same
