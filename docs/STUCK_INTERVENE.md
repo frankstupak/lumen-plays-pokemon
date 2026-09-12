@@ -56,7 +56,7 @@ already-firing valve, not a repair to the valve itself.
 | `NAV_LOOP` | `checkpoint_restore_then_goto_ban` | pins a goto-ban + fallback-checkpoint instruction |
 | `OBJECTIVE_UNREACHABLE` | `replan_verify_map_data` | pins a re-verify instruction against the frontier's `pathExhausted` milestone |
 | `RESUME_DEADEND` | `advance_past_boot_state` | pins the three conditions `src/resume.ts`'s picker applies to a replacement save — newer than the boot state, not written on a warp tile, at or above `VIABLE_HP_PCT` (read, not retyped). The old `alternate_checkpoint` pin asked the brain to resume from a different checkpoint: it does not choose the save, and the harness's repeat guard had already tried that and found nothing to take (wq#1118) |
-| `WARP_OSC` | `checkpoint_restore_then_goto_ban` | wq#697; bans the two maps of an A↔B bounce — see the edge rule below |
+| `WARP_OSC` | `checkpoint_restore_then_goto_ban` | wq#697; bans the **far side** of an A↔B bounce — see the edge rules below (wq#1119, wq#1826) |
 | `NOISE_STORM` | `history_clear_restart` | wq#697; clears a history poisoned by consecutive invalid tool calls |
 | `IDLE` | *(none)* | the spec defines no IDLE action; guessing one would be exactly the unfounded intervention this module exists to avoid |
 
@@ -167,6 +167,55 @@ Live warp history at the time of the wq#1119 ticket reclassifies from
 `WARP_OSC@36` (ban the route) to `FIGHT_LOSS_LOOP@36` (grind, `gotoBan: []`) —
 whose pin already says, verbatim, to walk into the grass instead of re-entering
 the doorway, which is the behaviour the trace shows.
+
+## The ban has to be the edge, and only one side of it (wq#1826)
+
+wq#1119 taught the classifier to demand a real A↔B edge before prescribing this
+mode. It left the other half undone: the intervention layer never used that
+edge. `_resolve_loop_maps()` reads the **64-warp** window, and when that window
+holds more than three maps it falls back to its two most *frequent* ids — which
+need not be the oscillation's endpoints at all.
+
+Live, on `WARP_OSC@36` frozen 242.7h (2026-09-02 → 09-12, `storyScore` 10
+throughout), they were not. The directive said, in the same file:
+
+- evidence — `4 alternations between Route 25 <-> Bills House in last 16 warps`
+- `gotoBan` — `[3, 36]`, Cerulean City and Route 25
+
+So the harness banned the town it must heal in and fight Misty in, never banned
+map 88 — the doorway it was actually re-entering — and the bounce ran through
+all three K attempts, each logged `superseded`. Two rules now, both in
+`_resolve_osc_ban()`:
+
+1. **The ban is the detected edge.** Resolved from `detect_warp_osc` over the
+   same slice the classifier used, so a directive's ban can never contradict its
+   own evidence. If the history has drifted so the edge's near side is no longer
+   the incident's location, nothing is banned — that mismatch is the wq#1119
+   scope bug in a new place.
+2. **One side, never both.** The ban is a hard `enter_warp` refusal
+   (`supervisorBans`, `src/agent.ts:802`) that lifts only on story advance, so
+   banning both endpoints seals the agent inside whichever one it stands in:
+   from inside Bills House the only exit warp lands on Route 25 — refused — and
+   no story can advance from in there to lift it. Banning the far side alone
+   breaks the loop and leaves the agent free to walk. A far side that is the
+   town/heal hub is dropped rather than banned (the wq#1081/#1084 rule), and the
+   directive stands on its pin alone.
+
+### K counts tries of the *current* remedy (`rev`)
+
+A corrected prescription that can never be issued is not a fix. WARP_OSC@36 had
+spent all three attempts on the broken ban, and — since the classifier still
+names that key as the live stall — those entries can never close as `advanced`,
+so `decide()` answers `exhausted` for it forever. Each prescription now carries
+a `rev` (default 1), every log entry is stamped with the rev it tried, and
+`open_attempt_count()` counts only the current rev. Bumping a `rev` is the
+deliberate, documented act of refunding K **for that mode alone**: WARP_OSC is
+at rev 2, every other mode's spent budget is untouched, and the old entries stay
+in the log as history. The live log's three rev-1 attempts now read as history,
+and a `--dry-run` against live state issues attempt 1/3 banning `[88]`.
+
+Probe: `python3 tools/test_stuck1826.py` — 10 sections, A-J, including the live
+64-warp window verbatim.
 
 ## A pin must also be addressed to an actor that can act (wq#1118)
 
