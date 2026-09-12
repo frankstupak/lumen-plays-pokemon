@@ -37,6 +37,7 @@ PROBES=(
   probe_scope606
   probe_menu620
   probe_items607
+  probe_bagnames1829
   probe_cerulean638
   probe_vision621
   probe_hidden622

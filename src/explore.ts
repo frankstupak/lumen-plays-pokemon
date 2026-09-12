@@ -44,6 +44,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { dirname } from "path";
 import { deltaP, tileKey, type ProgressSample } from "./novelty";
 import { BADGE_NAMES } from "./names";
+import { BALL_PRICE, ballMarts } from "./economy";   // wq#1829
 
 export interface ExploreCfg {
   enabled: boolean;      // the override rung
@@ -452,6 +453,12 @@ export interface ProgressCtx {
   partyCount: number;
   map: number;
   samples: ProgressSample[];
+  // wq#1829: catching costs a ball, and a ball costs money. Both are REQUIRED,
+  // not optional-with-a-default, because the bug this fixes was a catch
+  // directive rendered by a function that had no idea whether catching was
+  // possible — a default would have preserved exactly that.
+  balls: number;           // POKE + GREAT + ULTRA, from the bag
+  money: number;
 }
 
 /** Trailing samples on `map`, and trailing samples since a new tile. Both
@@ -485,7 +492,27 @@ export function progressBlock(c: ProgressCtx, cfg: Pick<ExploreCfg, "urgencyTurn
   if (k.sinceNew >= cfg.urgencyTurns && k.onMap >= cfg.urgencyTurns)
     lines.push(`!! NO NEW GROUND in ${n(k.sinceNew, k.sinceNewCapped)} turns: leaving this map is high value. ` +
       `Fights are only worth it when they block the path.`);
-  if (c.partyCount > 0 && c.partyCount < cfg.catchParty)
-    lines.push(`CATCH: you have ${c.partyCount} Pokemon; catching another is valuable.`);
+  // wq#1829: the small-party line used to say "catching another is valuable"
+  // unconditionally. Measured on live-agent-1789183317445 (2026-09-12, 318
+  // turns / 6.7h): bag held ZERO balls and the purse held $96 against a $200
+  // ball for the entire run, and the brain burned think_chunks re-deriving "no
+  // poke_ball. So catching is impossible right now" turn after turn. A
+  // directive the agent cannot execute is worse than no directive: it competes
+  // with the one action that DOES relieve the constraint. So the line now
+  // names the binding resource instead of the wish.
+  if (c.partyCount > 0 && c.partyCount < cfg.catchParty) {
+    if (c.balls > 0)
+      lines.push(`CATCH: you have ${c.partyCount} Pokemon and ${c.balls} ball(s); catching another is valuable.`);
+    else if (c.money >= BALL_PRICE)
+      lines.push(`BUY BALLS FIRST: ${c.partyCount} Pokemon, ZERO balls, $${c.money}. ` +
+        `A Poke Ball is $${BALL_PRICE}; the marts that stock them are ${ballMarts().join(", ")}. ` +
+        `Catching is impossible until you are carrying one, so buy before you hunt.`);
+    else
+      lines.push(`CATCHING IS IMPOSSIBLE: ${c.partyCount} Pokemon, ZERO balls, $${c.money}, ` +
+        `and a Poke Ball costs $${BALL_PRICE}. Do NOT spend turns hunting or weakening wilds — ` +
+        `you cannot throw anything at them. EARN MONEY FIRST: only TRAINER battles pay in this ` +
+        `game, wild Pokemon pay nothing. Fight the trainers on your path until you clear ` +
+        `$${BALL_PRICE}, then buy at ${ballMarts().join(", ")}.`);
+  }
   return lines.join("\n");
 }

@@ -23,7 +23,7 @@ import { Notepad } from "./notepad";
 import { PersonaMemory } from "./persona";              // wq#1176
 import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
-import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
+import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER, backfillItemNames } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
 import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
@@ -249,6 +249,21 @@ export class Agent {
       logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
       cfg: CFG.explore,
     });
+    // wq#1829: name the bag from THIS ROM's ItemNames table. backfillItemNames
+    // has existed since wq#519 but was called only from probes, so the LIVE
+    // prompt still rendered raw ids: the 2026-09-12 run read
+    // "BAG: item234x1 ... item49x1 ... item80x1 ... item82x1" while the brain
+    // was reasoning about what it could sell or throw. id49 is the NUGGET the
+    // agent picked up on Nugget Bridge. Gaps-only and idempotent by contract
+    // (see items.ts), and a ROM whose tables disagree throws — caught here,
+    // because an unnameable bag must not cost the run its boot.
+    try {
+      const bf = backfillItemNames(rom, sym);
+      bus.emit("tool_call", { tool: "item_names_backfilled", src: "harness", ...bf });
+    } catch (e: any) {
+      bus.emit("tool_call", { tool: "item_names_backfill_failed", src: "harness",
+                              error: String(e?.message ?? e) });
+    }
     this.loadSupervisorBans();
   }
 
@@ -298,6 +313,14 @@ export class Agent {
         this.supervisorBaseline = null;
       }
     } catch { /* never crash on a bookkeeping read */ }
+  }
+
+  /** wq#1829: throwable balls of every grade. One reader, because the catch
+   *  line in progressBlock() and the economy directive must never disagree
+   *  about whether the agent can throw something. */
+  private ballCount(): number {
+    return this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL)
+         + this.items.count(ITEM.ULTRA_BALL);
   }
 
   private mapLabel(id: number): string | null {
@@ -425,7 +448,8 @@ export class Agent {
     if (CFG.explore.prompt) {
       try {
         block += `\n${progressBlock({ badges: st.badges, partyCount: st.partyCount,
-          map: st.map, samples: this.novelty.recent() }, CFG.explore)}`;
+          map: st.map, samples: this.novelty.recent(),
+          balls: this.ballCount(), money: st.money }, CFG.explore)}`;
       } catch { /* prompt salience must never cost the turn */ }
     }
 
@@ -489,8 +513,7 @@ export class Agent {
     {
       const eco = economyAdvice({
         money: st.money,
-        balls: this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL)
-             + this.items.count(ITEM.ULTRA_BALL),
+        balls: this.ballCount(),
         partyCount: st.party.length,
         leadLevel: st.party[0]?.level ?? 0,
         inMart: !!stock,

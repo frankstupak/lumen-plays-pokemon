@@ -24,7 +24,7 @@
 // Item ids come from src/items.ts — the single source of truth. An earlier
 // draft of this module duplicated them from memory and got POTION and ANTIDOTE
 // backwards; probe_economy caught it on the first run. Do not re-duplicate.
-import { ITEM } from "./items";
+import { ITEM, MART_ORDER, MART_CITY } from "./items";
 
 export const BALL = ITEM.POKE_BALL;
 
@@ -51,6 +51,20 @@ export const BALL_PRICE = PRICE[BALL];
 export const MIN_SAFE_PARTY = 3;
 /** Keep enough to re-buy one ball after a whiteout halves the purse. */
 export const PURSE_RESERVE = 0;
+
+/** wq#1829: every mart whose stock list contains a Poke Ball, as
+ *  "City (mapNN)". DERIVED from MART_ORDER so adding a mart there cannot leave
+ *  this list stale — the hand-written version named Pewter and Cerulean only,
+ *  which is how a prompt could tell a broke agent to "route through a mart"
+ *  without mentioning the two nearest ones. Sorted by map id for a stable
+ *  string, not by distance: nothing in this pure module knows where the player
+ *  is, and an invented "nearest" is exactly the kind of confident guess the
+ *  corridor pack bans. */
+export function ballMarts(): string[] {
+  return Object.keys(MART_ORDER).map(Number).sort((a, b) => a - b)
+    .filter(map => MART_ORDER[map].includes(BALL))
+    .map(map => `${MART_CITY[map] ?? "mart"} (map${map})`);
+}
 
 /** Cheapest priced item in a mart's stock list, or Infinity if none priced. */
 export function cheapestInStock(stock: readonly number[] | undefined): number {
@@ -113,8 +127,8 @@ export function economyAdvice(c: EconomyCtx): string | null {
   // 3. Can afford balls but nowhere to buy: name the constraint, not the wish.
   if (canBuyBall && c.balls <= 0) {
     return `! You have $${c.money} and ZERO balls. Catching is impossible until you buy some` +
-      ` ($${BALL_PRICE} each) — the nearest marts on this corridor are Pewter (map56) and` +
-      ` Cerulean (map67). Route through one before expecting to grow the party.`;
+      ` ($${BALL_PRICE} each) — the marts that stock them are ${ballMarts().join(", ")}.` +
+      ` Route through one before expecting to grow the party.`;
   }
 
   // 4. Balls in hand, party still fragile: spend them.
