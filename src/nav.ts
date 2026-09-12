@@ -10,6 +10,69 @@ const DIRS = [
   { dx: -1, dy: 0, key: "LEFT" }, { dx: 1, dy: 0, key: "RIGHT" },
 ] as const;
 
+/** One move the planner may make from a cell: a step (cost 1) or a ledge hop
+ *  (cost 2 cells of distance for one press). */
+export interface Succ { x: number; y: number; cost: number }
+
+/** wq#1870: the movement rule, in ONE place. astar() and reachableCells() both
+ *  call it, so "where can I walk" and "how do I walk there" cannot disagree —
+ *  the same reason reach.ts calls astar instead of running its own flood fill.
+ *  (tx,ty) names the goal cell, which is exempt from the terrain and warp tests
+ *  because doors and ladders are impassable warp tiles you are allowed to
+ *  finish on; pass (-1,-1) when there is no goal. */
+export function successors(map: MapModel, x: number, y: number, tx: number, ty: number): Succ[] {
+  const out: Succ[] = [];
+  for (const d of DIRS) {
+    const nx = x + d.dx, ny = y + d.dy;
+    const isTarget = nx === tx && ny === ty;
+    const ok = isTarget ? (nx >= 0 && ny >= 0 && nx < map.gw && ny < map.gh)
+                        : map.passable(nx, ny);
+    if (!ok) continue;
+    // wq#552: Gen 1 refuses movement between certain tile pairs even when both
+    // tiles are passable, so this is checked on the EDGE and applies to the
+    // target cell too — unlike the terrain test above, whose isTarget bypass
+    // exists because doors and other warp tiles read impassable. A tile-pair
+    // collision is a real refusal by the emulator, not a modelling artefact:
+    // planning through one is what taught learnedBlocked a phantom wall on
+    // every replan and produced the wq#542 east-west shuffle.
+    if (map.pairBlocked(x, y, nx, ny)) continue;
+    // Never route THROUGH an unrelated warp tile: stepping onto it triggers a
+    // map transition we didn't ask for. Only the target warp is allowed.
+    if (!isTarget && map.isWarp(nx, ny)) continue;
+    out.push({ x: nx, y: ny, cost: 1 });
+  }
+  // wq#601: ledge-hop edges. Ledge tiles are walls in the collision grid, so
+  // without these the planner reads every ledge line as sealed — Route 4
+  // east's ONLY route to Cerulean is behind a hop-down line, and eastbound
+  // A* died at it for 145h. Edges are DIRECTED (map.hops matches the ROM's
+  // LedgeTiles entries, and the reverse direction has no entry), land two
+  // cells out, and never land on an unrelated warp — same rule as steps.
+  for (const hop of map.hops(x, y)) {
+    if (!(hop.x === tx && hop.y === ty) && map.isWarp(hop.x, hop.y)) continue;
+    out.push({ x: hop.x, y: hop.y, cost: 2 });
+  }
+  return out;
+}
+
+/** wq#1870: every cell the player can WALK to from (sx,sy) under successors().
+ *  Warp tiles are absent by construction (no goal cell is exempt), so this
+ *  answers "which parts of this map are mine" and never "can I reach that
+ *  door" — warp reachability stays with astar, which has the goal exemption. */
+export function reachableCells(map: MapModel, sx: number, sy: number,
+                               extraBlocked: Set<string> = new Set()): Set<string> {
+  const seen = new Set<string>([`${sx},${sy}`]);
+  const q: { x: number; y: number }[] = [{ x: sx, y: sy }];
+  while (q.length) {
+    const c = q.pop()!;
+    for (const s of successors(map, c.x, c.y, -1, -1)) {
+      const k = `${s.x},${s.y}`;
+      if (seen.has(k) || extraBlocked.has(k)) continue;
+      seen.add(k); q.push({ x: s.x, y: s.y });
+    }
+  }
+  return seen;
+}
+
 export function astar(map: MapModel, sx: number, sy: number, tx: number, ty: number,
                       extraBlocked: Set<string>): { x: number; y: number }[] | null {
   const key = (x: number, y: number) => `${x},${y}`;
@@ -33,45 +96,13 @@ export function astar(map: MapModel, sx: number, sy: number, tx: number, ty: num
       }
       return path.slice(1); // drop start cell
     }
-    for (const d of DIRS) {
-      const nx = best.x + d.dx, ny = best.y + d.dy, nk = key(nx, ny);
-      const isTarget = nx === tx && ny === ty;
-      // target cell is allowed even if "impassable" terrain (warp tiles like doors often are)
-      const ok = isTarget ? (nx >= 0 && ny >= 0 && nx < map.gw && ny < map.gh)
-                          : map.passable(nx, ny);
-      if (!ok || extraBlocked.has(nk)) continue;
-      // wq#552: Gen 1 refuses movement between certain tile pairs even when both
-      // tiles are passable, so this is checked on the EDGE and applies to the
-      // target cell too — unlike the terrain test above, whose isTarget bypass
-      // exists because doors and other warp tiles read impassable. A tile-pair
-      // collision is a real refusal by the emulator, not a modelling artefact:
-      // planning through one is what taught learnedBlocked a phantom wall on
-      // every replan and produced the wq#542 east-west shuffle.
-      if (map.pairBlocked(best.x, best.y, nx, ny)) continue;
-      // Never route THROUGH an unrelated warp tile: stepping onto it triggers a
-      // map transition we didn't ask for. Only the target warp is allowed.
-      if (!isTarget && map.isWarp(nx, ny)) continue;
-      const g = best.g + 1;
-      if (g < (gScore.get(nk) ?? Infinity)) {
-        gScore.set(nk, g); came.set(nk, bestK);
-        open.set(nk, { x: nx, y: ny, g, f: g + h(nx, ny) });
-      }
-    }
-    // wq#601: ledge-hop edges. Ledge tiles are walls in the collision grid, so
-    // without these the planner reads every ledge line as sealed — Route 4
-    // east's ONLY route to Cerulean is behind a hop-down line, and eastbound
-    // A* died at it for 145h. Edges are DIRECTED (map.hops matches the ROM's
-    // LedgeTiles entries, and the reverse direction has no entry), land two
-    // cells out, and never land on an unrelated warp — same rule as steps.
-    for (const hop of map.hops(best.x, best.y)) {
-      const nk = key(hop.x, hop.y);
-      const isTgt = hop.x === tx && hop.y === ty;
+    for (const s of successors(map, best.x, best.y, tx, ty)) {
+      const nk = key(s.x, s.y);
       if (extraBlocked.has(nk)) continue;
-      if (!isTgt && map.isWarp(hop.x, hop.y)) continue;
-      const g = best.g + 2;   // two cells of distance, one press
+      const g = best.g + s.cost;
       if (g < (gScore.get(nk) ?? Infinity)) {
         gScore.set(nk, g); came.set(nk, bestK);
-        open.set(nk, { x: hop.x, y: hop.y, g, f: g + h(hop.x, hop.y) });
+        open.set(nk, { x: s.x, y: s.y, g, f: g + h(s.x, s.y) });
       }
     }
   }

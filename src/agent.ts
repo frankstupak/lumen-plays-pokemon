@@ -42,7 +42,7 @@ import { ExclusionGate, exclusionFile, exclusionLift, exclusionSuspended } from 
 import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
-import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
+import { warpViews, renderWarps, stuckHint, edgeStuckHint, WarpView, EdgeDir } from "./reach";   // wq#538, wq#1870
 import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
@@ -884,7 +884,7 @@ export class Agent {
             this.map.build();
             return `goto -> stuck now ${JSON.stringify(p)}` +
               stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews(),
-                        this.nav.lastGotoObstacle());
+                        this.nav.lastGotoObstacle(), p.map);
           }
           // wq#674: "warped" lands on the new map's arrival tile with zero
           // steps taken there yet; anything else that actually got the player
@@ -1043,6 +1043,17 @@ export class Agent {
           const r = await this.nav.leaveMapEdge(dir as any);
           if (r === "battle") return "leave_edge interrupted by a wild battle - fight it with battle_move";
           if (r === "dialog") return "leave_edge blocked: a dialog or sign text is open - use talk() to clear it first";
+          // wq#1870: leaveMapEdge tries every walkable cell on that boundary and
+          // then returns a bare "stuck", which reads as "retry" — and on a split
+          // map the retry is doomed for as long as the player stands where they
+          // are. Say that the edge is in a part of the map they cannot walk to,
+          // and name the ones they can.
+          if (r === "stuck") {
+            const p = this.nav.posChecked();
+            this.map.build();
+            return `leave_edge -> stuck now ${JSON.stringify(p)}` +
+              edgeStuckHint(this.map, p.x, p.y, dir as EdgeDir, this.currentWarpViews(), p.map);
+          }
           // wq#674: edge crossings land off any warp tile, so they can't
           // trigger the door-bounce refusal above - but they DO count as
           // having moved, same as a successful goto.

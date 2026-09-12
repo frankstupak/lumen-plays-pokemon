@@ -2,6 +2,7 @@
 import { Emulator } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
+import { hiddenObjectSlots } from "./objects";
 
 export interface Warp { y: number; x: number; destWarp: number; destMap: number }
 
@@ -170,11 +171,20 @@ export class MapModel {
     }
 
     // NPC sprites 1..15 (0 = player); wSpriteStateData2[i*16+4/5] = mapY+4 / mapX+4
+    //
+    // wq#1870: a DESPAWNED object keeps its record in this table — the engine
+    // suppresses the draw from wToggleableObjectFlags instead of clearing the
+    // slot (wq#607 measured that). Reading the table alone therefore invents an
+    // obstacle for every picked-up item ball and every NPC an event removed, and
+    // passable() turns each one into a wall A* will not plan through. Verified
+    // both ways on Cerulean (objects.ts hiddenObjectSlots): the engine walks the
+    // player onto the two flagged-hidden cells and refuses the flagged-shown one.
     this.sprites = [];
+    const hidden = hiddenObjectSlots(m, s);
     const d1 = s.addr("wSpriteStateData1"), d2 = s.addr("wSpriteStateData2");
     for (let i = 1; i < 16; i++) {
       const pic = m[d1 + i * 16];
-      if (pic === 0 || pic === 0xff) continue;
+      if (pic === 0 || pic === 0xff || hidden.has(i)) continue;
       const sy = m[d2 + i * 16 + 4] - 4, sx = m[d2 + i * 16 + 5] - 4;
       if (sy >= 0 && sy < this.gh && sx >= 0 && sx < this.gw) this.sprites.push({ y: sy, x: sx, pic });
     }

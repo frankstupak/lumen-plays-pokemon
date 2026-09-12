@@ -44,26 +44,48 @@ export interface ItemObj {
   globalId: number | null;
 }
 
-/** Every visible ground item ball on the CURRENT map, from the live sprite
- *  state. Self-filtering: despawned (picked-up) missables never appear. */
-export function decodeItemObjects(mem: ArrayLike<number>, sym: SymbolTable): ItemObj[] {
-  const n = mem[sym.addr("wNumSprites")];
-  const extra = sym.addr("wMapSpriteExtraData");
-  const d1 = sym.addr("wSpriteStateData1"), d2 = sym.addr("wSpriteStateData2");
-  // objectIndex -> global flag id for THIS map (see module header)
+/** objectIndex -> global flag id for the CURRENT map, from wToggleableObjectList
+ *  (see module header). The object index doubles as the wSpriteStateData slot:
+ *  the engine loads objects into slots in table order, which probe_pocket1870 §A
+ *  re-checks against the ROM object table on every run. */
+export function toggleableGlobalIds(mem: ArrayLike<number>, sym: SymbolTable): Map<number, number> {
   const listA = sym.addr("wToggleableObjectList");
-  const flagsA = sym.addr("wToggleableObjectFlags");
   const gids = new Map<number, number>();
   for (let k = 0; k < 16; k++) {
     const obj = mem[listA + k * 2];
     if (obj === 0xff) break;
     gids.set(obj, mem[listA + k * 2 + 1]);
   }
-  const hidden = (i: number): boolean => {
-    const gid = gids.get(i);
-    if (gid === undefined) return false;
-    return ((mem[flagsA + (gid >> 3)] >> (gid & 7)) & 1) === 1;
-  };
+  return gids;
+}
+
+/** wq#1870: the sprite slots the engine is NOT drawing — a toggleable object
+ *  whose global flag is set. The slot keeps its record in wSpriteStateData
+ *  (wq#607 measured that byte-for-byte), so "is there a sprite here" read off
+ *  that table alone reports NPCs and item balls that despawned turns ago.
+ *
+ *  This is a COLLISION fact, not just a rendering one: measured on
+ *  auto-mtyf9e7k-map3 (Cerulean), the player walks straight onto (20,2) and
+ *  (28,12) — both carrying a live sprite record, both flagged hidden — while
+ *  (27,12), whose object is flagged SHOWN, refuses every push. map.ts must
+ *  drop these or every despawned object is a phantom wall. */
+export function hiddenObjectSlots(mem: ArrayLike<number>, sym: SymbolTable): Set<number> {
+  const flagsA = sym.addr("wToggleableObjectFlags");
+  const out = new Set<number>();
+  for (const [obj, gid] of toggleableGlobalIds(mem, sym))
+    if ((mem[flagsA + (gid >> 3)] >> (gid & 7)) & 1) out.add(obj);
+  return out;
+}
+
+/** Every visible ground item ball on the CURRENT map, from the live sprite
+ *  state. Self-filtering: despawned (picked-up) missables never appear. */
+export function decodeItemObjects(mem: ArrayLike<number>, sym: SymbolTable): ItemObj[] {
+  const n = mem[sym.addr("wNumSprites")];
+  const extra = sym.addr("wMapSpriteExtraData");
+  const d1 = sym.addr("wSpriteStateData1"), d2 = sym.addr("wSpriteStateData2");
+  const gids = toggleableGlobalIds(mem, sym);
+  const hiddenSlots = hiddenObjectSlots(mem, sym);
+  const hidden = (i: number): boolean => hiddenSlots.has(i);
   const out: ItemObj[] = [];
   for (let i = 1; i <= n && i <= 15; i++) {
     const pic = mem[d1 + i * 16];
