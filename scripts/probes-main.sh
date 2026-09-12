@@ -58,6 +58,7 @@ PROBES=(
   probe_sell1835
   probe_pin1840
   probe_route1849
+  probe_pocket1870
 )
 
 failed=()
