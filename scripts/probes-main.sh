@@ -57,6 +57,7 @@ PROBES=(
   probe_grass1565
   probe_sell1835
   probe_pin1840
+  probe_route1849
 )
 
 failed=()

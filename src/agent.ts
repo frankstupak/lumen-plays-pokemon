@@ -270,6 +270,11 @@ export class Agent {
       // wq#1746: the verdict record carries what the ban did beside whether the
       // escape held, so one line answers both.
       exclusionFires: () => this.exclusion.peek()?.fires ?? 0,
+      // wq#1849: read straight from WRAM rather than a cached GameState — the
+      // override plans between turns, and a badge won mid-escape should move
+      // the bearing to the next gym on the next replan, not at the next
+      // observe().
+      badges: () => this.emu.mem()[this.sym.addr("wObtainedBadges")],
       bus,
       logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
       cfg: CFG.explore,
@@ -549,7 +554,10 @@ export class Agent {
       try {
         block += `\n${progressBlock({ badges: st.badges, partyCount: st.partyCount,
           map: st.map, samples: this.novelty.recent(),
-          balls: this.ballCount(), money: st.money }, CFG.explore)}`;
+          balls: this.ballCount(), money: st.money,
+          // wq#1849: the same table the WARPS list above is indexed by, so a
+          // route leg through a door names the index rather than only the tile.
+          warps: this.map.warps }, CFG.explore)}`;
       } catch { /* prompt salience must never cost the turn */ }
     }
 
