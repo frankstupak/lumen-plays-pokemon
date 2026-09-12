@@ -18,6 +18,7 @@ Tools:
 - press(button): A|B|START|SELECT|UP|DOWN|LEFT|RIGHT - raw fallback only.
 - use_item(name[,party_slot]): use a bag item. Overworld: heals/status cures. In battle: potions heal, poke_ball THROWS TO CATCH the wild Pokemon (never in trainer battles).
 - buy_item(name,qty): buy at a Poke Mart counter (must be standing inside a mart). Checks stock and money.
+- sell_item(name,qty): sell a bag item at a Poke Mart counter (must be standing inside a mart). Pays HALF the shop price. Use it for treasure you cannot use - a NUGGET pays $5000, more than 20 Poke Balls. Never for balls or healing items. The name is the one the BAG line shows.
 - heal_at_center(): full free heal (HP/PP/status) - must be standing inside a Pokemon Center. Handles the nurse dialog end-to-end.
 - note(text): append to your persistent notepad (goals, discoveries, plans). It survives restarts. Prefix a fact with "PIN:" (e.g. note(PIN: Brock beaten, badge 1)) to keep it permanently - pinned facts are never evicted; ordinary notes fold into a summary as the pad fills.
 Rules: if SCREEN TEXT shows dialog, use talk() or choose(); in BATTLE use battle_move(). In a TRAINER battle there is no escape: movement tools are disabled, battle_move only. Lines starting with ! are urgent harness directives - obey them first. One tool per turn.

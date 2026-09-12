@@ -23,7 +23,8 @@ import { Notepad } from "./notepad";
 import { PersonaMemory } from "./persona";              // wq#1176
 import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
-import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
+import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER,
+         backfillItemNames, backfillItemPrices } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
 import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
@@ -249,6 +250,27 @@ export class Agent {
       logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
       cfg: CFG.explore,
     });
+    // wq#1829/#1835: read the two item tables out of THIS ROM at boot. Names so
+    // the bag renders "nuggetx1" instead of "item49x1", and PRICES so the same
+    // nugget can be valued at all — no mart stocks it, so economy.PRICE cannot
+    // price it and sell_item would have nothing to check a payout against.
+    // Both are gaps-only and idempotent (items.ts); a ROM whose tables disagree
+    // throws, and that is caught here, because an unnameable or unpriced bag
+    // must not cost the run its boot.
+    try {
+      const bf = backfillItemNames(rom, sym);
+      bus.emit("tool_call", { tool: "item_names_backfilled", src: "harness", ...bf });
+    } catch (e: any) {
+      bus.emit("tool_call", { tool: "item_names_backfill_failed", src: "harness",
+                              error: String(e?.message ?? e) });
+    }
+    try {
+      const bp = backfillItemPrices(rom, sym);
+      bus.emit("tool_call", { tool: "item_prices_backfilled", src: "harness", ...bp });
+    } catch (e: any) {
+      bus.emit("tool_call", { tool: "item_prices_backfill_failed", src: "harness",
+                              error: String(e?.message ?? e) });
+    }
     this.loadSupervisorBans();
   }
 
@@ -496,6 +518,10 @@ export class Agent {
         inMart: !!stock,
         martStock: stock,
         gymMinLevel: MISTY_MIN_LEVEL,
+        // wq#1835: what the bag is WORTH. The 2026-09-12 run was broke while
+        // carrying $5000 of nugget; nothing in the prompt could say so because
+        // nothing had ever asked what an item sells for.
+        sellables: this.items.sellables(),
       });
       if (eco) block += `\n${eco}`;
     }
@@ -1022,6 +1048,13 @@ export class Agent {
           const qty = Math.max(1, Math.min(9, Number(args[1] ?? 1) || 1));
           return await this.items.buy(id, qty);
         }
+        case "sell_item": {
+          const id = itemId(args[0] ?? "");
+          if (id === null) return `sell_item: unknown item "${args[0]}" (use the name the BAG line shows)`;
+          if (this.bat.active()) return "sell_item: not during a battle";
+          const qty = Math.max(1, Math.min(99, Number(args[1] ?? 1) || 1));
+          return await this.items.sell(id, qty);
+        }
         case "heal_at_center": {
           return await this.heal.atCenter();
         }
@@ -1522,7 +1555,7 @@ export class Agent {
         this.noiseStreak++;
         if (this.noiseStreak === Agent.NOISE_K) {
           const validTools = "goto(x,y), enter_warp(idx), leave_edge(N|S|E|W), talk(), " +
-            "battle_move(slot), flee(), use_item(name), buy_item(name,qty), " +
+            "battle_move(slot), flee(), use_item(name), buy_item(name,qty), sell_item(name,qty), " +
             "heal_at_center(), note(text), interact(x,y), choose(yes|no|idx), press(btn)";
           result += `\n! NOISE STORM (${this.noiseStreak} consecutive invalid calls): ` +
             `you are pattern-completing failures. VALID TOOLS: ${validTools}. ` +

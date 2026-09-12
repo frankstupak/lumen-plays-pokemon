@@ -80,6 +80,57 @@ export function backfillItemNames(rom: RomLike, sym: SymbolTable): { added: numb
   return { added, total, placeholders };
 }
 
+/** wq#1835: what a Gen 1 clerk pays for an id, read from THIS ROM's ItemPrices
+ *  table (01:4608) — 3 BCD bytes per entry, index = id-1, the same table
+ *  backfillItemNames already derives its length check from.
+ *
+ *  WHY NOT economy.PRICE. That table prices what a corridor mart STOCKS, and on
+ *  2026-09-12 the run's single most valuable possession was a NUGGET (id 49),
+ *  which no mart sells: PRICE cannot price it, and a number recalled into PRICE
+ *  by hand is exactly the shape of mistake wq#519 caught (the ticket said the
+ *  Helix fossil was 0x28; the ROM said 0x2a). The ROM says 01 00 00 = 10000 for
+ *  id 49, and Gen 1 pays half.
+ *
+ *  BOUNDED BY THE TABLE, never past it. The entry count is derived from the
+ *  symbol table (97 on this ROM) and ids above it are Gen 1 machines, whose
+ *  prices live in a separate table (pokered GetItemPrice special-cases TM ids).
+ *  An unbounded read of id 201 returns 919495 — that is the ItemNames text that
+ *  follows the table decoding as BCD, i.e. an invented six-figure price for a
+ *  TM. Nibbles are BCD-checked for the same reason the lengths are: if this
+ *  table ever moves we want a throw, not a plausible number. */
+export const ITEM_PRICE: Record<number, number> = {};
+export function backfillItemPrices(rom: RomLike, sym: SymbolTable): { priced: number; total: number } {
+  const t = sym.sym("ItemPrices");
+  const total = (sym.nextAddr(t.bank, t.addr) - t.addr) / 3;
+  if (!Number.isInteger(total) || total <= 0)
+    throw new Error(`ItemPrices is ${total} 3-byte entries -- ROM layout moved`);
+  let priced = 0;
+  for (let id = 1; id <= total; id++) {
+    const a = t.addr + (id - 1) * 3;
+    let v = 0;
+    for (let k = 0; k < 3; k++) {
+      const b = rom.byte(t.bank, a + k);
+      const hi = b >> 4, lo = b & 0xf;
+      if (hi > 9 || lo > 9)
+        throw new Error(`ItemPrices id ${id} byte ${k} = 0x${b.toString(16)} is not BCD -- ROM layout moved`);
+      v = v * 100 + hi * 10 + lo;
+    }
+    ITEM_PRICE[id] = v;
+    if (v > 0) priced++;
+  }
+  return { priced, total };
+}
+
+/** Half the mart price, Gen 1's sell rate. null means "no clerk will buy it":
+ *  either the ROM prices it at 0 (key items, fossils, the Master Ball) or the
+ *  id is outside the priced table entirely (machines). Never 0-as-a-price —
+ *  a caller must not be able to confuse "free" with "unsellable". */
+export function sellPrice(id: number): number | null {
+  const buy = ITEM_PRICE[id];
+  if (typeof buy !== "number" || buy <= 0) return null;
+  return Math.floor(buy / 2);
+}
+
 /** Human label for ANY id, including ones no table can name. Returns an
  *  explicitly-unknown string rather than undefined, because the failure this
  *  ticket exists to stop is a confident claim about an item nobody checked.
@@ -113,7 +164,13 @@ export function itemId(name: string): number | null {
   if (ALIAS[k] !== undefined) return ALIAS[k];
   if (ALIAS[k.replace(/_/g, "")] !== undefined) return ALIAS[k.replace(/_/g, "")];
   const direct = Object.entries(ITEM).find(([n]) => n.toLowerCase() === k);
-  return direct ? direct[1] : null;
+  if (direct) return direct[1];
+  // wq#1835: last resort, the ROM's own ItemNames (backfilled at boot). Without
+  // this the bag RENDERS "nuggetx1" (wq#1829) while sell_item(nugget,1) answers
+  // "unknown item" — the asset visible and still unreachable, which is the
+  // whole of this ticket. Only names the ROM itself produced resolve here.
+  const named = Object.entries(ITEM_NAME).find(([, n]) => n === k);
+  return named ? Number(named[0]) : null;
 }
 
 export const MART_ORDER: Record<number, number[]> = {
@@ -129,7 +186,21 @@ export const MART_ORDER: Record<number, number[]> = {
        ITEM.PARLYZ_HEAL, ITEM.REPEL],                                      // Vermilion
 };
 
+/** wq#1835: what the sell ADVISOR may never point at. DERIVED, not recalled:
+ *  anything a corridor mart stocks is something this campaign buys on purpose,
+ *  so recommending its sale is recommending a round trip through the clerk at a
+ *  50% loss. Balls and heals are listed again in case a mart table ever grows a
+ *  row this set should still cover. It gates the ADVICE, not the tool — a brain
+ *  that has a reason to sell four antidotes may still do it; sell() refuses
+ *  only balls, which are the catching precondition the money exists to buy. */
+const NEVER_ADVISE_SELL: Set<number> = new Set([
+  ...Object.values(MART_ORDER).flat(), ...BALLS, ...HP_HEAL,
+]);
+
 export interface BagEntry { id: number; qty: number; name: string; }
+
+/** A bag entry a clerk will pay for, with what it is actually worth. */
+export interface Sellable { id: number; name: string; qty: number; unit: number; value: number }
 
 export class Items {
   constructor(private emu: Emulator, private sym: SymbolTable, private scr: Screen,
@@ -211,6 +282,19 @@ export class Items {
   isBall(id: number) { return BALLS.includes(id); }
   isHpHeal(id: number) { return HP_HEAL.includes(id); }
 
+  /** wq#1835: bag entries worth cash that the campaign does not otherwise need,
+   *  richest first. Empty until backfillItemPrices() has read the ROM — an
+   *  un-priced table must advise NOTHING rather than advise at a guessed rate. */
+  sellables(): Sellable[] {
+    const out: Sellable[] = [];
+    for (const e of this.bag()) {
+      const unit = sellPrice(e.id);
+      if (unit === null || NEVER_ADVISE_SELL.has(e.id)) continue;
+      out.push({ id: e.id, name: itemLabel(e.id), qty: e.qty, unit, value: unit * e.qty });
+    }
+    return out.sort((a, b) => b.value - a.value);
+  }
+
   async buy(wantId: number, qty: number): Promise<string> {
     if (this.bat.active?.()) return "buy: not during battle";
     const map = this.r("wCurMap");
@@ -219,22 +303,7 @@ export class Items {
     const listIdx = order.indexOf(wantId);
     if (listIdx < 0) return `buy: ${ITEM_NAME[wantId]} not sold here; stock: ${order.map(i => ITEM_NAME[i]).join(", ").toUpperCase()}`;
     const before = this.money();
-    // Path to the counter and face the clerk. Gen 1 marts: clerk stands behind
-    // a counter; you talk ACROSS it. Approach the tile below-left of the clerk
-    // and face into the counter. Try a couple of approaches if the first misses.
-    const approaches: Array<[number, number, number]> = [[2, 5, KEYS.LEFT], [3, 6, KEYS.UP], [2, 6, KEYS.UP]];
-    let opened = false;
-    for (const [ax, ay, face] of approaches) {
-      if (this.nav?.goto) { const g = await this.nav.goto(ax, ay).catch(() => "stuck"); if (g === "stuck" || g === "adjacent_npc") continue; }
-      await this.tap(face, 200);
-      await this.tap(KEYS.A, 250);
-      if (await this.waitFor(() => this.scr.text().includes("BUY"), 500)) { opened = true; break; }
-      // clear any greeting dialog that didn't reach the menu, then retry
-      for (let i = 0; i < 4 && (this.sync.textUp() || this.dlg.open()); i++) await this.tap(KEYS.A, 250);
-      if (await this.waitFor(() => this.scr.text().includes("BUY"), 400)) { opened = true; break; }
-      for (let i = 0; i < 4 && (this.sync.textUp() || this.dlg.open() || this.scr.cursor()); i++) await this.tap(KEYS.B, 200);
-    }
-    if (!opened) { await this.exitMart(); return "buy: mart menu never opened (could not reach the clerk)"; }
+    if (!await this.openClerk()) { await this.exitMart(); return "buy: mart menu never opened (could not reach the clerk)"; }
     if (!await this.moveCur(0)) { await this.exitMart(); return "buy: could not select BUY"; }
     // A on BUY gets eaten if the menu just re-inited (2nd purchase same visit) -> verified retry
     let listOpen = false;
@@ -300,6 +369,150 @@ export class Items {
     await this.exitMart();
     this.bus?.emit("tool_call", { tool: "buy_item", args: { item: ITEM_NAME[wantId], qty, spent } });
     return paid ? `bought ${qty}x ${ITEM_NAME[wantId]} for ${spent}; have ${this.has(wantId)}` : "buy: no charge registered";
+  }
+
+  /** wq#1835: the other half of the counter. buy() has existed since S3 and
+   *  SELL was a word in an exitMart comment, so the run on 2026-09-12 sat at $96
+   *  for 318 turns carrying a NUGGET the clerk two maps away would have paid
+   *  $5000 for — more than twenty Poke Balls, and the largest single income in
+   *  the early game by an order of magnitude.
+   *
+   *  Mirrors buy(): same clerk, same read-gating discipline, money delta the
+   *  other way. Three things are deliberately NOT like buy():
+   *   - THE NAME GATE IS AT SELECTION, not at the confirm. buy() re-reads the
+   *     item name out of the confirm text before paying; the sell confirm says
+   *     "I can pay you 350 for that." and never names the item (observed live,
+   *     map67), so the only place the identity can be checked is the tilemap
+   *     label under the arrow — which is where wq#620 concluded it belonged.
+   *   - THE QUANTITY IS READ BACK FROM RAM (wItemQuantity), not counted in taps,
+   *     and the expected payout is computed from what the RAM says we are about
+   *     to sell. A swallowed tap then sells less, never lies about more.
+   *   - THE PRICE IS CROSS-CHECKED against the ROM's own table before YES. Not
+   *     as the source of truth — that is always the money delta in RAM — but
+   *     because a disagreement means the game has a different item selected
+   *     than we think, and the next button press is irreversible. */
+  async sell(wantId: number, qty: number): Promise<string> {
+    if (this.bat.active?.()) return "sell: not during battle";
+    const map = this.r("wCurMap");
+    if (!MART_ORDER[map]) return `sell: not in a known mart (map ${map})`;
+    // Balls are the precondition the whole purse exists to buy; no strategy
+    // ends with selling them back at half price.
+    if (this.isBall(wantId)) return `sell: never sell ${itemLabel(wantId)} - balls are what the money is FOR`;
+    const idx = this.bagIndex(wantId);
+    if (idx < 0) return `sell: no ${itemLabel(wantId)} in bag`;
+    const unit = sellPrice(wantId);
+    if (unit === null)
+      return `sell: this ROM prices ${itemLabel(wantId)} at ` +
+        `${ITEM_PRICE[wantId] === undefined ? "nothing (no ItemPrices entry - machines and key items have none)" : "0"}` +
+        `; a Gen 1 clerk refuses it`;
+    const want = itemLabel(wantId);
+    const have0 = this.has(wantId);
+    const before = this.money();
+    if (!await this.openClerk()) { await this.exitMart(); return "sell: mart menu never opened (could not reach the clerk)"; }
+    if (!await this.moveCur(1)) { await this.exitMart(); return "sell: could not select SELL"; }
+    // A on SELL prints "What would you like to sell?" over several presses and
+    // only then draws the PACK list. The clerk menu has a cursor of its own, so
+    // "a cursor is up" cannot tell the two apart -- the column can: the clerk
+    // menu draws its arrow at x=1 and the list at x=5 (observed live on map67,
+    // the same structural fence wq#1663 used for the battle bag).
+    const listUp = () => { const c = this.scr.cursor(); return c !== null && c.x >= 4; };
+    // The prompt needs several presses and the list needs one, so the press
+    // that opens the list can be followed by one more -- which SELECTS whatever
+    // row the arrow starts on and opens its quantity selector. That press is
+    // recoverable and must be recovered from, not just avoided: B backs out of
+    // the selector to the list, and the loop then sees listUp and stops. Left
+    // unhandled this is the path where a swallowed frame sells the wrong item.
+    const selectorUp = () => this.scr.cursor() === null && /x0\d/.test(this.scr.text());
+    let listOpen = listUp();
+    for (let i = 0; i < 8 && !listOpen; i++) {
+      if (selectorUp()) { await this.tap(KEYS.B, 250); listOpen = listUp(); continue; }
+      await this.tap(KEYS.A, 250);
+      listOpen = await this.waitFor(listUp, 400);
+    }
+    if (!listOpen) { await this.exitMart(); return "sell: sell list never opened"; }
+    await this.sync.settle(300);          // list init - the first tap gets eaten
+    let label: string | null = null, matched = false;
+    for (let t = 0; t < 2 && !matched; t++) {
+      if (!await this.moveToBagIndex(idx)) continue;
+      await this.sync.settle(180);        // the tilemap lags the scroll
+      label = this.menuView().selectedLabel;
+      matched = !!label && labelMatches(label, want);
+    }
+    if (!matched) {
+      await this.exitMart();
+      return `sell: ${want} never came under the cursor (bag index ${idx}, arrow on "${label ?? "unreadable"}")`;
+    }
+    await this.tap(KEYS.A, 260);
+    // Quantity selector: the list arrow disappears and the window prints "x01"
+    // with the running total beside it. Bag ROWS render a count as "x 1" (Gen 1
+    // right-justifies the field - the wq#1663 lesson), so "x0<digit>" cannot
+    // match a row and is a safe open-gate for the selector.
+    if (!await this.waitFor(selectorUp, 900)) {
+      await this.exitMart();
+      return `sell: quantity selector never opened (arrow read "${label}", cf91=${this.curItem()})`;
+    }
+    const cfAfterA = this.curItem();      // corroboration only (see buy())
+    const wantN = Math.max(1, Math.min(qty, have0));
+    for (let i = 0; i < wantN + 6 && this.r("wItemQuantity") < wantN; i++) await this.tap(KEYS.UP, 130);
+    const sellN = this.r("wItemQuantity");     // what the GAME is about to sell
+    const expect = unit * sellN;
+    await this.tap(KEYS.A, 260);
+    // Confirm is a slow-printing multi-part dialog ending in YES/NO. Note
+    // wTwoOptionMenuID reads 0 here (observed live), so twoOptionUp() alone
+    // never fires -- the cursor+YES fallback buy() already carries is what
+    // catches it.
+    const confirmUp = () => this.twoOptionUp() || (this.scr.cursor() !== null && /YES/.test(this.scr.text()));
+    for (let i = 0; i < 14 && !confirmUp(); i++) {
+      if (this.scr.cursor() === null) await this.tap(KEYS.A, 250);
+      else await this.emu.framesAsync(20);
+    }
+    if (!await this.waitFor(confirmUp, 600)) { await this.exitMart(); return "sell: confirm prompt never appeared"; }
+    const offer = this.menuView().dialog.match(/(\d+)/);
+    if (offer && Number(offer[1]) !== expect) {
+      await this.tap(KEYS.B, 300);        // NO - abort before the sale
+      await this.exitMart();
+      return `sell: the clerk offered ${offer[1]} for ${sellN}x ${want} but the ROM prices that at ${expect}` +
+        ` - aborted rather than sell something else (cf91=${cfAfterA})`;
+    }
+    await this.tap(KEYS.A, 320);            // YES (cursor defaults top)
+    const paid = await this.waitFor(() => this.money() > before, 2000);
+    // The bag decrement lands one dialog-advance AFTER the money does. Advance
+    // it - but never blind-A a cursored prompt: A on the finished sale reopens
+    // the sell list and starts ANOTHER transaction (observed live), the same
+    // wedge exitMart() documents for buy.
+    for (let i = 0; i < 6 && this.has(wantId) === have0; i++) {
+      if (this.scr.cursor() !== null || (!this.sync.textUp() && !this.dlg.open())) break;
+      await this.tap(KEYS.A, 250);
+    }
+    const earned = this.money() - before;
+    await this.exitMart();
+    this.bus?.emit("tool_call", { tool: "sell_item", args: { item: want, qty: sellN, earned } });
+    if (!paid) return `sell: no payment registered (${want} still ${this.has(wantId)} in bag)`;
+    const caveat = earned === expect ? "" : ` (expected ${expect} - the purse may have hit the 999999 cap)`;
+    return `sold ${sellN}x ${want} for ${earned}${caveat}; purse ${this.money()}, ${this.has(wantId)} left`;
+  }
+
+  /** Path to the counter, face the clerk, and get the BUY/SELL/QUIT menu up.
+   *  Gen 1 marts: the clerk stands behind a counter and you talk ACROSS it, so
+   *  the approach is the tile below-left of the clerk facing into the counter;
+   *  a couple of approaches are tried because a customer NPC can occupy one.
+   *
+   *  wq#1835 factored this out of buy() so sell() reaches the same clerk by the
+   *  same route. The two halves of a mart transaction drifting apart is the
+   *  failure moveToBagIndex() above already documents happening once. */
+  private async openClerk(): Promise<boolean> {
+    const approaches: Array<[number, number, number]> = [[2, 5, KEYS.LEFT], [3, 6, KEYS.UP], [2, 6, KEYS.UP]];
+    for (const [ax, ay, face] of approaches) {
+      if (this.nav?.goto) { const g = await this.nav.goto(ax, ay).catch(() => "stuck"); if (g === "stuck" || g === "adjacent_npc") continue; }
+      await this.tap(face, 200);
+      await this.tap(KEYS.A, 250);
+      if (await this.waitFor(() => this.scr.text().includes("BUY"), 500)) return true;
+      // clear any greeting dialog that didn't reach the menu, then retry
+      for (let i = 0; i < 4 && (this.sync.textUp() || this.dlg.open()); i++) await this.tap(KEYS.A, 250);
+      if (await this.waitFor(() => this.scr.text().includes("BUY"), 400)) return true;
+      for (let i = 0; i < 4 && (this.sync.textUp() || this.dlg.open() || this.scr.cursor()); i++) await this.tap(KEYS.B, 200);
+    }
+    return false;
   }
 
   private async exitMart(): Promise<void> {

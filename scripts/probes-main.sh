@@ -54,6 +54,7 @@ PROBES=(
   probe_calc1181
   probe_ledger1181
   probe_grass1565
+  probe_sell1835
 )
 
 failed=()
