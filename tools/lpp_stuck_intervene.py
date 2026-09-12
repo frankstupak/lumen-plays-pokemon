@@ -257,8 +257,7 @@ PRESCRIPTIONS = {
             "is nothing left to prepare for here and no gate refusing you anything, so "
             "stop cycling this town's doors: re-entering the Pokecenter at full HP, the "
             "Mart with nothing to buy, or the gym you already cleared each cost a turn and "
-            "move nothing. {next_objective} The ROUTE line in your prompt names that goal "
-            "and the NEXT LEG that starts it — take that leg. {pocket}"
+            "move nothing. {next_objective} {leg}"
         ),
         "gotoBan": [],
     },
@@ -691,11 +690,33 @@ def _fmt_extras(location_id, state=None):
     # of these turns, that walking cannot leave the region it is standing in; a
     # pin that answers "walk to the next town" without this is prescribing the
     # move that just failed. Silent when the evidence is absent.
+    # wq#1877: and the advice this used to give — "take one of the warps the
+    # harness lists as reachable, a different door" — was the loop it was
+    # written to break. On Cerulean every reachable warp is a shop whose only
+    # door back is the one you walked in by; the region's one crossing is a door
+    # an NPC is standing on, and the refusal itself now names it, names the NPC,
+    # and names where the game clears that NPC (src/reach.ts blockedCrossings,
+    # src/unblock.ts). A pin cannot know which of those applies today, so it
+    # sends the agent to the answer instead of inventing one.
     extras["pocket"] = (
-        "Note: goto keeps answering that you are in a CLOSED-OFF part of this map — from "
-        "where you stand, walking cannot leave it. Take one of the warps the harness lists "
-        "as reachable, a different door from the one you just came out of, and try the leg "
-        "from there." if (state.get("closedOffTurns") or 0) else "")
+        "Note: the harness keeps answering that walking cannot leave the part of this map "
+        "you are standing in. Its own goto/leave_edge refusal lists the ways out of it — the "
+        "map edges that work from here, and the one door that crosses, with whatever is "
+        "standing on it and where the game clears that. Do what THAT list says; the doors you "
+        "have already used are the loop, not the exit."
+        if (state.get("closedOffTurns") or 0) else "")
+    # wq#1877: and while the pocket clause has something to say, the pin must
+    # STOP ordering the leg. It spent its whole K budget telling an agent to
+    # take a NEXT LEG (leave_edge(S) into Route 5) that starts in the half of
+    # the map it cannot walk to — the wq#1091 footgun with a destination instead
+    # of a level: obeyed perfectly, impossible anyway. The two halves are one
+    # field so they cannot contradict each other.
+    extras["leg"] = (
+        "The ROUTE line in your prompt names that goal and the NEXT LEG that starts it — "
+        "take that leg." if not extras["pocket"] else
+        "The ROUTE line in your prompt names that goal, but the NEXT LEG it gives cannot be "
+        "started from where you stand, so getting out of this pocket comes first. "
+        + extras["pocket"])
     return extras
 
 

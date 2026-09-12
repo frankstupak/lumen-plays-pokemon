@@ -773,6 +773,11 @@ export interface ProgressCtx {
    *  enter_warp INDEX the WARPS list is printed with. Optional: without it the
    *  leg names the door's tile instead, which is still in that list. */
   warps?: readonly WarpRef[];
+  /** wq#1877: the map edges walkable from where the player is standing right
+   *  now (reach.ts reachableEdges). Optional: without it the ROUTE line cannot
+   *  tell that the leg it names starts on the far side of a split, which is the
+   *  Cerulean stall. */
+  edges?: readonly string[];
 }
 
 /** Trailing samples on `map`, and trailing samples since a new tile. Both
@@ -810,7 +815,7 @@ export function progressBlock(c: ProgressCtx, cfg: Pick<ExploreCfg, "urgencyTurn
   // serves. Null on a map the travel graph does not hold (interiors, cave
   // floors) — those exit by their door warps, which the WARPS list already
   // gives, and inventing a bearing for them is how wq#564 got started.
-  const route = routeBlock(c.map, c.badges, capsFromBadges(c.badges), c.warps);
+  const route = routeBlock(c.map, c.badges, capsFromBadges(c.badges), c.warps, c.edges);
   if (route) lines.push(route);
   if (k.sinceNew >= cfg.urgencyTurns && k.onMap >= cfg.urgencyTurns)
     lines.push(`!! NO NEW GROUND in ${n(k.sinceNew, k.sinceNewCapped)} turns: leaving this map is high value. ` +
