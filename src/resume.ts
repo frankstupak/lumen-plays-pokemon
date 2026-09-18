@@ -9,6 +9,7 @@ import { StateReader } from "./state";
 import { Rom } from "./rom";
 import { MapModel, coordsPlausible } from "./map";
 import { mtMoonLeg } from "./mtmoon_route";
+import { levelSum } from "./novelty";
 
 // Story progress order for Kanto maps on the critical path.
 // 2026-08-12: extended past Pewter Gym — Route 3 (14), Mt Moon Pokecenter (68),
@@ -145,6 +146,19 @@ export interface Sidecar {
   storyScore?: number;  // v2+ (wq#471): popcount of STORY_FLAGS at write time
   leg?: string;         // v3+ (wq#586): mtMoonLeg at write time ("L1".."L7")
   onWarp?: boolean;     // v3+ (wq#586): checkpoint stands ON a warp tile
+  stateKey?: string;    // v4+ (wq#1177): identity key for the resume repeat guard
+}
+
+/** wq#1177: deterministic identity for a checkpoint's game state, independent
+ *  of whatever the file happened to be named. RESUME_DEADEND is the same
+ *  state booting twice under different auto-* filenames — the old repeat
+ *  guard compared `f === winner.f` and never caught that (lpp-improvement-
+ *  plan.md section 2c / "1"). Not cryptographic; every input is already a
+ *  small integer, so a joined string is sufficient to distinguish states and
+ *  stays human-readable in logs. */
+export function stateKey(map: number, x: number, y: number, storyScore: number,
+                          badges: number, lvlSum: number): string {
+  return `${map}:${x}:${y}:${storyScore}:${badges}:${lvlSum}`;
 }
 
 /** wq#586: leg -> comparator ordinal. 0 = unknown/legless, which sorts as
@@ -160,6 +174,10 @@ export interface Progress {
   onWarp: boolean; // wq#586: standing on a warp tile (selector prefers not)
   hpPct: number; ppOk: boolean; viable: boolean; mtime: number;
   map: number; x: number; y: number;   // wq#518: rank inputs, kept for diagnostics
+  // wq#1177: undefined only for a pre-v4 sidecar read via the fast (no-boot)
+  // path, which has no party data to compute levelSum from. The repeat guard
+  // falls back to filename comparison in that case — see pickResume.
+  stateKey?: string;
 }
 
 // Resume viability: never hand the brain a near-dead or move-dead state when
@@ -218,7 +236,8 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
         fine: LEG_FINE[j.leg ?? ""] ?? 0, onWarp: !!j.onWarp,        // v2 -> unknown
         hpPct: j.hpPct, ppOk: j.ppOk,
         viable: j.hpPct >= VIABLE_HP_PCT && j.ppOk, mtime,
-        map: j.map, x: j.x, y: j.y };
+        map: j.map, x: j.x, y: j.y,
+        stateKey: typeof j.stateKey === "string" ? j.stateKey : undefined };  // v3- -> unknown
     } catch {}
   }
   // legacy slow path: boot an emulator and read the state directly
@@ -241,10 +260,15 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
       const l = mtMoonLeg(mm, s.map, s.x, s.y);
       if (l) fine = LEG_FINE[l.leg] ?? 0;
     } catch {}
+    const story = rd.storyScore();
     return { rank: progressRank(s.map, s.x, s.y), badges: s.badgeCount, events: rd.eventCount(),
-      story: rd.storyScore(), fine, onWarp,
+      story, fine, onWarp,
       hpPct, ppOk, viable: hpPct >= VIABLE_HP_PCT && ppOk, mtime,
-      map: s.map, x: s.x, y: s.y };
+      map: s.map, x: s.x, y: s.y,
+      // wq#1177: the emulator is already booted here, so the full identity key
+      // (which needs party levels) is affordable exactly as wq#586's leg/onWarp
+      // full-fidelity read is.
+      stateKey: stateKey(s.map, s.x, s.y, story, s.badgeCount, levelSum(s)) };
   } catch {
     return { rank: -2, badges: -1, events: -1, story: -1, fine: 0, onWarp: false,
       hpPct: 0, ppOk: false, viable: false,
@@ -276,7 +300,10 @@ export function readProgress(file: string, sym: SymbolTable, romPath: string): P
 // when a newer alternative exists to take instead.
 export const RESUME_REPEAT_LIMIT = 2;   // consecutive identical picks tolerated
 const HISTORY_KEEP = 8;
-interface HistoryEntry { file: string; at: string }
+// wq#1177: `key` is the picked state's stateKey, recorded alongside the file
+// so a later boot can compare identity, not just filename. Optional so old
+// history.json files (written before this change) keep loading.
+interface HistoryEntry { file: string; at: string; key?: string }
 interface History { v: number; picks: HistoryEntry[] }
 
 export interface ResumeOpts {
@@ -397,8 +424,20 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
         "a reason OTHER than critical health -- investigate"}.`);
   };
   const hist = readHistory(historyFile);
-  const recent = hist.picks.slice(-RESUME_REPEAT_LIMIT).map(p => p.file);
-  const repeated = recent.length >= RESUME_REPEAT_LIMIT && recent.every(f => f === winner.f);
+  const recent = hist.picks.slice(-RESUME_REPEAT_LIMIT);
+  // wq#1177: identity-based when the winner's stateKey and every recent
+  // pick's stored key are known — this is the RESUME_DEADEND fix. The old
+  // guard compared `f === winner.f`, so a fresh checkpoint written at the
+  // SAME game state (new auto-* filename, identical map/x/y/story/badges/
+  // levelSum) looked like "a newer alternative" and reset the guard while
+  // being the identical trap (lpp-improvement-plan.md section 2c / item 1).
+  // Falls back to the original filename comparison when either side lacks a
+  // key (pre-v4 sidecar, or history written before this change), so old
+  // states are never guarded worse than before.
+  const repeated = recent.length >= RESUME_REPEAT_LIMIT &&
+    (winner.stateKey !== undefined && recent.every(p => p.key !== undefined)
+      ? recent.every(p => p.key === winner.stateKey)
+      : recent.every(p => p.file === winner.f));
   if (repeated) {
     // Only step aside if the last run actually produced something newer to step
     // aside TO. Without that, the repeat is not evidence of a trap — it is just
@@ -409,8 +448,15 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
     // original "any newer viable" pick when no non-warp newer state exists,
     // preserving the anti-wedge guarantee (mtime > winner.mtime proves the last
     // run produced something newer to move to).
-    const alt = scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable) && !c.onWarp)
-             ?? scored.find(c => c.f !== winner.f && c.mtime > winner.mtime && (c.viable || !winner.viable));
+    // wq#1177: also require a DIFFERENT identity when both sides are known — a
+    // newer FILE at the identical stateKey is the same trap under a new name,
+    // not an alternative to step aside to.
+    const distinctState = (c: (typeof scored)[number]): boolean =>
+      winner.stateKey === undefined || c.stateKey === undefined || c.stateKey !== winner.stateKey;
+    const alt = scored.find(c => c.f !== winner.f && distinctState(c) &&
+        c.mtime > winner.mtime && (c.viable || !winner.viable) && !c.onWarp)
+             ?? scored.find(c => c.f !== winner.f && distinctState(c) &&
+        c.mtime > winner.mtime && (c.viable || !winner.viable));
     if (alt) {
       log(`resume: REPEAT GUARD — ${short(winner.f)} picked ${RESUME_REPEAT_LIMIT}x running while newer states exist; ` +
         `demoting it for this selection and taking ${short(alt.f)} ` +
@@ -423,7 +469,7 @@ export function pickResume(dirs: string[], sym: SymbolTable, romPath: string, op
   storyCheck();
   log(`resume: ${short(winner.f)} — ${rankLabel(winner.map, winner.x, winner.y)} (map ${winner.map} @ ${winner.x},${winner.y}) ` +
     `rank=${winner.rank} fine=${winner.fine} onWarp=${winner.onWarp} story=${winner.story} badges=${winner.badges} viable=${winner.viable}, ${scored.length} candidates`);
-  hist.picks.push({ file: winner.f, at: now().toISOString() });
+  hist.picks.push({ file: winner.f, at: now().toISOString(), key: winner.stateKey });
   writeHistory(historyFile, hist);
   return winner.f;
 }

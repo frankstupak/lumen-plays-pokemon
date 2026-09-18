@@ -61,6 +61,8 @@ PROBES=(
   probe_route1849
   probe_pocket1870
   probe_guard1877
+  probe_resume1177
+  probe_checkpoint1177
 )
 
 failed=()

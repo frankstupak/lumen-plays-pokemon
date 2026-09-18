@@ -52,6 +52,7 @@ import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits,
          toggleableGlobalIds } from "./objects";  // wq#607, wq#1877
 import { nearbyHiddenItems, hiddenItemLine, hiddenItemFlags } from "./hidden_items";  // wq#622
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
+import { stateKey } from "./resume";   // wq#1177
 import { CFG } from "./config";
 import { VisionValve, consultVision } from "./vision";  // wq#621
 
@@ -81,6 +82,12 @@ export function mtMoonReentryRefusal(onMap15: boolean, phase: string,
 // until the story advances (storyScore/badges/eventFlags rise).
 interface SupervisorDirective {
   gotoBan: number[];
+  // wq#1563: the post-K breakout rung's ban, and the exact inverse of gotoBan
+  // above — gotoBan refuses enter_warp INTO a map, this refuses goto WITHIN
+  // one, leaving leave_edge and enter_warp as the way out. A map-local freeze
+  // (one map, a full dP window, zero new tiles) cannot be broken by banning
+  // the map: the agent is already inside it and still needs its exits.
+  staleMapGotoBan: number | null;
   mode: string;
   summary: string;
   notepadPin: string;
@@ -108,9 +115,15 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
       ? d.gotoBan.filter((m: any) => typeof m === "number")
       : [];
     const pin = typeof d.notepadPin === "string" ? d.notepadPin : "";
-    if (bans.length === 0 && !pin) return null;   // nothing actionable
+    // wq#1563: honoured for any mode. The breakout rung fires past K on
+    // whatever mode was stalled, so gating it on the mode name the way bans are
+    // gated would make it unreachable on FIGHT_LOSS_LOOP — the one incident it
+    // was built for.
+    const staleMap = typeof d.staleMapGotoBan === "number" ? d.staleMapGotoBan : null;
+    if (bans.length === 0 && staleMap === null && !pin) return null;   // nothing actionable
     return {
       gotoBan: bans,
+      staleMapGotoBan: staleMap,
       mode: d.mode ?? "",
       summary: d.summary ?? "",
       notepadPin: pin,
@@ -215,6 +228,13 @@ export class Agent {
   // wq#1840: latch for the suppression event, so the transition is logged once
   // rather than once per turn for the hundreds of turns the condition holds.
   private pinSuppressed = false;
+  // wq#1563: the breakout rung's map-local goto ban, and the directive mtime
+  // the loaded state came from. The mtime exists because loadSupervisorBans()
+  // ran ONLY in the constructor: a directive written mid-run was invisible
+  // until the next boot, and live runs go ~450 turns. A recovery step that
+  // cannot reach the process it is recovering is not a recovery step.
+  private supervisorStaleMap: number | null = null;
+  private supervisorMtimeMs = -1;
   // wq#1179: tile novelty + composite progress scalar. observe() writes
   // runtime/{visited_tiles,progress}.json and emits a `progress` event;
   // tools/lpp_stuck_mode.py consumes the files. wq#1731: the exploration
@@ -316,8 +336,14 @@ export class Agent {
     try {
       // checkpointDir is <base>/checkpoints; directive is at <base>/runtime/
       const base = join(this.checkpointDir, "..");
+      this.supervisorMtimeMs = this.directiveMtimeMs();
       const dir = loadSupervisorDirective(base);
       if (!dir) return;
+      // wq#1563: this runs mid-run now, not just at boot, so every field it
+      // owns is reset here — otherwise a superseding directive would union its
+      // bans with the previous one's and never release a map.
+      this.supervisorBans.clear();
+      this.supervisorStaleMap = null;
       // wq#1840: age it BEFORE it can reach the prompt even once. A directive
       // whose K-attempt ladder finished days ago is residue, not guidance, and
       // the 14-day FIGHT_LOSS_LOOP@3 pin was re-loaded on every continue.
@@ -327,6 +353,8 @@ export class Agent {
       };
       const dead = pinExpiry(pinned, { turn: this.turn, ms: pinned.loadedMs }, CFG.pin);
       if (dead) {
+        this.supervisorPin = "";
+        this.supervisorPinned = null;
         this.bus.emit("tool_call", {
           tool: "supervisor_directive_expired", src: "harness",
           reason: dead, mode: dir.mode, maps: dir.gotoBan, atBoot: true,
@@ -335,12 +363,14 @@ export class Agent {
       }
       for (const m of dir.gotoBan) this.supervisorBans.add(m);
       this.supervisorPin = pinned.pin;
+      this.supervisorStaleMap = dir.staleMapGotoBan;
       // Held whether or not there is a pin: a ban-only directive ages on the
       // same clock, and a single run outlives the cap (6.7h measured 2026-09-12).
       this.supervisorPinned = pinned;
       // wq#1081/#1084: load the baseline whenever EITHER a ban or a pin is
       // present, so a guidance-only directive still auto-lifts on advance.
-      if (this.supervisorBans.size === 0 && !this.supervisorPin) return;
+      if (this.supervisorBans.size === 0 && this.supervisorStaleMap === null
+          && !this.supervisorPin) return;
       const st = this.reader.read();
       this.supervisorBaseline = {
         score: st.storyScore,
@@ -350,8 +380,42 @@ export class Agent {
       this.bus.emit("tool_call", {
         tool: "supervisor_directive_loaded", src: "harness",
         maps: dir.gotoBan, mode: dir.mode, summary: dir.summary, pin: !!this.supervisorPin,
+        staleMap: this.supervisorStaleMap,
       });
     } catch { /* a bookkeeping failure must never break boot */ }
+  }
+
+  /** wq#1563: mtime of the directive file, or -1 if it is absent/unreadable. */
+  private directiveMtimeMs(): number {
+    try {
+      return statSync(join(this.checkpointDir, "..", "runtime",
+                           "supervisor_directive.json")).mtimeMs;
+    } catch { return -1; }
+  }
+
+  /** wq#1563: pick up a directive written after boot.
+   *
+   *  The supervisor runs on its own timer against a live agent process, so
+   *  before this the ONLY way a new directive reached the brain was a restart.
+   *  A stat() per dispatch is the cheapest honest check; the file is only
+   *  re-parsed when its mtime actually moves. */
+  private refreshSupervisorDirective(): void {
+    const mt = this.directiveMtimeMs();
+    if (mt === this.supervisorMtimeMs) return;
+    this.supervisorMtimeMs = mt;
+    if (mt === -1) {   // directive removed — drop everything it imposed
+      this.supervisorBans.clear();
+      this.supervisorPin = "";
+      this.supervisorStaleMap = null;
+      this.supervisorPinned = null;
+      this.supervisorBaseline = null;
+      return;
+    }
+    this.loadSupervisorBans();
+    this.bus.emit("tool_call", {
+      tool: "supervisor_directive_reloaded", src: "harness",
+      staleMap: this.supervisorStaleMap, pin: !!this.supervisorPin,
+    });
   }
 
   /** wq#724: if story advanced past the baseline, the ban is stale — clear it.
@@ -374,6 +438,7 @@ export class Agent {
         });
         this.supervisorBans.clear();
         this.supervisorPin = "";
+        this.supervisorStaleMap = null;
         this.supervisorPinned = null;
         this.supervisorBaseline = null;
         return;
@@ -391,6 +456,7 @@ export class Agent {
         });
         this.supervisorBans.clear();
         this.supervisorPin = "";
+        this.supervisorStaleMap = null;   // wq#1563: kill-criterion 5
         this.supervisorPinned = null;
         this.supervisorBaseline = null;
       }
@@ -763,6 +829,7 @@ export class Agent {
    *  being replayed forever. The 04:00-04:26Z live burn was 12 identical
    *  failing buy_item calls; the ceiling ends that class at 3. */
   async dispatch(actLine: string): Promise<string> {
+    this.refreshSupervisorDirective();  // wq#1563: pick up a mid-run directive
     this.checkSupervisorLift();  // wq#724: auto-clear bans on story advance
     const m = actLine.match(/(\w+)\s*\(([^)]*)\)/);
     if (!m) return "parse_error: no tool call found";
@@ -844,6 +911,15 @@ export class Agent {
             "or goto(map,x,y) to name the map explicitly";
           const xref = crossMapRefusal(tgt, st0.map, id => this.mapLabel(id));
           if (xref) return `goto: ${xref}`;
+          // wq#1563: the breakout rung. Refused only while standing ON the
+          // stale map, and only for goto — leave_edge and enter_warp are the
+          // exits the directive is pushing the agent toward, so they stay open.
+          if (this.supervisorStaleMap !== null && st0.map === this.supervisorStaleMap) {
+            return `goto: refused - the supervisor has spent every other remedy on ` +
+              `${this.mapLabel(st0.map) ?? `map${st0.map}`} and a full progress window ` +
+              `here produced no new tile. Walking to another tile on this map cannot ` +
+              `help. LEAVE THE MAP: leave_edge at a boundary, or enter_warp through a door.`;
+          }
           const tx = tgt.x, ty = tgt.y;
           // wq#1828: the patch the exploration override just escaped is not a
           // destination for the next excludeTurns turns. Movement only — the
@@ -1852,29 +1928,50 @@ export class Agent {
   }
 
   private writeCheckpoint(stem: string, st: GameState, kind: string): void {
-    const path = `${this.checkpointDir}/${stem}.state.gz`;
-    saveSnapshotFile(this.emu, path);
-    const lead = st.party[0];
-    // wq#586: stamp the route leg + warp-tile mark so resume can rank Mt Moon
-    // positions by route progress with ZERO boot cost, and prefer saves not
-    // standing on a ladder. Failure to compute either simply omits it — a
-    // legless sidecar ranks as earlier, never wrong.
+    // wq#1177: refuse to PERSIST a checkpoint whose position cannot be
+    // trusted, on top of the pre-existing bat.active()/loadPending() gates in
+    // maybeCheckpoint (which already cover inBattle and a map load in
+    // flight). wJoyIgnore != 0 means scripted movement owns the joypad right
+    // now — the same "mid-script" class wq#699 found for map loads, just
+    // without loadPending() going true. onWarp means the state stands ON a
+    // warp tile: the very next step re-fires it, so a resume from here is not
+    // a stable place to be, it is a place already leaving — the wq#1066 class
+    // that used to persist a legitimate rank for a tile the agent cannot
+    // actually hold. Gating the WRITE closes both for good instead of relying
+    // on settleMapLoad()/onWarp-scoring to repair them at read time.
+    if (this.sync.joyIgnore() !== 0) {
+      this.bus.emit("tool_call", { tool: "checkpoint_skipped", reason: "joy_ignore",
+        src: "harness", at: { map: st.map, x: st.x, y: st.y } });
+      return;
+    }
     let leg: string | undefined; let onWarp = false;
     try {
       this.map.build();
       onWarp = this.map.isWarp(st.x, st.y);
       leg = mtMoonLeg(this.map, st.map, st.x, st.y)?.leg;
     } catch {}
+    if (onWarp) {
+      this.bus.emit("tool_call", { tool: "checkpoint_skipped", reason: "on_warp",
+        src: "harness", at: { map: st.map, x: st.x, y: st.y } });
+      return;
+    }
+    const path = `${this.checkpointDir}/${stem}.state.gz`;
+    saveSnapshotFile(this.emu, path);
+    const lead = st.party[0];
+    const storyScore = this.reader.storyScore();
     const sidecar = {
-      v: 3, kind, map: st.map, x: st.x, y: st.y,
+      v: 4, kind, map: st.map, x: st.x, y: st.y,
       badges: st.badgeCount, events: this.reader.eventCount(),
-      storyScore: this.reader.storyScore(),  // wq#471: monotonic story flags
+      storyScore,  // wq#471: monotonic story flags
       // wq#477: campaign-level frontier, seeds regression detection on restart
-      maxStoryScore: Math.max(this.reader.storyScore(), this.recovery?.maxStoryScore ?? 0),
+      maxStoryScore: Math.max(storyScore, this.recovery?.maxStoryScore ?? 0),
       hpPct: lead && lead.maxHp > 0 ? +(lead.hp / lead.maxHp).toFixed(3) : 1,
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),
       leg, onWarp,                          // wq#586 (v3)
+      // wq#1177 (v4): deterministic identity so the resume repeat guard can
+      // compare STATES, not filenames — see resume.ts stateKey().
+      stateKey: stateKey(st.map, st.x, st.y, storyScore, st.badgeCount, levelSum(st)),
       // wq#486: notepad snapshot (redundant recovery path if runtime/notepad.txt
       // is lost; primary restore is bind() from that file). Notes only, not the
       // derived guidance channel.

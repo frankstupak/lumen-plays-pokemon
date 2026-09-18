@@ -1,0 +1,31 @@
+# The idle cover for :8871 — the splash pokemon.lumennode.uk shows while the
+# live agent is down. NOT a second owner of the port: it settles, claims and
+# yields (see tools/lpp-cover-serve). Never enabled — it is raised by
+# lumen-pokemon-live's ExecStopPost (clean stop) or OnFailure (durable failure),
+# and it takes itself down as soon as live wants the port back.
+#
+# Install (root): cp deploy/lumen-kiosk-idle.service /etc/systemd/system/ &&
+#                 systemctl daemon-reload   # do NOT `systemctl enable` this unit
+[Unit]
+Description=LPP Kiosk Idle Page (covers :8871 while the live agent is down)
+After=network.target
+# StartLimit disabled: every refusal is now a clean exit 0 rather than a failure,
+# so nothing consumes a start limit, and a limit here could only lock the cover
+# out at the moment it is actually needed (verified 2026-08-27, wq#1021).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lumen
+WorkingDirectory=/home/lumen/pokemon
+ExecStart=/home/lumen/pokemon/tools/lpp-cover-serve --port 8871 --dir /home/lumen/pokemon/assets
+# on-failure, not always: a yield (exit 0) means live took the port back and the
+# cover must stay down. It is raised again by live's ExecStopPost/OnFailure.
+Restart=on-failure
+RestartSec=10
+# exit 3 = the port is held by a foreign process. Retrying cannot help, and
+# retrying every 10s is the storm this whole design exists to prevent.
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=multi-user.target

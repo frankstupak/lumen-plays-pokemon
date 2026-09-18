@@ -14,6 +14,81 @@ loop back to a human.
 | `tools/lpp_stuck_feedback.py` | wq#673 | When to stop trying and tell Frank? (this doc) |
 | `tools/lpp-stuck-supervisor` | — | wires the three into one timer entrypoint |
 
+## The escalation ladder, and what happens past K (wq#1563)
+
+Until wq#1563 the ladder ended at K: three interventions, then a "handoff" that
+handed off to nothing and a supervisor that ticked forever. `FIGHT_LOSS_LOOP@3`
+sat in that state for 167.9h.
+
+| Rung | Fires when | Does | Ends when |
+|---|---|---|---|
+| L1-L3 | stalled, attempt <= K | the per-MODE prescription (`PRESCRIPTIONS`) | story advances, or K is spent |
+| L4 BREAKOUT | K spent **and** `breakout_anchor()` finds a map-local cage | refuses `goto` **on that one map** for `3 x DP_WINDOW_TURNS` turns, names a real map to walk to, leaves `leave_edge`/`enter_warp` open | the budget runs out, or story advances |
+| L5 HANDOFF | K spent and the breakout is spent too, or there was never an anchor | imposes nothing, says plainly that the machine is out of moves | a human |
+
+**Why this rung and not the obvious ones.** Forced flee/run has no mechanism
+(this supervisor writes files, it never presses a button) and no target (the
+frozen agent entered zero battles). Forced heal-return-to-Pokecenter routing is
+the failure mode, not the remedy — the party was at full HP and the wq#1091 pin
+already had to say *stop* warping to the centre. Checkpoint restore / soft-reset
+is the destructive one: it can regress story flags, `src/resume.ts` owns the
+boot pick anyway (wq#1118), and a reset that lands back on the same state is
+just `RESUME_DEADEND`. Banning the map is wrong by construction here — the agent
+is already inside it and needs its exits — and banning the individual tiles is
+worse, because the trailing window covers ~25 of them and banning 25 tiles can
+make the map's own exit unreachable. What is left is the bounded explore-away
+directive, which cannot corrupt a save, regress the story, or loop a reset.
+
+**Kill-criteria** (each asserted in `tools/test_stuck1563.py`): an anchor is
+required, so the rung never invents a target; it fires at most once per
+**unresolved stall episode** of a key, scoped by `episode_start()`'s timestamp
+the same way K is (wq#1846 — unscoped, one `superseded` breakout would retire the
+rung for that key forever); it is bounded in turns, not wall-clock; it releases
+its own ban on expiry; and it lifts free when the story advances, via the
+baseline mechanism `src/agent.ts` already had.
+
+Two mechanisms had to be repaired before any of this could reach the game. The
+first was `lpp-stuck-supervisor` gating the directive write on `intervened`, so
+every directive computed on the exhausted path since wq#1091 was thrown away —
+`runtime/supervisor_directive.json` sat unchanged from 2026-08-29 while the
+supervisor ticked over the incident for a week. wq#1845 fixed that
+independently, in `I.persist_directive`, and that is the version on main; the
+rungs here ride it. The second is `src/agent.ts` reading the directive only in
+its constructor, so a directive written mid-run was invisible until the next
+boot, ~450 turns later; `refreshSupervisorDirective()` now re-reads it when the
+file's mtime moves, and every field `loadSupervisorBans()` owns is reset on the
+way in so a superseding directive cannot union its bans with the previous one's.
+
+**What the rung does on the incident it was written for.** Replaying the final
+40-turn window of `events/live-agent-1788935768505.jsonl` (progress events paired
+with the map from the preceding `state_read`) through `breakout_anchor()` yields
+`stallMap=35 targetMap=36 newTiles=0 budgetTurns=120` — an anchor, so L4 fires
+with a 120-turn budget instead of the 167.9h tick-loop. Against the stall that is
+live now (`OBJECTIVE_DRIFT@3`, 143h) the same function returns `None`, because
+that window spans maps 3/35/64: kill-criterion 1 refuses, and the ladder falls
+through to the terminal refresh. Both directions are asserted, on live files, by
+section A10 of the probe.
+
+### Was the freeze a brain regression? No — it predates the pin.
+
+`runtime/frontier.json` puts `lastAdvanceAt` at **2026-08-16T00:46:09Z**
+("reached Route 25"), 582h frozen. The Cerebras reroute (`0fa30e0`, "reroute LPP
+fallback from DeepSeek to cerebras") landed **2026-08-22**, six days later. The
+critical-path axis was already frozen when the brain changed, so the freeze is
+pre-existing and the model pin did not cause it. The story_score axis froze
+later (2026-09-02) and is the shallower symptom of the same stall.
+
+What the agent was actually doing, from `events/run-summary-live-agent-*.json`
+and the live event log: 452 turns, 725 `goto` calls, 29 `enter_warp`, **zero
+battles entered and zero catches**, every progress sample on map 35, 0-2 new
+tiles per 40-turn window. It was not losing fights — it entered none. The brain's
+own reasoning names the cause: *"wild grass not shown ... Assume we can move to
+a grass tile"*. `FIGHT_LOSS_LOOP` is the closest label the classifier has, but
+the prescription it carries (go grind, catch a type counter) describes exactly
+what the agent was already failing to do. Making tall grass visible in the
+observation is the real fix and is not this ticket; L4 at least stops the agent
+paying 725 turns to learn that pacing one route does not work.
+
 ## Click-path (this ticket's explicit ask)
 
 Not installed by this ticket — a systemd unit change is a real operational
