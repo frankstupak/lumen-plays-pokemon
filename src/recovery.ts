@@ -15,7 +15,8 @@
 // returns null. Normal exploration is never touched.
 import { STORY_FLAGS, GameState } from "./state";
 import { EventBus } from "./events";
-import { readdirSync, readFileSync } from "fs";
+import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
 
 /** storyScore->corridor mapping (the "small table" of wq#477): for the
  *  FURTHEST story milestone attained, where the campaign frontier is.
@@ -79,10 +80,83 @@ export function seedMaxFromSidecars(dirs: string[]): number {
 
 interface ActiveGoal { reason: "whiteout" | "score_regression"; target: CorridorPoint; sinceTurn: number }
 
+// wq#1178 (roadmap item 8): divergence-on-repeat. A recovery objective above
+// names WHERE the frontier is but not HOW to get there, and if the brain's
+// plan from THIS EXACT SPOT keeps producing zero progress, repeating the
+// same objective text just re-runs the same failed plan — the improvement
+// plan's section 2d RESUME_DEADEND behavioral half: "replaying identical
+// context from an identical state produces an identical run". This tracks
+// (map, x, y, objective) recurrence WHILE a recovery goal is active — the one
+// regime where "no frontier progress" is already an established fact here
+// (evaluate() only reaches this point when `this.active` is still set),
+// not a guess — and once the same tuple has come up REPEAT_LIMIT times,
+// swaps the plain objective text for one that explicitly forbids repeating
+// the plan that already failed that many times.
+export interface RepeatEntry { map: number; x: number; y: number; objective: string; turn: number }
+export const REPEAT_LIMIT = 3;
+const REPEAT_KEEP = 32;
+
+function repeatKey(map: number, x: number, y: number, objective: string): string {
+  return `${map}:${x}:${y}:${objective}`;
+}
+
+/** How many times this exact (map,x,y,objective) tuple already appears in
+ *  the history — pure, so the repeat rule is unit-testable without wiring up
+ *  a whole RecoveryTracker. */
+export function countRepeats(history: RepeatEntry[], map: number, x: number, y: number,
+                             objective: string): number {
+  const key = repeatKey(map, x, y, objective);
+  return history.filter(e => repeatKey(e.map, e.x, e.y, e.objective) === key).length;
+}
+
+/** Rotating, never the sub-goal it just replaced — a fixed divergent remedy
+ *  that never changes is the same wedge as no remedy, just with an extra
+ *  layer of prose (wq#517 lesson, restated for objectives instead of bans). */
+const DIVERGENT_SUBGOALS = [
+  "STOP repeating that plan: pick a warp INDEX you have not fired from this exact spot.",
+  "STOP repeating that plan: try leave_edge() toward a direction you have not tried from here.",
+  "STOP repeating that plan: goto() an unexplored tile nearby before touching any warp again.",
+];
+
+export function divergentObjective(base: CorridorPoint, attempt: number): string {
+  const sub = DIVERGENT_SUBGOALS[attempt % DIVERGENT_SUBGOALS.length];
+  return `${sub} Frontier target is unchanged: ${base.desc} (map${base.targetMap}). Your last ` +
+    `${REPEAT_LIMIT}+ attempts from this exact (map,position) with this exact objective produced ` +
+    `zero progress — the plan is the thing that has to change, not the target.`;
+}
+
+export function repeatHistoryFile(): string {
+  return process.env.LPP_RECOVERY_REPEAT_HISTORY ?? `${process.cwd()}/runtime/recovery_repeat.json`;
+}
+
+export function loadRepeatHistory(file: string): RepeatEntry[] {
+  try {
+    const s = JSON.parse(readFileSync(file, "utf8")) as { v: number; entries: RepeatEntry[] };
+    if (s && Array.isArray(s.entries)) {
+      return s.entries.filter(e => e && typeof e.map === "number" && typeof e.x === "number"
+        && typeof e.y === "number" && typeof e.objective === "string"
+        && typeof e.turn === "number").slice(-REPEAT_KEEP);
+    }
+  } catch {}
+  return [];
+}
+
+export function saveRepeatHistory(file: string, entries: RepeatEntry[]): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ v: 1, entries: entries.slice(-REPEAT_KEEP) }));
+  } catch {}
+}
+
 export class RecoveryTracker {
   maxStoryScore: number;
   private wasAllFainted = false;
   private active: ActiveGoal | null = null;
+  // wq#1178: lazy-loaded from disk on first use, same convention as
+  // agent.ts's crossRunWarps — must survive both a `continue` (new
+  // RecoveryTracker instance) and a full restart, mirroring
+  // seedMaxFromSidecars' reason for existing at all.
+  private repeatHistory: RepeatEntry[] | null = null;
 
   constructor(seedMax = 0) { this.maxStoryScore = seedMax; }
 
@@ -124,6 +198,21 @@ export class RecoveryTracker {
     const why = this.active.reason === "whiteout"
       ? "You BLACKED OUT and respawned at the last Pokemon Center"
       : `You resumed BEHIND your best progress (story ${score}/${this.maxStoryScore})`;
+
+    // wq#1178 (roadmap item 8): recurrence check, scoped to exactly the
+    // regime where "no progress" is already established — a live recovery
+    // goal (we only reach here when this.active is still set).
+    if (this.repeatHistory === null) this.repeatHistory = loadRepeatHistory(repeatHistoryFile());
+    const objective = t.desc;
+    const priorCount = countRepeats(this.repeatHistory, st.map, st.x, st.y, objective);
+    this.repeatHistory.push({ map: st.map, x: st.x, y: st.y, objective, turn });
+    if (this.repeatHistory.length > REPEAT_KEEP) this.repeatHistory.shift();
+    saveRepeatHistory(repeatHistoryFile(), this.repeatHistory);
+    if (priorCount + 1 >= REPEAT_LIMIT) {
+      bus.emit("regression", { stage: "divergent_objective", reason: this.active.reason,
+        map: st.map, x: st.x, y: st.y, objective, count: priorCount + 1 });
+      return `!! RECOVERY OBJECTIVE (top priority): ${why}. ${divergentObjective(t, priorCount)}`;
+    }
     return `!! RECOVERY OBJECTIVE (top priority): ${why}. Return to the frontier: ${t.desc}. Target map${t.targetMap}. Heal if needed, then head straight there - no detours.`;
   }
 }

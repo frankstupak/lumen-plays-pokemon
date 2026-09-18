@@ -114,3 +114,98 @@ export function saveHistory(file: string, warps: number[]): void {
     writeFileSync(file, JSON.stringify({ v: 1, warps: warps.slice(-KEEP) }));
   } catch {}
 }
+
+// ---- wq#1178 (roadmap item 7): directed warp-edge ledger + cooldown --------
+//
+// THE BLIND SPOT assess() ABOVE CANNOT SEE. The live stall this fixes
+// (lpp-pstack: Route 25, 407h / 8110 turns, 60% of turns reading
+// `enter_warp: refused - this is the door you just arrived through`) never
+// once reaches assess(). agent.ts's existing "just arrived through" refusal
+// (wq#674/wq#1086) is a HARD refusal — the attempt never returns "warped",
+// so it never gets pushed into mapHistory/crossRunWarps above. The
+// supervisor's WARP_OSC classifier reads warp ARRIVALS; a stall made
+// entirely of refusals produces zero arrivals, so it looks like nothing is
+// happening at all, and the ban list never populates while the brain keeps
+// retrying the identical refused call forever.
+//
+// A directed edge ledger answers a narrower, cheaper question than assess()
+// does: "did I just arrive through THIS EXACT DOOR" — recorded from actual
+// traversals only (never refusals), keyed on warp IDENTITY (map + index) per
+// the wq#1086 lesson (a coordinate can land you adjacent to the door, not on
+// it). Persisted the same fail-soft way as warp_history.json above, so the
+// cooldown survives both a `continue` (new Agent instance) and a full
+// restart — the zero-step-only check in agent.ts does not, which is exactly
+// the gap this closes: take one step away and back, and the old check goes
+// silent while the door is still the one you just came through.
+//
+// TIME-BOXED, BECAUSE THIS FILE ALREADY LEARNED THE ALTERNATIVE ONCE. A ban
+// that cannot expire wedges the campaign inside whichever side it left
+// unbanned (ISSUE-LOG #339, Bills House<->Route25 rev). WARP_COOLDOWN_TURNS
+// is a TURN count, not a wall-clock one, for the same reason WITHIN_WINDOW
+// and CROSS_WINDOW are above: turn rate swings by an order of magnitude
+// between a combat-heavy stretch and an exploration-heavy one.
+export interface WarpEdge {
+  fromMap: number; fromIdx: number; fromX: number; fromY: number;
+  toMap: number; toIdx: number; toX: number; toY: number;
+  turn: number;
+}
+
+export const WARP_COOLDOWN_TURNS = 8;
+const EDGE_KEEP = 64;
+
+/** Append + cap, same ring-buffer shape as the history list above. */
+export function recordEdge(edges: WarpEdge[], edge: WarpEdge): WarpEdge[] {
+  const next = edges.concat([edge]);
+  return next.length > EDGE_KEEP ? next.slice(-EDGE_KEEP) : next;
+}
+
+export interface WarpCooldownVerdict { onCooldown: boolean; turnsLeft: number; via: WarpEdge | null }
+
+/** Is (map, idx) the door the agent most recently arrived through, and is
+ *  that arrival still inside its cooldown window? Only the MOST RECENT
+ *  arrival through this exact door counts — an older one that already
+ *  expired must not resurrect a ban (that would be the wq#517 permanent-ban
+ *  wedge again, just with extra steps to get there). Pure and turn-indexed,
+ *  so it is trivially unit-testable without a clock. */
+export function warpCooldown(edges: WarpEdge[], map: number, idx: number,
+                             currentTurn: number,
+                             cooldownTurns = WARP_COOLDOWN_TURNS): WarpCooldownVerdict {
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const e = edges[i];
+    if (e.toMap === map && e.toIdx === idx) {
+      const age = currentTurn - e.turn;
+      return age < cooldownTurns
+        ? { onCooldown: true, turnsLeft: cooldownTurns - age, via: e }
+        : { onCooldown: false, turnsLeft: 0, via: null };
+    }
+  }
+  return { onCooldown: false, turnsLeft: 0, via: null };
+}
+
+// Persistence: a SEPARATE file from warp_history.json above. That one is an
+// undirected arrival list assess() already relies on; this one is keyed on
+// warp identity and must not be reshaped to fit the other's schema.
+interface EdgeStore { v: number; edges: WarpEdge[] }
+
+export function edgeHistoryFile(): string {
+  return process.env.LPP_WARP_EDGE_HISTORY ?? `${process.cwd()}/runtime/warp_edges.json`;
+}
+
+export function loadEdges(file: string): WarpEdge[] {
+  try {
+    const s = JSON.parse(readFileSync(file, "utf8")) as EdgeStore;
+    if (s && Array.isArray(s.edges)) {
+      return s.edges.filter(e => e && typeof e.toMap === "number" && typeof e.toIdx === "number"
+        && typeof e.fromMap === "number" && typeof e.fromIdx === "number"
+        && typeof e.turn === "number").slice(-EDGE_KEEP);
+    }
+  } catch {}
+  return [];
+}
+
+export function saveEdges(file: string, edges: WarpEdge[]): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ v: 1, edges: edges.slice(-EDGE_KEEP) }));
+  } catch {}
+}
