@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# lpp-cover-maybe-up — ExecStopPost hook on lumen-pokemon-live.service.
+#
+# Raise the idle cover on :8871 only when live is stopping FOR GOOD. Never
+# between restarts: a cover raised there fights the start it is racing.
+#
+#   crash        -> $SERVICE_RESULT is not 'success'. Restart=on-failure retries
+#                   and, if it durably gives up, OnFailure raises the cover.
+#   restart      -> a start/restart job for live is already queued behind this
+#                   stop. Leave the port alone.
+#   plain stop   -> nothing is coming back. Raise the cover.
+#
+# wq#1661 fixes the restart case. The old version polled ActiveState for 1.5s and
+# treated 'live came back' as the restart signal, which can never happen: this
+# hook runs INSIDE the stop job, so the queued start cannot begin until it
+# returns, and ActiveState reads 'deactivating' for the whole window. It
+# therefore raised the cover on every restart — journal 2026-09-10 06:38:08 and
+# 06:38:10, two restarts, two cover starts, both refused by the cover a moment
+# later and logged as unit failures. Ask the job queue instead, which is
+# populated before the stop job runs.
+#
+# The cover's own settle window (tools/lpp-cover-serve) is the second line of
+# defence: if this hook is wrong either way, the cover still refuses to bind
+# while live is up, coming up or going down.
+set -u
+
+SYSTEMCTL="${LPP_SYSTEMCTL:-/usr/bin/systemctl}"
+SUDO="${LPP_SUDO-/usr/bin/sudo -n}"
+LIVE_UNIT="${LPP_LIVE_UNIT:-lumen-pokemon-live.service}"
+COVER_UNIT="${LPP_COVER_UNIT:-lumen-kiosk-idle.service}"
+
+note() { printf 'lpp-cover-maybe-up: %s\n' "$*" >&2; }
+
+[ "${SERVICE_RESULT:-unknown}" = success ] || exit 0
+
+# `systemctl list-jobs --no-legend` prints "JOB UNIT TYPE STATE" per pending job.
+# The stop job we are part of is type 'stop'; a restart shows up as a start or
+# restart job for the same unit. Anything that is not a stop means live is
+# coming back.
+# Listed unfiltered and matched here, so this does not depend on list-jobs
+# accepting a unit pattern; an empty or unexpected listing just falls through to
+# the ActiveState check below.
+jobs="$("$SYSTEMCTL" list-jobs --no-legend 2>/dev/null)"
+pending="$(printf '%s\n' "$jobs" | awk -v u="$LIVE_UNIT" '$2 == u && $3 != "stop" { print $3 }' | head -1)"
+if [ -n "$pending" ]; then
+  note "$LIVE_UNIT has a '$pending' job queued — it is coming back, no cover"
+  exit 0
+fi
+
+# Belt: a live that is already back (started by something outside this
+# transaction) owns the port regardless of what the job queue says.
+state="$("$SYSTEMCTL" show -P ActiveState "$LIVE_UNIT" 2>/dev/null)"
+case "$state" in
+  active|activating|reloading) note "$LIVE_UNIT is '$state' — no cover"; exit 0 ;;
+esac
+
+# --no-block so the cover's start does not entangle with live's stop transaction.
+note "$LIVE_UNIT is staying down — raising $COVER_UNIT"
+# shellcheck disable=SC2086
+$SUDO "$SYSTEMCTL" --no-block start "$COVER_UNIT"
+exit 0

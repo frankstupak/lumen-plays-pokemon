@@ -1,0 +1,42 @@
+# Lumen Plays Pokemon — the live agent, and the SINGLE owner of :8871.
+#
+# Preemption is ONE-DIRECTIONAL: starting live stops the idle cover, and the
+# cover can never stop live. A bidirectional Conflicts= pair was tried and
+# rejected on 2026-08-27 (wq#1021) — it cancelled live's own auto-restart on a
+# transient crash. Do not reintroduce it; the deleted deploy/lumen-lpp-brb.service
+# had exactly that shape.
+#
+# Install (root): cp deploy/lumen-pokemon-live.service /etc/systemd/system/ &&
+#                 systemctl daemon-reload && systemctl restart lumen-pokemon-live
+# Environment drop-ins live in /etc/systemd/system/lumen-pokemon-live.service.d/
+# and are not part of this file.
+[Unit]
+Description=Lumen Plays Pokemon — live demo stream
+After=network.target
+# Only when live DURABLY gives up (start limit exhausted -> failed) does the
+# cover go up, so the site shows the splash instead of a 502. A transient crash
+# is left to Restart=on-failure, and the cover refuses to bind during it.
+OnFailure=lumen-kiosk-idle.service
+# Bound auto-restart so a SLOW crash loop terminates in `failed` instead of
+# looping forever. 2026-08-23 crashed ~every 115s; the default 5-in-10s never
+# tripped, so it looped 357x. 6-in-900s trips in ~10min, tolerates lone crashes.
+StartLimitIntervalSec=900
+StartLimitBurst=6
+
+[Service]
+User=lumen
+WorkingDirectory=/home/lumen/pokemon
+# One-directional preempt: free :8871 from the cover before binding. '-' so a
+# cover that is absent or wedged never blocks the product from starting; if it
+# does hold the port anyway, the cover yields within ~1s and src/stream.ts
+# retries the bind for ~110s, so the start survives it.
+ExecStartPre=-/usr/bin/sudo -n /usr/bin/systemctl stop lumen-kiosk-idle.service
+ExecStart=/usr/bin/npx tsx src/live_agent.ts
+Restart=on-failure
+RestartSec=5
+# Hands :8871 to the cover on a deliberate stop only — not on a crash (the
+# restart owns that) and not on a restart (nothing to cover). See the script.
+ExecStopPost=/home/lumen/pokemon/tools/lpp-cover-maybe-up
+
+[Install]
+WantedBy=multi-user.target
