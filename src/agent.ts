@@ -41,7 +41,10 @@ import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";
 import { ExclusionGate, exclusionFile, exclusionLift, exclusionSuspended } from "./exclusion";   // wq#1828
 import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
-         loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
+         loadHistory as loadOscHistory, saveHistory as saveOscHistory,
+         type WarpEdge, edgeHistoryFile as warpEdgeHistoryFile,
+         loadEdges as loadWarpEdges, saveEdges as saveWarpEdges,
+         recordEdge as recordWarpEdge, warpCooldown } from "./oscillation";  // wq#517, wq#1178
 import { warpViews, renderWarps, stuckHint, edgeStuckHint, reachableEdges, WarpView, EdgeDir,
          type BlockedCrossing } from "./reach";   // wq#538, wq#1870, wq#1877
 import { clearedByLine } from "./unblock";   // wq#1877
@@ -173,6 +176,12 @@ export class Agent {
   // above resets on every continue while the loop it is meant to catch spans
   // dozens of runs.
   private crossRunWarps: number[] | null = null;
+  // wq#1178 (roadmap item 7): directed warp-edge ledger, same lazy-load /
+  // fail-soft persistence convention as crossRunWarps above — the door
+  // cooldown it powers must survive a continue AND a full restart, because
+  // the live stall it fixes (lpp-pstack: Route 25, 407h/8110 turns) spans
+  // both many times over.
+  private warpEdges: WarpEdge[] | null = null;
   // wq#658: rising-edge debounce for the oscillation->vision escalation.
   // assessOscillation() has NO debounce of its own — the LOOP NOTICE is
   // meant to keep repeating every turn the condition holds, unlike
@@ -733,6 +742,7 @@ export class Agent {
     this.map.build();
     const p = this.nav.posChecked();
     block += `\n${renderWarps(this.currentWarpViews())}`;
+    { const cdLine = this.warpCooldownAnnotation(p.map); if (cdLine) block += `\n${cdLine}`; }
     block += `\nMAPGRID (P=you W=warp N=npc B=item ball G=tall grass #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
     // wq#1565: encounter-tile perception. Wild Pokemon in Gen 1 roll per step
     // and ONLY on the tileset's grass tile, so a grid that renders grass as
@@ -1036,6 +1046,10 @@ export class Agent {
           }
           const w = this.map.warps[Number(args[0])];
           if (!w) return "enter_warp: bad index";
+          // wq#1178 (roadmap item 7): captured before enterWarp fires, so the
+          // directed edge records where the traversal STARTED, not wherever
+          // this.map has been rebuilt to once nav.enterWarp() lands.
+          const fromMap = this.nav.posChecked().map;
           // wq#724: supervisor map ban — the stuck supervisor detected a
           // NAV_LOOP/WARP_OSC and banned the loop maps. Hard refusal, same
           // principle as mtMoonReentryRefusal and the gym gate: a rule that
@@ -1093,6 +1107,29 @@ export class Agent {
                 `right back out. goto() a DIFFERENT tile first to actually go somewhere (wq#674, wq#1086).`;
             }
           }
+          // wq#1178 (roadmap item 7): the check above only ever fires on the
+          // immediate zero-step replay. Take one step and come back and
+          // movedSinceWarp flips true, leaving this door wide open again --
+          // exactly the gap the live stall lives in (lpp-pstack: Route 25,
+          // 407h/8110 turns). The persisted directed warp-edge ledger answers
+          // the same question ("did I just arrive through THIS door") on a
+          // TURN-BOXED window instead of a zero-step one, so it still catches
+          // the door a few turns and a few tiles later. Always expires
+          // (WARP_COOLDOWN_TURNS, wq#517 lesson) -- advisory, never a
+          // permanent ban.
+          {
+            const cd = this.warpOnCooldown(fromMap, Number(args[0]));
+            if (cd.onCooldown) {
+              const label = this.mapLabel(w.destMap) ?? `map${w.destMap}`;
+              const alt = this.currentWarpViews().find(v =>
+                v.i !== Number(args[0]) && v.state === "reachable" &&
+                !this.warpOnCooldown(fromMap, v.i).onCooldown);
+              const altHint = alt ? ` Try enter_warp(${alt.i}) -> ${alt.dest} instead.` : "";
+              return `enter_warp: refused - you just came through ${label} (map${w.destMap}); ` +
+                `it is on cooldown for ${cd.turnsLeft} more turn${cd.turnsLeft === 1 ? "" : "s"}.` +
+                ` Pick a different exit.${altHint} (wq#1178)`;
+            }
+          }
           const r = await this.nav.enterWarp(w);
           // wq#487: enterWarp walks to the tile first, so a wild encounter
           // interrupts it exactly like a goto - same ownership rules.
@@ -1106,6 +1143,7 @@ export class Agent {
             // its partner on the map we just landed on. No ambiguity to guess
             // around, unlike the goto branch above.
             this.justWarpedBack = { map: this.nav.posChecked().map, index: w.destWarp };
+            this.recordWarpTraversal(fromMap, Number(args[0]), w);   // wq#1178
           }
           // wq#517: record an arrival ONLY when the warp actually happened.
           // This call used to be unconditional, so an enter_warp that returned
@@ -1375,11 +1413,13 @@ export class Agent {
     // edges are walled and only warps make progress. enterWarp returns "stuck"
     // when a warp is unreachable, so walk the list until one takes.
     this.map.build();
+    const unwedgeFromMap = this.reader.read().map;   // wq#1178: captured before any of these fire
     const start = (this.noActStreak * 2) % Math.max(1, this.map.warps.length);
     for (let i = 0; i < this.map.warps.length; i++) {
-      const w = this.map.warps[(start + i) % this.map.warps.length];
+      const idx = (start + i) % this.map.warps.length;
+      const w = this.map.warps[idx];
       const r = await this.nav.enterWarp(w);
-      if (r === "warped") { await this.notePotentialOscillation(this.reader.read().map); return `enter_warp->${w.destMap} auto`; }
+      if (r === "warped") { await this.notePotentialOscillation(this.reader.read().map); this.recordWarpTraversal(unwedgeFromMap, idx, w); return `enter_warp->${w.destMap} auto`; }
       if (r === "battle") { await this.bat.run(() => 0); return "battle auto"; }
     }
     // no warp took: fall back to rotating edge pushes
@@ -1852,6 +1892,47 @@ export class Agent {
       try { this.hist.applyCompaction(await this.brain.compact(old), keep); } catch {}
     }
     this.maybeCheckpoint(before, after);
+  }
+
+  /** wq#1178 (roadmap item 7): record one ACTUAL warp traversal (never a
+   *  refusal) as a directed edge, keyed on warp IDENTITY (map+index) per the
+   *  wq#1086 lesson above the enter_warp case — a coordinate can land you
+   *  adjacent to the door, not on it. `fromMap`/`fromIdx` must be captured
+   *  BEFORE nav.enterWarp() fires, since this.map gets rebuilt for the
+   *  destination map the moment it lands. */
+  private recordWarpTraversal(fromMap: number, fromIdx: number, w: Warp): void {
+    if (this.warpEdges === null) this.warpEdges = loadWarpEdges(warpEdgeHistoryFile());
+    const p = this.nav.posChecked();
+    this.warpEdges = recordWarpEdge(this.warpEdges, {
+      fromMap, fromIdx, fromX: w.x, fromY: w.y,
+      toMap: p.map, toIdx: w.destWarp, toX: p.x, toY: p.y,
+      turn: this.turn,
+    });
+    saveWarpEdges(warpEdgeHistoryFile(), this.warpEdges);
+  }
+
+  /** wq#1178: is (map,idx) currently on cooldown — the door the agent most
+   *  recently arrived through, still inside its time-box? */
+  private warpOnCooldown(map: number, idx: number) {
+    if (this.warpEdges === null) this.warpEdges = loadWarpEdges(warpEdgeHistoryFile());
+    return warpCooldown(this.warpEdges, map, idx, this.turn);
+  }
+
+  /** wq#1178: which exits on this map are currently closed by the warp-edge
+   *  cooldown, and for how many more turns — annotates the WARPS line with
+   *  the fact enter_warp would otherwise only reveal after a wasted turn. */
+  private warpCooldownAnnotation(map: number): string {
+    const closed: string[] = [];
+    for (let i = 0; i < this.map.warps.length; i++) {
+      const cd = this.warpOnCooldown(map, i);
+      if (!cd.onCooldown) continue;
+      const w = this.map.warps[i];
+      const label = this.mapLabel(w.destMap) ?? `map${w.destMap}`;
+      closed.push(`${i}:${label} (${cd.turnsLeft} more turn${cd.turnsLeft === 1 ? "" : "s"})`);
+    }
+    if (!closed.length) return "";
+    return `! WARP COOLDOWN: ${closed.join(", ")} — you just came through ` +
+      `${closed.length === 1 ? "it" : "these"}; pick a different exit.`;
   }
 
   /** wq#517: deterministic loop NOTICE. Repetition is evidence of repetition
