@@ -68,7 +68,10 @@ def main(argv=None):
             # I.persist_directive for the 246h this predicate cost.
             if decision.get("directive"):
                 I.persist_directive(decision["directive"])
-        out["intervention"] = {k: decision.get(k) for k in ("intervened", "mode", "attempt", "k", "exhausted")}
+        # wq#1563: `rung` names which post-K rung answered (breakout/handoff/None),
+        # so a tick past K is legible without reading the intervention log.
+        out["intervention"] = {k: decision.get(k) for k in
+                               ("intervened", "mode", "attempt", "k", "exhausted", "rung")}
 
         escal = F.load_state()
         result, escal = F.run(state=state, intervention_log=log, escal=escal)
