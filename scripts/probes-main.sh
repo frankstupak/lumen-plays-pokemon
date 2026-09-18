@@ -53,6 +53,7 @@ PROBES=(
   probe_brain907
   probe_novelty1179
   probe_explore1731
+  probe_romtables1180
   probe_calc1181
   probe_ledger1181
   probe_grass1565
@@ -64,6 +65,16 @@ PROBES=(
   probe_resume1177
   probe_checkpoint1177
 )
+
+# wq#1180: probe_romtables1180 verifies the Moves/TypeEffects/BaseStats decodes
+# against the CARTRIDGE, and degrades to its synthetic half when there is none
+# (which is what lets it also run in CI). This runner is the Lumen host, where
+# the cartridge always exists — so assert it here rather than let the half that
+# can catch a wrong decode silently stop running.
+if [ ! -f /home/lumen/pokemon/roms/pokeblue.gb ]; then
+  echo "PROBES RED: /home/lumen/pokemon/roms/pokeblue.gb is missing — probe_romtables1180 cannot verify the ROM decode"
+  exit 1
+fi
 
 failed=()
 for p in "${PROBES[@]}"; do
