@@ -52,6 +52,7 @@ import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits,
          toggleableGlobalIds } from "./objects";  // wq#607, wq#1877
 import { nearbyHiddenItems, hiddenItemLine, hiddenItemFlags } from "./hidden_items";  // wq#622
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
+import { stateKey } from "./resume";   // wq#1177
 import { CFG } from "./config";
 import { VisionValve, consultVision } from "./vision";  // wq#621
 
@@ -1852,29 +1853,50 @@ export class Agent {
   }
 
   private writeCheckpoint(stem: string, st: GameState, kind: string): void {
-    const path = `${this.checkpointDir}/${stem}.state.gz`;
-    saveSnapshotFile(this.emu, path);
-    const lead = st.party[0];
-    // wq#586: stamp the route leg + warp-tile mark so resume can rank Mt Moon
-    // positions by route progress with ZERO boot cost, and prefer saves not
-    // standing on a ladder. Failure to compute either simply omits it — a
-    // legless sidecar ranks as earlier, never wrong.
+    // wq#1177: refuse to PERSIST a checkpoint whose position cannot be
+    // trusted, on top of the pre-existing bat.active()/loadPending() gates in
+    // maybeCheckpoint (which already cover inBattle and a map load in
+    // flight). wJoyIgnore != 0 means scripted movement owns the joypad right
+    // now — the same "mid-script" class wq#699 found for map loads, just
+    // without loadPending() going true. onWarp means the state stands ON a
+    // warp tile: the very next step re-fires it, so a resume from here is not
+    // a stable place to be, it is a place already leaving — the wq#1066 class
+    // that used to persist a legitimate rank for a tile the agent cannot
+    // actually hold. Gating the WRITE closes both for good instead of relying
+    // on settleMapLoad()/onWarp-scoring to repair them at read time.
+    if (this.sync.joyIgnore() !== 0) {
+      this.bus.emit("tool_call", { tool: "checkpoint_skipped", reason: "joy_ignore",
+        src: "harness", at: { map: st.map, x: st.x, y: st.y } });
+      return;
+    }
     let leg: string | undefined; let onWarp = false;
     try {
       this.map.build();
       onWarp = this.map.isWarp(st.x, st.y);
       leg = mtMoonLeg(this.map, st.map, st.x, st.y)?.leg;
     } catch {}
+    if (onWarp) {
+      this.bus.emit("tool_call", { tool: "checkpoint_skipped", reason: "on_warp",
+        src: "harness", at: { map: st.map, x: st.x, y: st.y } });
+      return;
+    }
+    const path = `${this.checkpointDir}/${stem}.state.gz`;
+    saveSnapshotFile(this.emu, path);
+    const lead = st.party[0];
+    const storyScore = this.reader.storyScore();
     const sidecar = {
-      v: 3, kind, map: st.map, x: st.x, y: st.y,
+      v: 4, kind, map: st.map, x: st.x, y: st.y,
       badges: st.badgeCount, events: this.reader.eventCount(),
-      storyScore: this.reader.storyScore(),  // wq#471: monotonic story flags
+      storyScore,  // wq#471: monotonic story flags
       // wq#477: campaign-level frontier, seeds regression detection on restart
-      maxStoryScore: Math.max(this.reader.storyScore(), this.recovery?.maxStoryScore ?? 0),
+      maxStoryScore: Math.max(storyScore, this.recovery?.maxStoryScore ?? 0),
       hpPct: lead && lead.maxHp > 0 ? +(lead.hp / lead.maxHp).toFixed(3) : 1,
       ppOk: !lead || lead.moves.some((mv, i) => mv !== 0 && lead.pp[i] > 0),
       money: st.money, ts: Date.now(),
       leg, onWarp,                          // wq#586 (v3)
+      // wq#1177 (v4): deterministic identity so the resume repeat guard can
+      // compare STATES, not filenames — see resume.ts stateKey().
+      stateKey: stateKey(st.map, st.x, st.y, storyScore, st.badgeCount, levelSum(st)),
       // wq#486: notepad snapshot (redundant recovery path if runtime/notepad.txt
       // is lost; primary restore is bind() from that file). Notes only, not the
       // derived guidance channel.
