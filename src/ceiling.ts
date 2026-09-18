@@ -30,14 +30,54 @@
 //
 // PURE: no emulator, no I/O. agent.ts wires it around dispatch and emits the
 // board-visible event + forced stuck_dump on the trip.
+//
+// wq#1090 — GUARD REFUSALS COUNT NOW. This file used to exclude them outright:
+// "a guard refusal is NOT a verify failure and never counts". That held while
+// the nav guards fired rarely (wq#674's door guard needed exact-tile re-entry).
+// wq#1086 widened that one to match the WARP'S IDENTITY, so it also catches the
+// doors that land you adjacent — and it started firing constantly for a
+// confused brain. Measured (events/live-agent-1787956303157.jsonl, turns 17-45,
+// mistral-small fallback): enter_warp on the just-arrived door at four
+// different locations in ~8 minutes, every one correctly refused, and the
+// counter never moved once, because REFUSED was not FAILED-VERIFY. That run
+// kept landing somewhere new so the ceiling would not have tripped anyway, but
+// a tile whose only legal move IS the door back repeats one key forever with
+// the ceiling blind to it. A refusal IS the tool failing to do what was asked;
+// it just fails before the button presses instead of after them.
+//
+// THRESHOLD, re-verified for refusals: CEILING stays 3. A refusal is cheaper
+// than a failed verify (no presses, no game time), which argues for a looser
+// bound — but it is also perfectly DETERMINISTIC, so attempts 2 and 3 carry no
+// information attempt 1 did not, where a stuck walk can genuinely differ run to
+// run (a sprite steps aside, wq#1662). Three is already generous for a reply
+// that cannot change, and one threshold for all tools keeps the rule the brain
+// is told (agent.ts's trip line) honest.
 
 export const CEILING = 3;
 
+/** The phrase a SELF-LIMITING guard uses to show the brain what is left of its
+ *  own refusal budget ("...or after 7 more refusals"). Those guards — the
+ *  exploration exclusion (exclusion.ts, EXCLUSION_MAX_FIRES) and the loss gate
+ *  (ledger.ts, GATE_MAX_FIRES) — LIFT BY BEING REFUSED: the budget is the
+ *  escape hatch that stops a wrong gate from wedging the run. Ceiling-ing them
+ *  at 3 would starve the hatch and make the harness contradict a countdown it
+ *  printed one line earlier. Exported so both builders spell it one way and
+ *  this carve-out is a contract rather than a coincidence of prose. */
+export const REFUSAL_BUDGET_PHRASE = "more refusals";
+
+/** Did a nav guard refuse this action outright? Every one of them answers with
+ *  a line starting "refused - " (scope.ts's cross-map and edge refusals,
+ *  exclusion.ts, guidance.ts's Misty and loss gates, agent.ts's Mt Moon,
+ *  supervisor-ban and just-arrived-door gates), so the word is the signal.
+ *  Budgeted refusals are exempt — see REFUSAL_BUDGET_PHRASE. */
+function navGuardRefused(result: string): boolean {
+  return /\brefused\b/.test(result) && !result.includes(REFUSAL_BUDGET_PHRASE);
+}
+
 /** Did this result string report the action failing its OWN verify?
- *  Signatures are the exact strings the executors return today — a guard
- *  refusal (e.g. the wq#606 cross-map line, the wq#601 re-entry line) is NOT
- *  a verify failure and never counts. Covered tools only; dialog/battle
- *  tools (talk, press, choose, battle_move, flee) legitimately repeat. */
+ *  Signatures are the exact strings the executors return today. Covered tools
+ *  only; dialog/battle tools (talk, press, choose, battle_move, flee)
+ *  legitimately repeat. */
 export function verifyFailed(tool: string, result: string): boolean {
   switch (tool) {
     case "buy_item":
@@ -60,7 +100,7 @@ export function verifyFailed(tool: string, result: string): boolean {
     case "enter_warp":
     case "leave_edge":
       return / -> stuck\b/.test(result) || result.includes("bad index") ||
-             result.includes("bad direction");
+             result.includes("bad direction") || navGuardRefused(result);
     default:
       return false;
   }

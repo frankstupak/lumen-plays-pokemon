@@ -126,9 +126,14 @@ function busEvents(r: Rig): any[] {
   chk("C use_item success does not", !verifyFailed("use_item", "use_item done: potion on slot 0; 4 left"));
   chk("C ball throw is success-shaped", !verifyFailed("use_item", "poke_ball thrown - broke free (2 left)"));
   chk("C goto stuck counts", verifyFailed("goto", 'goto -> stuck now {"map":3,"x":25,"y":26}'));
-  chk("C goto guard refusal does NOT", !verifyFailed("goto", "goto: target (4,7) is on map67, you are on map3"));
-  chk("C leave_edge interior refusal does NOT",
-      !verifyFailed("leave_edge", "leave_edge: map67 is an INTERIOR — no edge connections exist"));
+  // wq#1090 flipped these two: a nav guard refusal used to be excluded from the
+  // ceiling outright, which left an identical refusal repeatable forever. It
+  // counts now — see ceiling.ts's header and probe_ceiling1090 for the full
+  // contract, including the budgeted-refusal carve-out.
+  chk("C goto guard refusal COUNTS (wq#1090)",
+      verifyFailed("goto", "goto: refused - target (4,7) is on map67, you are on map3"));
+  chk("C leave_edge interior refusal COUNTS (wq#1090)",
+      verifyFailed("leave_edge", "leave_edge: refused - map67 is an INTERIOR — no edge connections exist"));
   chk("C talk never counts", !verifyFailed("talk", "talk -> anything"));
 
   // ── D. ActionCeiling truth table ────────────────────────────────────────
@@ -202,7 +207,7 @@ function busEvents(r: Rig): any[] {
     for (const form of ["goto(67,4,7)", "goto(map67 4,7)", "goto(4,7 on map67)"]) {
       const r = await a.dispatch(form);
       chk(`F ${form} refused naming both maps`,
-          r.startsWith("goto: target (4,7) is on map67") && r.includes("map3"), r.slice(0, 100));
+          r.startsWith("goto: refused - target (4,7) is on map67") && r.includes("map3"), r.slice(0, 100));
     }
     const bad = await a.dispatch("goto(somewhere)");
     chk("F bad args teach the forms", bad.startsWith("goto: bad args"), bad.slice(0, 80));

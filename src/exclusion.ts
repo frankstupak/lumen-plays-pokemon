@@ -38,6 +38,7 @@
 // so the recorded budget no longer means anything).
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { dirname } from "path";
+import { REFUSAL_BUDGET_PHRASE } from "./ceiling";   // wq#1090: exempt from the retry ceiling
 
 export interface Exclusion {
   v: 2;
@@ -104,7 +105,7 @@ export function exclusionRefusal(e: Exclusion, seq: number, x: number, y: number
   return `refused - EXPLORATION EXCLUSION on ${label} (${x},${y}): the harness escape ` +
     `(fire #${e.fromFire}) just walked you out of this ${e.tiles.length}-tile patch, ` +
     `where you paced with no new ground. It lifts in ${Math.max(0, e.untilSeq - seq)} turns, ` +
-    `after ${Math.max(0, EXCLUSION_MAX_FIRES - e.fires)} more refusals, ` +
+    `after ${Math.max(0, EXCLUSION_MAX_FIRES - e.fires)} ${REFUSAL_BUDGET_PHRASE}, ` +
     `or as soon as you stand somewhere new inside it. Leaving map${e.map} only PAUSES it - ` +
     `it is still waiting when you come back. Walking THROUGH the patch is ` +
     `fine - pick a destination OUTSIDE it: a warp, an edge, or unexplored ground.`;
