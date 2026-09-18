@@ -67,6 +67,17 @@ CONSUMPTION (was "not wired yet"; it is wired now)
   stuck. Any number a prescription states must be READ FROM the code that
   enforces it, never retyped alongside it.
 
+  wq#1867 is the same lesson one level up: not a wrong NUMBER in the pin but a
+  wrong OBJECTIVE. The Cascade Badge landed at 2026-09-12T13:29:40Z and the
+  classifier went on calling the aftermath FIGHT_LOSS_LOOP@65, so all three K
+  attempts told an agent holding that badge to prepare for the fight that had
+  won it. It obeyed — 26 turns north to the grind routes the pin names, while
+  frontier.json's next milestone, Route 5, lay south, and its own ROUTE line
+  said so every turn. A pin outranks the prompt it contradicts. The fix is in
+  the classifier (see OBJECTIVE_DRIFT in lpp_stuck_mode), and the prescription
+  it routes to here names no destination of its own: the goal comes from the
+  frontier engine and the leg from route.ts's ROUTE line.
+
 BOUNDING (K=3)
   Each (mode, locationId) pair — wq#671's own dedup key — gets up to K=3
   prescribed attempts. `decide()` counts prior LOGGED attempts for that exact
@@ -78,6 +89,18 @@ BOUNDING (K=3)
   that key the live stall — not merely that some counter ticked up. Crediting
   a raw counter tick refunded the budget mid-stall and made K unbounded in
   practice; see resolve_pending's own note for the failure it produced.
+
+  wq#1846: and the budget is scoped to ONE STALL EPISODE, not to the key for
+  all time. The count used to run over the key's whole history, so a key that
+  spent K once was barred from issuing a numbered attempt ever again:
+  FIGHT_LOSS_LOOP@65 spent its three on 2026-08-18 (all closed "superseded"
+  when a checkpoint restore rolled the save back, eventFlags 43->39), and the
+  unrelated freeze that began 2026-09-02 got ZERO interventions across 246h —
+  decide() answered exhausted on its first tick and every tick after. An
+  episode ends when the key stops being the live stall for longer than the
+  classifier's own freeze clock can account for (see episode_start). That is
+  the one boundary a mid-stall partial tick cannot manufacture, which is what
+  keeps wq#1162's ladder shut while the 25-day-old spent key gets a fresh K.
 
 READ+WRITE, LOCAL FILES ONLY. Reads runtime/stuck_mode.json (or recomputes it
 live via lpp_stuck_mode), checkpoints/**/*.json. Writes only
@@ -98,6 +121,24 @@ LOG_PATH = f"{BASE}/runtime/intervention_log.json"
 DIRECTIVE_PATH = f"{BASE}/runtime/supervisor_directive.json"
 
 K = 3  # spec wq#672: "INTERVENE (K=3)"
+
+# wq#1846: how long a key must stop being the live stall before its next freeze
+# counts as a NEW episode, and therefore as a fresh K budget. Expressed in
+# multiples of the classifier's own freeze window (lpp_stuck_mode's windowHours,
+# 2h today) rather than as a bare hour count, so the two move together.
+#
+# WHY 12 WINDOWS AND NOT 1. A partial tick — eventFlags rising while story_score
+# stays frozen — restarts that freeze clock (lpp_stuck_mode.advances), so the
+# quiet a mid-stall tick can manufacture is bounded by one window plus the
+# supervisor's own poll gap (~30min live). A boundary anywhere near one window
+# would therefore re-open wq#1162: the live FIGHT_LOSS_LOOP@3 ladder re-froze on
+# the SAME key 9.2h and 7.7h after its previous attempt
+# (runtime/intervention_log.json, 2026-08-28T22:53 -> 08-29T08:05 -> 16:14) and
+# every one of those re-freezes has to stay inside one episode. 24h clears the
+# widest of them with room to spare, while the boundary this ticket exists to
+# cross — FIGHT_LOSS_LOOP@65's last attempt 2026-08-18, next freeze 2026-09-02 —
+# is 15 days, an order of magnitude past it.
+EPISODE_GAP_WINDOWS = 12
 
 # wq#1091: the gym-readiness bar the HARNESS enforces, read from its single
 # source of truth (src/guidance.ts) instead of retyped here. The original
@@ -195,6 +236,31 @@ PRESCRIPTIONS = {
         ),
         "gotoBan": "__RESOLVE_FROM_WARPS__",
     },
+    # wq#1867: the mode that exists because the FIGHT_LOSS_LOOP prescription
+    # above was being handed to an agent that had ALREADY WON the fight. Three
+    # attempts told it to prepare for Misty while the Cascade Badge was on its
+    # card; it obeyed, walked 26 turns north to the grind routes the pin names,
+    # came back, and the badge-shaped hole in the diagnosis was still there. So
+    # this prescription prescribes no preparation at all: the blocker is gone,
+    # and the only thing left to do is leave.
+    #
+    # It names no destination of its own. The goal comes from the frontier engine
+    # (state["nextMilestone"]) and the leg from route.ts's own ROUTE line, for the
+    # same reason _misty_gate reads guidance.ts: a target the supervisor invents
+    # is a target the harness can disagree with, and the pin loses.
+    "OBJECTIVE_DRIFT": {
+        "action": "advance_to_next_objective",
+        "summary": "Badge here is already won — stop orbiting the town, travel to the next objective.",
+        "notepadPin": (
+            "PIN: SUPERVISOR ({attempt}/{k}): the gym in {location} is ALREADY BEATEN — "
+            "its badge is on your trainer card and the fight ledger holds the win. There "
+            "is nothing left to prepare for here and no gate refusing you anything, so "
+            "stop cycling this town's doors: re-entering the Pokecenter at full HP, the "
+            "Mart with nothing to buy, or the gym you already cleared each cost a turn and "
+            "move nothing. {next_objective} {leg}"
+        ),
+        "gotoBan": [],
+    },
     "OBJECTIVE_UNREACHABLE": {
         "action": "replan_verify_map_data",
         "summary": "No further critical-path milestone encoded — replan and verify map data before continuing.",
@@ -249,15 +315,21 @@ PRESCRIPTIONS = {
     # wq#697: new signatures
     "WARP_OSC": {
         "action": "checkpoint_restore_then_goto_ban",
-        "summary": "Two-map warp oscillation detected — ban the bounce edge, try a different warp.",
+        "summary": "Two-map warp oscillation detected — ban the far side of the bounce edge, try a different warp.",
         "notepadPin": (
-            "PIN: SUPERVISOR ({attempt}/{k}): warp oscillation at {location}. "
-            "The last several warps alternate between exactly two maps. Do NOT "
-            "enter_warp the same index again this session; pick a different warp "
-            "or goto a non-warp tile first. If no other warp exists, resume from "
-            "an earlier checkpoint."
+            "PIN: SUPERVISOR ({attempt}/{k}): warp oscillation at {location}. Your "
+            "last several warps alternate between {osc_edge}. {osc_ban} Stop "
+            "re-entering the doorway you just came out of: goto a tile away from "
+            "the warp first, then pursue the objective on foot. If the map you are "
+            "standing on has no other warp, resume from an earlier checkpoint."
         ),
         "gotoBan": "__RESOLVE_FROM_WARPS__",
+        # wq#1826: rev 2 — the ban is now the detected edge's far side, not the
+        # wide window's top-2 maps. The three attempts WARP_OSC@36 spent under
+        # rev 1 banned Cerulean City and Route 25 against evidence that read
+        # "Route 25 <-> Bills House"; they do not count against the corrected
+        # remedy's K budget.
+        "rev": 2,
     },
     "NOISE_STORM": {
         "action": "history_clear_restart",
@@ -317,9 +389,11 @@ NAMES_FILE = f"{os.path.join(HERE, 'map_names.json')}"
 #   1. anchor required — fires only when a full dP window of progress samples
 #      sits on ONE map and adds no more than breakout_new_tile_max() tiles while
 #      there. No anchor, no breakout; the rung never invents a target.
-#   2. once per incident key, ever — breakout_entry() finds the prior firing and
-#      decide() refuses a second, so the ladder cannot cycle the way wq#1162
-#      found the K budget cycling.
+#   2. once per STALL EPISODE of a key — breakout_entry() finds the prior firing
+#      within the live episode and decide() refuses a second, so the ladder
+#      cannot cycle the way wq#1162 found the K budget cycling. Scoped to the
+#      episode for the same reason K is (wq#1846): "ever" would mean a breakout
+#      spent in a stall that finished months ago retires the rung permanently.
 #   3. bounded — BREAKOUT_WINDOW_MULT dP windows of turns, then it expires.
 #   4. it releases its own ban on expiry: the terminal handoff carries an empty
 #      ban, so a failed breakout never leaves a live restriction behind.
@@ -391,7 +465,7 @@ def breakout_anchor(state, samples=None, window=None, frontier=None):
             "budgetTurns": window * BREAKOUT_WINDOW_MULT}
 
 
-def breakout_entry(log, location_key):
+def breakout_entry(log, location_key, since=None):
     """The live breakout logged for this key, or None (kill-criterion 2).
 
     Same accounting rule as open_attempt_count: a breakout that closed as
@@ -400,10 +474,17 @@ def breakout_entry(log, location_key):
     disabled would mean a stall could be broken once and never again; a
     'superseded' close, which is only evidence the incident changed shape, does
     keep it spent.
+
+    `since` scopes the lookup to ONE stall episode, for the same reason
+    open_attempt_count takes it (wq#1846): "once per incident" is the kill
+    criterion, and a breakout spent in a long-finished stall must not disable
+    the rung for a fresh one. Unscoped, a single 'superseded' breakout would
+    retire the rung for that key permanently.
     """
     for e in log["attempts"]:
         if (e["locationKey"] == location_key and e.get("rung") == "breakout"
-                and e.get("outcome") != "advanced"):
+                and e.get("outcome") != "advanced"
+                and (since is None or (e.get("ts") or 0) >= since)):
             return e
     return None
 
@@ -429,16 +510,21 @@ def breakout_expired(entry, samples=None):
     return turns[-1] >= expires or turns[-1] < (d.get("issuedAtTurn") or 0)
 
 
-def _resolve_loop_maps():
-    """Extract the distinct map IDs from the recent warp history — these are
-    the maps the agent is looping between. Returns a sorted list of ints."""
+def _warp_history():
+    """The raw warp list, newest-last, or [] if unreadable."""
     try:
         with open(WARP_HISTORY) as f:
-            warps = json.load(f).get("warps", [])
+            return json.load(f).get("warps", []) or []
     except Exception:
         return []
+
+
+def _resolve_loop_maps():
+    """NAV_LOOP's ban list: the distinct map IDs the recent warp history
+    collapses onto — the maps the agent is looping between. Returns a sorted
+    list of ints. WARP_OSC does NOT use this; see _resolve_osc_ban (wq#1826)."""
     # Use the same window the classifier does (last 64 warps)
-    window = warps[-64:]
+    window = _warp_history()[-64:]
     if not window:
         return []
     distinct = sorted(set(window))
@@ -449,6 +535,50 @@ def _resolve_loop_maps():
     from collections import Counter
     counts = Counter(window)
     return sorted(m for m, _ in counts.most_common(2))
+
+
+def _resolve_osc_ban(location_id, warps=None):
+    """wq#1826: WARP_OSC's ban list — the FAR endpoint of the A<->B edge the
+    classifier actually detected, and nothing else.
+
+    Returns (ban, here, there): `here` is the endpoint the agent last warped to
+    (its current map, and the incident's location), `there` is the one it keeps
+    bouncing back into, `ban` is `[there]` or `[]` when there is nothing safe to
+    ban. Two rules, both learned from WARP_OSC@36 sitting frozen 242h:
+
+    1. **The ban is the edge.** This used to call _resolve_loop_maps(), which
+       reads a 4x wider window (64 warps) than detect_warp_osc (16) and, when
+       that window holds more than 3 maps, falls back to its two most FREQUENT
+       ids. Those need not be — and live, were not — the endpoints of the
+       oscillation: the directive's own evidence read "Route 25 <-> Bills House"
+       while its gotoBan read [Cerulean City, Route 25]. So the harness banned
+       the town it must heal and fight Misty in, never banned map 88 (the
+       doorway actually being re-entered), and the bounce continued through all
+       three K attempts. wq#1119 taught the classifier to demand a real edge;
+       this is the other half — the ban has to BE that edge.
+    2. **One side, never both.** The ban is a hard enter_warp refusal
+       (`src/agent.ts` supervisorBans) that lifts only on story advance, so
+       banning both endpoints seals the agent inside whichever one it is
+       standing in: from inside Bills House the only exit warp lands on Route
+       25, refused, and no story can advance from in there to lift it. Banning
+       the far side alone breaks the loop and leaves the agent free to walk.
+
+    A far side that is the town/heal hub is dropped rather than banned — the
+    wq#1081/#1084 rule that the mandatory hub and only heal point can never be
+    the answer. The directive then stands on its pin alone.
+    """
+    warps = _warp_history() if warps is None else warps
+    hit, here, there, _alt = M.detect_warp_osc(warps)
+    if not hit or here is None or there is None or here == there:
+        return [], here, there
+    if location_id is not None and here != location_id:
+        # The history has moved on since the classification this ban is being
+        # prescribed for; banning off a window that no longer describes the
+        # incident is the wq#1119 scope-mismatch bug in a new place.
+        return [], here, there
+    if M.is_heal_or_city(there, M.load_map_names()):
+        return [], here, there
+    return [there], here, there
 
 
 def _map_label(mid):
@@ -484,13 +614,39 @@ def load_log(path=LOG_PATH):
             return j
     except Exception:
         pass
-    return {"v": 1, "attempts": []}
+    # "keys" (wq#1846) is the per-key episode/liveness block; it is additive and
+    # optional, so a log written before it existed loads unchanged.
+    return {"v": 1, "attempts": [], "keys": {}}
 
 
 def save_log(log, path=LOG_PATH):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(log, f, indent=1)
+    os.replace(tmp, path)
+
+
+def persist_directive(directive, path=DIRECTIVE_PATH):
+    """Write the pin the live agent reads. The ONE writer of DIRECTIVE_PATH.
+
+    wq#1845: this used to be two copies — main() below and the same five lines
+    inlined in tools/lpp-stuck-supervisor — and the copies drifted. wq#1091
+    taught main() to persist on the exhausted path too (a key past K still has a
+    standing requirement, and a pin frozen at "attempt 3/3" is worse than none);
+    the supervisor's copy kept writing only when decide() said `intervened`.
+    The supervisor is the copy the systemd timer runs, so in production the
+    exhausted directive was computed on every tick and dropped on the floor,
+    leaving the file at whatever a DIFFERENT incident last wrote. FIGHT_LOSS_LOOP@65
+    spent 246h that way: the agent stood in Cerulean Gym losing to Misty while
+    its every-turn pin described a warp oscillation on Route 25 (WARP_OSC@36,
+    written 2026-09-12T10:55Z and never replaced).
+
+    One writer, two callers, so the next rule about WHEN to write can only be
+    written once.
+    """
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(directive, f, indent=1)
     os.replace(tmp, path)
 
 
@@ -505,7 +661,82 @@ def _snapshot(state):
             "eventFlags": state.get("eventFlags"), "map": state.get("map")}
 
 
-def resolve_pending(log, state):
+def _episode_gap_ms(state):
+    """The quiet gap that ends an episode, in ms, read off the live classifier
+    window the state was computed with (falling back to lpp_stuck_mode's own
+    default when a caller hands us a state without one)."""
+    try:
+        window_h = float(state.get("windowHours"))
+    except (TypeError, ValueError):
+        window_h = M.DEFAULT_WINDOW_H
+    if window_h <= 0:
+        window_h = M.DEFAULT_WINDOW_H
+    return EPISODE_GAP_WINDOWS * window_h * 3.6e6
+
+
+def _attempt_cluster_start(log, location_key, now_ms, gap_ms):
+    """Episode start inferred from attempt timestamps alone — the fallback for a
+    key with no recorded liveness yet (a log written before wq#1846, or a key's
+    first sighting in this log).
+
+    Walks the key's attempts newest-first, keeping each one that lands within
+    gap_ms of the one after it, and returns the oldest still in that run. None
+    means even the newest attempt is older than gap_ms, i.e. nothing logged for
+    this key belongs to the episode starting now.
+    """
+    stamps = sorted(e.get("ts") or 0 for e in log["attempts"]
+                    if e.get("locationKey") == location_key)
+    start, nxt = None, now_ms
+    for ts in reversed(stamps):
+        if nxt - ts > gap_ms:
+            break
+        start, nxt = ts, ts
+    return start
+
+
+def episode_start(log, location_key, now_ms, gap_ms):
+    """When the stall episode this key is in RIGHT NOW began. Returns
+    (started_at_ms, episode_number) and records the sighting.
+
+    An EPISODE is one continuous run of the key being the live stall. It ends
+    only when the key stops being the live stall for longer than gap_ms — the
+    one boundary a mid-stall partial tick cannot manufacture. The obvious
+    alternative, counting attempts made since state.lastAdvanceAt, re-opens
+    wq#1162 exactly: advances() restarts the freeze clock on ANY of
+    storyScore/badges/eventFlags rising, so a partial tick would refund K and
+    the 1,2,3,2,3 ladder comes back.
+
+    Liveness is heartbeated into log["keys"][key]["lastLiveAt"] on EVERY call,
+    including the exhausted ticks that deliberately append no attempt (wq#673
+    keys its one ticket off that invariant, so the heartbeat lives outside
+    log["attempts"] and leaves it untouched). Without it, an unbroken freeze on
+    an exhausted key would be indistinguishable — from the attempt timestamps
+    alone — from a key that had been quiet for a month, and K would be refunded
+    to a stall that never ended.
+    """
+    keys = log.get("keys")
+    if not isinstance(keys, dict):
+        keys = log["keys"] = {}
+    st = keys.get(location_key)
+    if not isinstance(st, dict):
+        # No heartbeat to trust: believe what the attempts themselves say. A key
+        # with attempts on record but none inside the window is on at least its
+        # second episode — how many more, a log that predates the heartbeat
+        # cannot say, so "2" is the honest floor.
+        cluster = _attempt_cluster_start(log, location_key, now_ms, gap_ms)
+        older = any(e.get("locationKey") == location_key for e in log["attempts"])
+        st = {"episode": 1 if cluster is not None or not older else 2,
+              "episodeStartedAt": now_ms if cluster is None else cluster}
+    elif now_ms - (st.get("lastLiveAt") or 0) > gap_ms:
+        st = {"episode": (st.get("episode") or 1) + 1, "episodeStartedAt": now_ms}
+    st.setdefault("episode", 1)
+    st.setdefault("episodeStartedAt", now_ms)
+    st["lastLiveAt"] = now_ms
+    keys[location_key] = st
+    return st["episodeStartedAt"], st["episode"]
+
+
+def resolve_pending(log, state, episode_start_ms=None):
     """Close out any open (afterState=None) attempts the current stall has
     moved past. Called on every decide() so the log never accumulates stale
     opens across an intervention that quietly worked.
@@ -527,6 +758,13 @@ def resolve_pending(log, state):
     grind prescription reissued indefinitely instead of exhausting once and
     handing off to wq#673. FIGHT_LOSS_LOOP@3 spent 4.9h and seven supervisor
     ticks in that shape.
+
+    wq#1846: "still the live stall" is scoped to the CURRENT episode
+    (`episode_start_ms`, from episode_start). An attempt left open by an EARLIER
+    episode of the same key — the supervisor stopped ticking while the key was
+    quiet, so nothing was ever there to close it — says nothing about the stall
+    running now, and holding it open forever would leave exactly the stale opens
+    this function exists to prevent.
     """
     cur_key = _key(state.get("mode"), state.get("modeLocation")) if state.get("stalled") else None
     now_snap = _snapshot(state)
@@ -534,9 +772,11 @@ def resolve_pending(log, state):
     for entry in log["attempts"]:
         if entry.get("afterState") is not None:
             continue
-        if entry["locationKey"] == cur_key:
-            # Still the live stall. Whatever the counters read, this attempt
-            # has not resolved anything — leave it open so it keeps costing K.
+        if entry["locationKey"] == cur_key and (
+                episode_start_ms is None or (entry.get("ts") or 0) >= episode_start_ms):
+            # Still the live stall, this episode. Whatever the counters read,
+            # this attempt has not resolved anything — leave it open so it
+            # keeps costing K.
             continue
         advanced = (
             (now_snap.get("storyScore") or 0) > (entry["beforeState"].get("storyScore") or 0)
@@ -549,18 +789,98 @@ def resolve_pending(log, state):
     return changed
 
 
-def open_attempt_count(log, location_key):
+def open_attempt_count(log, location_key, rev=None, since=None):
     """Attempts logged for this key that have NOT yet been resolved as
     'advanced' — i.e. every try that either failed or is still pending,
     which is what K bounds. A 'superseded' close (agent moved to a different
     mode/location without advancing) does not reset the counter: it is not
     evidence the intervention worked, just that the incident's shape changed.
+
+    wq#1826: with `rev` given, only attempts made under that revision of the
+    mode's prescription count. K bounds tries of a remedy, and WARP_OSC@36 spent
+    all three of its on a ban that named the wrong maps (see _resolve_osc_ban):
+    a corrected remedy that can never be issued because the broken one used up
+    the budget is not a fix. Bumping a prescription's `rev` is therefore the
+    deliberate act of refunding K for that mode alone — entries written under
+    the old rev stay in the log as history, and every other mode's budget is
+    untouched. rev=None counts every entry (callers that only want the history).
+
+    wq#1846: `since` scopes the count to ONE stall episode — episode_start()'s
+    timestamp. Without it the count runs over the key's entire lifetime, and a
+    key that spent K in some long-finished stall can never issue a numbered
+    attempt again (FIGHT_LOSS_LOOP@65, 246h of silence; see the module header).
+    since=None counts every episode, for callers that want the history.
     """
     return sum(1 for e in log["attempts"]
-               if e["locationKey"] == location_key and e.get("outcome") != "advanced")
+               if e["locationKey"] == location_key and e.get("outcome") != "advanced"
+               and (rev is None or e.get("rev", 1) == rev)
+               and (since is None or (e.get("ts") or 0) >= since))
 
 
-def _terminal_directive(template, mode, location_id, location_key, prior, now_ms):
+def _fmt_extras(location_id, state=None):
+    """Every field a prescription template may name, resolved from live state.
+
+    wq#1867: one home for this, shared by the attempt directives and the
+    terminal one. Two things follow. An EXHAUSTED pin can no longer say
+    something different from the attempts it succeeds (it used to rebuild the
+    kwargs by hand), and a template that names a NEW field can no longer take
+    the terminal path down with a KeyError — the field is defined once, for both.
+
+    Mode-specific fields are defaults here; decide() overwrites the two that have
+    something live to say (the WARP_OSC edge, the NAV_LOOP ban list).
+    """
+    state = state or {}
+    # wq#1091: the harness's own gym-entry thresholds, so a pin that names a
+    # level can only ever name the level the gate actually enforces.
+    extras = dict(_misty_gate())
+    # wq#1091: "the gym fight at 3" is a bare map id sitting next to several
+    # level numbers in the same sentence. Name it.
+    extras["location"] = _located(location_id)
+    # wq#1118: the resume picker's own viability bar, same read-don't-retype rule.
+    extras["viable_pct"] = _viable_pct()
+    extras["loop_maps"] = "unknown"
+    extras["loop_labels"] = "unknown maps"
+    extras["osc_edge"] = "the same two maps"
+    extras["osc_ban"] = "No map is banned."
+    milestone = state.get("nextMilestone")
+    extras["next_objective"] = (
+        f"Your next objective is {milestone}." if milestone else
+        "Your next objective is whatever your ROUTE line is pointing at.")
+    # wq#1867: the local half. reach.ts has already told the agent, on every one
+    # of these turns, that walking cannot leave the region it is standing in; a
+    # pin that answers "walk to the next town" without this is prescribing the
+    # move that just failed. Silent when the evidence is absent.
+    # wq#1877: and the advice this used to give — "take one of the warps the
+    # harness lists as reachable, a different door" — was the loop it was
+    # written to break. On Cerulean every reachable warp is a shop whose only
+    # door back is the one you walked in by; the region's one crossing is a door
+    # an NPC is standing on, and the refusal itself now names it, names the NPC,
+    # and names where the game clears that NPC (src/reach.ts blockedCrossings,
+    # src/unblock.ts). A pin cannot know which of those applies today, so it
+    # sends the agent to the answer instead of inventing one.
+    extras["pocket"] = (
+        "Note: the harness keeps answering that walking cannot leave the part of this map "
+        "you are standing in. Its own goto/leave_edge refusal lists the ways out of it — the "
+        "map edges that work from here, and the one door that crosses, with whatever is "
+        "standing on it and where the game clears that. Do what THAT list says; the doors you "
+        "have already used are the loop, not the exit."
+        if (state.get("closedOffTurns") or 0) else "")
+    # wq#1877: and while the pocket clause has something to say, the pin must
+    # STOP ordering the leg. It spent its whole K budget telling an agent to
+    # take a NEXT LEG (leave_edge(S) into Route 5) that starts in the half of
+    # the map it cannot walk to — the wq#1091 footgun with a destination instead
+    # of a level: obeyed perfectly, impossible anyway. The two halves are one
+    # field so they cannot contradict each other.
+    extras["leg"] = (
+        "The ROUTE line in your prompt names that goal and the NEXT LEG that starts it — "
+        "take that leg." if not extras["pocket"] else
+        "The ROUTE line in your prompt names that goal, but the NEXT LEG it gives cannot be "
+        "started from where you stand, so getting out of this pocket comes first. "
+        + extras["pocket"])
+    return extras
+
+
+def _terminal_directive(template, mode, location_id, location_key, prior, now_ms, state=None):
     """wq#1091: the directive written once the K budget is spent.
 
     Carries the same standing requirement as the attempts did, but labelled
@@ -569,10 +889,11 @@ def _terminal_directive(template, mode, location_id, location_key, prior, now_ms
     deliberately empty: a ban is an active intervention, and the supervisor has
     stopped intervening on this key — only the guidance stands.
     """
-    pin = template["notepadPin"].format(
-        attempt=prior, k=K, location=_located(location_id),
-        loop_maps="unknown", loop_labels="unknown maps",
-        viable_pct=_viable_pct(), **_misty_gate())
+    extras = _fmt_extras(location_id, state)
+    extras["osc_ban"] = "No map is banned: the supervisor has stopped intervening on this key."
+    # .strip(): a template whose last field is conditional (OBJECTIVE_DRIFT's
+    # {pocket}) would otherwise end in a space on every turn it has nothing to say.
+    pin = template["notepadPin"].format(attempt=prior, k=K, **extras).strip()
     return {
         "v": 1,
         "generatedAt": _iso(now_ms),
@@ -679,17 +1000,25 @@ def decide(state=None, log=None, now_ms=None):
         log = load_log()
     now_ms = now_ms if now_ms is not None else _now_ms()
 
-    resolve_pending(log, state)
+    mode = state.get("mode")
+    location_id = state.get("modeLocation")
+    location_key = _key(mode, location_id) if state.get("stalled") else None
+
+    # wq#1846: which episode of this key we are in has to be settled BEFORE
+    # anything reads the log, because both readers below are scoped to it — the
+    # resolver's "still the live stall" guard and the K count itself.
+    ep_start, episode = ((None, None) if location_key is None else
+                         episode_start(log, location_key, now_ms, _episode_gap_ms(state)))
+
+    resolve_pending(log, state, episode_start_ms=ep_start)
 
     if not state.get("stalled"):
         return {"intervened": False, "reason": "not stalled", "mode": None}
 
-    mode = state["mode"]
-    location_id = state.get("modeLocation")
-    location_key = _key(mode, location_id)
     template = PRESCRIPTIONS.get(mode)
 
-    prior = open_attempt_count(log, location_key)
+    rev = (template or {}).get("rev", 1)
+    prior = open_attempt_count(log, location_key, rev, since=ep_start)
     attempt = prior + 1
 
     if template is None:
@@ -709,7 +1038,7 @@ def decide(state=None, log=None, now_ms=None):
         # 167.9h re-rendering advice the agent had already failed to act on.
         # L4 BREAKOUT fires at most once, only on a real anchor, only for a
         # bounded number of turns. L5 HANDOFF is the honest end.
-        prior_breakout = breakout_entry(log, location_key)
+        prior_breakout = breakout_entry(log, location_key, since=ep_start)
         if prior_breakout is None:
             anchor = breakout_anchor(state)
             if anchor is not None:
@@ -717,12 +1046,13 @@ def decide(state=None, log=None, now_ms=None):
                                                 prior, anchor, now_ms)
                 log["attempts"].append({
                     "ts": now_ms, "mode": mode, "locationKey": location_key,
-                    "attempt": prior + 1, "rung": "breakout", "directive": directive,
+                    "attempt": prior + 1, "rung": "breakout", "rev": rev,
+                    "episode": episode, "directive": directive,
                     "beforeState": _snapshot(state), "afterState": None, "outcome": None,
                 })
                 return {"intervened": True, "exhausted": True, "rung": "breakout",
                         "mode": mode, "locationKey": location_key, "attempts": prior,
-                        "k": K, "directive": directive,
+                        "k": K, "episode": episode, "directive": directive,
                         "reason": f"K spent at {location_key}; escalating to a bounded "
                                   f"{anchor['budgetTurns']}-turn breakout off "
                                   f"map{anchor['stallMap']}"}
@@ -731,9 +1061,11 @@ def decide(state=None, log=None, now_ms=None):
             # rather than inventing a map to run to.
             return {"intervened": False, "exhausted": True, "rung": None, "mode": mode,
                     "locationKey": location_key, "attempts": prior, "k": K,
+                    "episode": episode,
                     "directive": _terminal_directive(template, mode, location_id,
-                                                     location_key, prior, now_ms),
-                    "reason": f"{prior} attempts already logged for {location_key} — "
+                                                     location_key, prior, now_ms, state),
+                    "reason": f"{prior} attempts already logged for {location_key} in the "
+                              f"stall episode running since {_iso(ep_start)} — "
                               f"no breakout anchor (progress is not map-local), "
                               f"handing off to the wq#673 feedback loop"}
 
@@ -742,6 +1074,7 @@ def decide(state=None, log=None, now_ms=None):
             # tick cannot shorten its own budget or restate it differently.
             return {"intervened": False, "exhausted": True, "rung": "breakout",
                     "mode": mode, "locationKey": location_key, "attempts": prior, "k": K,
+                    "episode": episode,
                     "directive": prior_breakout["directive"],
                     "reason": f"breakout in flight at {location_key} until turn "
                               f"{prior_breakout['directive'].get('expiresAtTurn')}"}
@@ -750,6 +1083,7 @@ def decide(state=None, log=None, now_ms=None):
         # breakout did not work. Kill-criterion 2 forbids a second one.
         return {"intervened": False, "exhausted": True, "rung": "handoff", "mode": mode,
                 "locationKey": location_key, "attempts": prior, "k": K,
+                "episode": episode,
                 "directive": _handoff_directive(mode, location_id, location_key,
                                                 prior, now_ms,
                                                 "the bounded breakout also failed"),
@@ -760,16 +1094,21 @@ def decide(state=None, log=None, now_ms=None):
     # consumed because it never named actual map IDs. Now we read the warp
     # history and extract the maps the agent is genuinely looping between.
     goto_ban = template["gotoBan"]
-    # wq#1091: the harness's own gym-entry thresholds, so a pin that names a
-    # level can only ever name the level the gate actually enforces. Templates
-    # that reference none of these keys simply ignore them.
-    fmt_extras = dict(_misty_gate())
-    # wq#1091: "the gym fight at 3" is a bare map id sitting next to several
-    # level numbers in the same sentence. Name it.
-    fmt_extras["location"] = _located(location_id)
-    # wq#1118: the resume picker's own viability bar, same read-don't-retype rule.
-    fmt_extras["viable_pct"] = _viable_pct()
-    if goto_ban == "__RESOLVE_FROM_WARPS__":
+    # wq#1867: every field a template may name, resolved once (see _fmt_extras).
+    # Templates that reference none of them simply ignore them.
+    fmt_extras = _fmt_extras(location_id, state)
+    if goto_ban == "__RESOLVE_FROM_WARPS__" and mode == "WARP_OSC":
+        # wq#1826: the oscillation's own edge, not the wide window's top-2 maps.
+        goto_ban, here, there = _resolve_osc_ban(location_id)
+        fmt_extras["osc_edge"] = (f"{_located(here)} <-> {_located(there)}"
+                                  if here is not None and there is not None and here != there
+                                  else "the same two maps")
+        fmt_extras["osc_ban"] = (
+            f"{_located(goto_ban[0])} is BANNED by the harness until story advances — "
+            f"do not enter_warp back into it." if goto_ban else
+            "No map is banned: the far side of the bounce is one the run cannot do "
+            "without, so the loop is yours to break on foot.")
+    elif goto_ban == "__RESOLVE_FROM_WARPS__":
         loop_maps = _resolve_loop_maps()
         goto_ban = loop_maps if loop_maps else []
         fmt_extras["loop_maps"] = ",".join(f"map{m}" for m in loop_maps) if loop_maps else "unknown"
@@ -786,19 +1125,25 @@ def decide(state=None, log=None, now_ms=None):
         "k": K,
         "action": template["action"],
         "summary": template["summary"],
-        "notepadPin": template["notepadPin"].format(attempt=attempt, k=K, **fmt_extras),
+        "notepadPin": template["notepadPin"].format(attempt=attempt, k=K, **fmt_extras).strip(),
         "gotoBan": goto_ban,
     }
 
     entry = {
         "ts": now_ms, "mode": mode, "locationKey": location_key, "attempt": attempt,
+        "rev": rev,  # wq#1826: which revision of the mode's prescription this tried
+        # wq#1846: which stall episode of this key it belonged to. Forensic
+        # only — the budget is scoped by the episode's START TIMESTAMP, since
+        # entries written before this shipped carry no episode number at all.
+        "episode": episode,
         "directive": directive, "beforeState": _snapshot(state), "afterState": None,
         "outcome": None,
     }
     log["attempts"].append(entry)
 
     return {"intervened": True, "mode": mode, "locationKey": location_key,
-            "attempt": attempt, "k": K, "directive": directive, "exhausted": False}
+            "attempt": attempt, "k": K, "episode": episode,
+            "directive": directive, "exhausted": False}
 
 
 def main(argv=None):
@@ -817,10 +1162,7 @@ def main(argv=None):
         # is now the intervening path AND the exhausted path, which must be
         # able to correct a stale pin it can no longer replace via an attempt.
         if result.get("directive"):
-            tmp = DIRECTIVE_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(result["directive"], f, indent=1)
-            os.replace(tmp, DIRECTIVE_PATH)
+            persist_directive(result["directive"])
 
     if args.json:
         print(json.dumps(result, indent=1))

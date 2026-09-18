@@ -41,18 +41,33 @@ directive, which cannot corrupt a save, regress the story, or loop a reset.
 
 **Kill-criteria** (each asserted in `tools/test_stuck1563.py`): an anchor is
 required, so the rung never invents a target; it fires at most once per
-unresolved incident key; it is bounded in turns, not wall-clock; it releases its
-own ban on expiry; and it lifts free when the story advances, via the baseline
-mechanism `src/agent.ts` already had.
+**unresolved stall episode** of a key, scoped by `episode_start()`'s timestamp
+the same way K is (wq#1846 — unscoped, one `superseded` breakout would retire the
+rung for that key forever); it is bounded in turns, not wall-clock; it releases
+its own ban on expiry; and it lifts free when the story advances, via the
+baseline mechanism `src/agent.ts` already had.
 
-Two mechanisms had to be repaired before any of this could reach the game.
-`lpp-stuck-supervisor` gated the directive write on `intervened`, so every
-directive computed on the exhausted path since wq#1091 was thrown away —
+Two mechanisms had to be repaired before any of this could reach the game. The
+first was `lpp-stuck-supervisor` gating the directive write on `intervened`, so
+every directive computed on the exhausted path since wq#1091 was thrown away —
 `runtime/supervisor_directive.json` sat unchanged from 2026-08-29 while the
-supervisor ticked over the incident for a week. And `src/agent.ts` read the
-directive only in its constructor, so a directive written mid-run was invisible
-until the next boot, ~450 turns later; `refreshSupervisorDirective()` now
-re-reads it when the file's mtime moves.
+supervisor ticked over the incident for a week. wq#1845 fixed that
+independently, in `I.persist_directive`, and that is the version on main; the
+rungs here ride it. The second is `src/agent.ts` reading the directive only in
+its constructor, so a directive written mid-run was invisible until the next
+boot, ~450 turns later; `refreshSupervisorDirective()` now re-reads it when the
+file's mtime moves, and every field `loadSupervisorBans()` owns is reset on the
+way in so a superseding directive cannot union its bans with the previous one's.
+
+**What the rung does on the incident it was written for.** Replaying the final
+40-turn window of `events/live-agent-1788935768505.jsonl` (progress events paired
+with the map from the preceding `state_read`) through `breakout_anchor()` yields
+`stallMap=35 targetMap=36 newTiles=0 budgetTurns=120` — an anchor, so L4 fires
+with a 120-turn budget instead of the 167.9h tick-loop. Against the stall that is
+live now (`OBJECTIVE_DRIFT@3`, 143h) the same function returns `None`, because
+that window spans maps 3/35/64: kill-criterion 1 refuses, and the ladder falls
+through to the terminal refresh. Both directions are asserted, on live files, by
+section A10 of the probe.
 
 ### Was the freeze a brain regression? No — it predates the pin.
 
@@ -178,6 +193,52 @@ including when the *current* incident has since moved to a different
 mode/location; and (wq#1162) a counter tick while the same key is still the
 live stall resolves nothing and leaves the ticket open, yet those same
 counters do resolve it once the stall clears.
+
+## How a directive stops being one (wq#1840)
+
+`runtime/supervisor_directive.json` is written here and consumed in
+`src/agent.ts`: `gotoBan` refuses `enter_warp` targets, `notepadPin` is the
+`!!` line of every overworld state block. Until wq#1840 both cleared on **one**
+condition — `storyScore`/`badgeCount`/`eventCount` rising past the baseline
+captured when the directive loaded.
+
+That is unsound for the directive class this supervisor mostly writes, because
+a stuck-remedy pin's exit condition *is* the story advance it is failing to
+produce. Measured: `FIGHT_LOSS_LOOP@3`, `generatedAt 2026-08-29T16:44:34Z`,
+attempt 3/3, still in the prompt on 2026-09-12 with `storyScore` stuck at 10
+since 09-02 — fourteen days of ordering grass-pacing on Route 24, while
+wq#1731's escape walked the agent out of that grass and wq#1828's exclusion
+refused `goto` back in, and wq#1829 measured $96 and zero balls against a $200
+ball, so the catch it demanded was unaffordable too.
+
+`src/pin.ts` gives a directive the three shapes every other harness override
+already has (cf. wq#1181's ledger, wq#1828's exclusion):
+
+- **Retire on age.** `LPP_PIN_MAX_HOURS` (6) from `generatedAt`, story advance
+  or not, and it retires the **whole** artifact — pin *and* bans, which share
+  one stamp and one K-attempt ladder. This cannot cut an escalation short: a
+  supervisor that still believes the stall rewrites the file (the `WARP_OSC@36`
+  attempts in `runtime/intervention_log.json` are 1837s apart), and a rewrite
+  resets the clock. Nothing rewrites a ladder that has finished at K/K.
+  `LPP_PIN_MAX_TURNS` (300) is the fallback for a file with no parseable stamp;
+  it cannot be primary, because `live_agent` builds a fresh `Agent` on every
+  continue and the turn counter restarts with it.
+- **Suppress on contradiction.** A pin ordering a CATCH while the bag holds
+  zero balls and the purse cannot buy one is withheld for the turn, replaced by
+  one line naming both numbers. It returns by itself the moment the money does.
+  `LPP_PIN_CONTRADICTION=0` reverts.
+- **Qualify, don't contradict.** A pin ordering the agent into tall grass while
+  a wq#1828 exclusion is live gets the excluded patch, its map and its expiry
+  appended — "grass, but not *that* grass" — instead of two harness voices
+  arguing. The rest of the pin is untouched.
+
+Events: `supervisor_directive_expired` (with `atBoot` — an already-dead
+directive never reaches the prompt even once), and
+`supervisor_pin_suppressed`/`_restored` on the rising edge only.
+
+Verification: `npx tsx src/probe_pin1840.ts` — **29/29**, pure, driven off the
+live `FIGHT_LOSS_LOOP` prescription text and the `WARP_OSC@36` pin that was on
+disk on 2026-09-12.
 
 ## Rollback
 

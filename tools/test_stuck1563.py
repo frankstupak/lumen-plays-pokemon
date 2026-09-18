@@ -15,7 +15,7 @@ THE INCIDENT
   directive at boot. Sections D and E cover those.
 
 Sections
-  A  breakout_anchor — fires on the real live incident, refuses without evidence
+  A  breakout_anchor — agrees with the live window either way, refuses w/o evidence
   B  the ladder — K, then exactly one BREAKOUT, then HANDOFF (kill-criteria 1-4)
   C  the directive itself — bounded, non-destructive, names a real way out
   D  lpp-stuck-supervisor persists an exhausted-path directive (the wq#1091 gap)
@@ -78,17 +78,31 @@ assert I.breakout_anchor({"dP": {"ok": False}}, samples(WINDOW, 35), WINDOW, FRO
 onfront = I.breakout_anchor(STATE, samples(WINDOW, 36), WINDOW, FRONTIER)
 assert onfront["targetMap"] not in (36, None), f"A9: target must differ from the cage {onfront}"
 
-# The LIVE incident, read off the deployed runtime/ files. This is the ticket's
-# "prove on the live frozen incident" for the decision half: the same evidence
-# that has been sitting frozen for a week must produce an anchor.
+# The LIVE stall, read off the deployed runtime/ files. This is the ticket's
+# "prove on the live frozen incident" for the decision half, and it asserts the
+# DECISION, not the incident's shape: whichever way the live evidence falls, the
+# anchor must agree with the window it was computed from. The original form of
+# this section asserted `anchor is not None` against FIGHT_LOSS_LOOP@3's frozen
+# window, which turned a moving world into a red probe the moment the live stall
+# changed mode (it is OBJECTIVE_DRIFT@3 now, with the window spread over three
+# maps — a case kill-criterion 1 is supposed to refuse).
 live_state = M.compute()
 if live_state.get("ok") and live_state.get("stalled"):
     live = I.breakout_anchor(live_state)
-    assert live is not None, \
-        f"A10: the live stall {live_state.get('mode')}@{live_state.get('modeLocation')} " \
-        f"produced no breakout anchor"
-    print(f"A10 live: anchor stallMap={live['stallMap']} target={live['targetMap']} "
-          f"newTiles={live['newTiles']}/{MAXNEW} budget={live['budgetTurns']}t")
+    tail = [s for s in M.load_progress()[-WINDOW:] if s.get("map") is not None]
+    map_local = len(tail) == WINDOW and len({s["map"] for s in tail}) == 1
+    caged = map_local and sum((s.get("newTiles") or 0) for s in tail) <= MAXNEW
+    assert (live is not None) == caged, \
+        f"A10: live stall {live_state.get('mode')}@{live_state.get('modeLocation')} " \
+        f"is caged={caged} but anchor={live}"
+    if live is not None:
+        print(f"A10 live: anchor stallMap={live['stallMap']} target={live['targetMap']} "
+              f"newTiles={live['newTiles']}/{MAXNEW} budget={live['budgetTurns']}t")
+    else:
+        print(f"A10 live: {live_state.get('mode')}@{live_state.get('modeLocation')} "
+              f"frozen {live_state.get('frozenHours'):.1f}h but the window spans "
+              f"{len({s['map'] for s in tail})} maps — kill-criterion 1 refuses, "
+              f"ladder refreshes the standing requirement (section B10b)")
 else:
     live = None
     print("A10 live: not stalled right now — synthetic sections still apply")
@@ -143,6 +157,17 @@ try:
     assert r4.get("rung") is None and r4["exhausted"] and r4["directive"], f"B10: {r4}"
     assert r4["directive"]["action"] == "grind_sub_objective", f"B11: {r4['directive']}"
 
+    # B10b — the OTHER no-anchor shape, and the one the LIVE stall is in (A10):
+    # the window is spread over several maps, so there is no map-local cage to
+    # break out of and the rung must not invent one.
+    spread = samples(WINDOW, 35)
+    for i in range(0, WINDOW, 3):
+        spread[i]["map"] = 64
+    patched["progress"] = spread
+    r5 = I.decide(state=copy.deepcopy(STATE), log=fresh_log(I.K), now_ms=1)
+    assert r5.get("rung") is None and r5["exhausted"], f"B10b: {r5}"
+    assert r5["directive"]["action"] == "grind_sub_objective", f"B10c: {r5['directive']}"
+
     # A breakout that WORKED does not disable the rung forever (breakout_entry).
     worked = fresh_log(I.K)
     patched["progress"] = sm
@@ -151,6 +176,18 @@ try:
         e["outcome"] = "advanced"
     assert I.breakout_entry(worked, "FIGHT_LOSS_LOOP@3") is None, \
         "B12: an advanced breakout must not stay spent"
+
+    # B13 — "once per incident" is per STALL EPISODE (wq#1846), not per key for
+    # the life of the log. A breakout spent in a finished episode and closed
+    # 'superseded' must not retire the rung for a fresh episode of the same key.
+    old = fresh_log(I.K)
+    I.decide(state=copy.deepcopy(STATE), log=old, now_ms=1)
+    for e in old["attempts"]:
+        e["outcome"] = e["outcome"] or "superseded"
+    assert I.breakout_entry(old, "FIGHT_LOSS_LOOP@3") is not None, \
+        "B13a: unscoped, the spent breakout is still found"
+    assert I.breakout_entry(old, "FIGHT_LOSS_LOOP@3", since=2) is None, \
+        "B13b: scoped to a later episode, the rung is available again"
 
     # ---- C: the directive is bounded and non-destructive -------------------
     assert d["action"] == "breakout_leave_map", f"C1: {d['action']}"

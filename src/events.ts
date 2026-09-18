@@ -26,6 +26,8 @@ export type EventKind = "state_read" | "think_chunk" | "tool_call" | "buttons"
   | "persona"      // wq#1176: a self-fact became canonical, was reaffirmed, or was
                    // contradicted. Structured so a contradiction is countable rather
                    // than something a human has to notice in the chat panel.
+  | "exploration_override" // wq#1731: the hard exploration rung fired or ended.
+                   // Same records as runtime/stuck_escalation_overrides.jsonl.
   | "nav_trace";   // wq#542: per-step path intent vs actual displacement inside
                    // nav.goto. The turn-level log records position ONCE PER TURN,
                    // POST-ACTION, which makes every decision inside a journey

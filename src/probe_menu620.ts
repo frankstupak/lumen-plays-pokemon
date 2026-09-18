@@ -176,6 +176,14 @@ const GRID_SCROLLED = [
     const items = r.agent.items;
     const moneyA = sym.addr("wPlayerMoney");
     const money = () => { const m = r.emu.mem(); return [m[moneyA], m[moneyA + 1], m[moneyA + 2]].reduce((a, b) => a * 100 + ((b >> 4) * 10 + (b & 0xf)), 0); };
+    // wq#1835: fund the purse first (probe owns its environment, same as the
+    // heal block below hurts the lead). This block has been skipping since the
+    // corpus lost its map67 states; the mart fixture probe_sell1835 builds is
+    // the BROKE run — $96, one antidote short of $100 — so the buy reached YES
+    // and came back "no charge registered", which reads exactly like a broken
+    // purchase path and is really an honest refusal. 999 in BCD.
+    const m = r.emu.mem();
+    m[moneyA] = 0x00; m[moneyA + 1] = 0x09; m[moneyA + 2] = 0x99;
     const m0 = money(), have0 = items.has(ITEM.ANTIDOTE);
     const res = await items.buy(ITEM.ANTIDOTE, 1);
     chk("D buy(antidote,1) completes FIRST attempt", res.startsWith("bought 1x antidote"), res.slice(0, 80));

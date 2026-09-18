@@ -17,6 +17,8 @@ const envS = (k: string, d: string) => process.env[k] ?? d;
 const envN = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : d; };
 // zero-permitted variant: 0 is a meaningful value (off), unlike envN where 0 falls to default
 const envN0 = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v >= 0 ? Math.floor(v) : d; };
+// ...and the fractional one, for a share (wq#1828 LPP_EXPLORE_PATCH_SHARE): 0 is off
+const envF0 = (k: string, d: number) => { const v = Number(process.env[k]); return Number.isFinite(v) && v >= 0 ? v : d; };
 const envEffort = (k: string, d?: "low" | "medium" | "high") => {
   const v = process.env[k];
   if (v === "none") return undefined;            // explicit provider-default
@@ -30,6 +32,24 @@ const envList = (k: string, d: string[]) => {
   return v.split(",").map(s => s.trim()).filter(Boolean);
 };
 
+// wq#1664: the escalation ladder is [primary, ...fallbackModels] (Brain.ladder),
+// so these two are hoisted out of CFG to derive the rescue roles' DEFAULTS from
+// it. NEXT_RUNG is the first ladder rung that is not primary — the cheapest
+// model that is genuinely a second opinion. Only a default: an explicit
+// LPP_BRAIN_ESCALATE/ACTRETRY still wins, and brainConfigErrors() below is what
+// refuses the pin-everything-to-one-model shape.
+const PRIMARY_MODEL = envS("LPP_BRAIN_PRIMARY", "cerebras-oss-120b");
+const FALLBACK_MODELS = envList("LPP_BRAIN_FALLBACK_MODELS", ["cerebras-oss-120b", "mistral-small"]);
+
+/** First fallback rung that differs from `primary`, or `primary` itself when the
+ *  ladder offers no second model — in which case brainConfigErrors() reports it
+ *  rather than this silently returning a same-model "escalation". */
+export function nextLadderRung(primary: string, fallbacks: string[]): string {
+  return fallbacks.find(m => m && m !== primary) ?? primary;
+}
+
+const NEXT_RUNG = nextLadderRung(PRIMARY_MODEL, FALLBACK_MODELS);
+
 export const CFG = {
   // wq#907: env-overridable so a test can point the brain at a stub gateway
   // without touching the running proxy.
@@ -40,30 +60,40 @@ export const CFG = {
     // (~50% of turns were AUTO; Cerebras docs: standard OpenAI param, verified
     // through our LiteLLM gateway 2026-08-08).
     primary: {
-      model: envS("LPP_BRAIN_PRIMARY", "cerebras-oss-120b"),
+      model: PRIMARY_MODEL,
       maxTokensOut: envN("LPP_BRAIN_MAXTOK", 3200),
       reasoningEffort: envEffort("LPP_BRAIN_EFFORT", "low"),
     } as BrainProfile,
-    // hard spots (stalls, gyms, puzzles) - full effort wanted here
+    // hard spots (stalls, gyms, puzzles). wq#1664: defaults to the next ladder
+    // rung, never to primary — re-asking the model that just stalled 12 turns is
+    // not an escalation (it fired 337x in one day that way; M7 in
+    // foreman/research/LPP_BEHAVIORAL_ANALYSIS.md). full effort wanted here by default,
+    // but wq#1616: on glm-5.3-flash-zai reasoning is MANDATORY (no "none") and
+    // bills as output at $0.50/M, so this must be env-overridable per rung
+    // rather than hardcoded "full effort" — lpp-glm.env pins it to "low".
     escalate: {
-      model: envS("LPP_BRAIN_ESCALATE", "cerebras-oss-120b"),
+      model: envS("LPP_BRAIN_ESCALATE", NEXT_RUNG),
       maxTokensOut: envN("LPP_BRAIN_ESCALATE_MAXTOK", 3200),
+      reasoningEffort: envEffort("LPP_BRAIN_ESCALATE_EFFORT"),
     } as BrainProfile,
     // no-ACT rescue: a DIFFERENT (cheap, content-reliable) model retries the
-    // turn instead of the same model failing the same way. deepseek-v4-flash
+    // turn instead of the same model failing the same way — hence the next-rung
+    // default and the brainConfigErrors() check, wq#1664. deepseek-v4-flash
     // reasons ~2-4k tokens before its content, so the budget leaves headroom
     // (1600 truncated in vivo 2026-08-08); a rescued turn costs ~$0.002 vs a
     // wasted AUTO turn. thinking:"disabled" is set for the day the gateway
     // passes it (see BrainProfile note).
     actRetry: {
-      model: envS("LPP_BRAIN_ACTRETRY", "cerebras-oss-120b"),
+      model: envS("LPP_BRAIN_ACTRETRY", NEXT_RUNG),
       maxTokensOut: envN("LPP_BRAIN_ACTRETRY_MAXTOK", 6000),
       thinking: "disabled",
+      reasoningEffort: envEffort("LPP_BRAIN_ACTRETRY_EFFORT"),
     } as BrainProfile,
     // compaction helper, off the main loop
     summarize: {
       model: envS("LPP_BRAIN_SUMMARIZE", "cerebras-oss-120b"),
       maxTokensOut: 3200,
+      reasoningEffort: envEffort("LPP_BRAIN_SUMMARIZE_EFFORT"),
     } as BrainProfile,
     // wq#621: escalation-only valve, not the text loop's per-turn brain.
     vision: { model: "lumen-vision", maxTokensOut: 3200 } as BrainProfile,
@@ -113,6 +143,63 @@ export const CFG = {
   winnability: {
     advisory: envN0("LPP_WINNABILITY", 1) > 0,
     force: envN0("LPP_WINNABILITY_FORCE", 0) > 0,
+  },
+  // wq#1731 EXPLORATION OVERRIDE (src/explore.ts). ON by default: this is the
+  // hard rung the stuck detectors never had. It fires only on a COMPLETE
+  // novelty window with zero new tiles that is either a tight pace (< minTiles
+  // tiles) or never left one map, then drives K directional steps with no
+  // brain call. LPP_EXPLORE_OVERRIDE=0 reverts the rung, LPP_EXPLORE_PROMPT=0
+  // drops the PROGRESS/GOAL lines, both without a redeploy.
+  //
+  // wq#1828 added the two knob groups at the end. patch* is the third trigger:
+  // the first two fired ZERO times in 6.7h of live play because the agent
+  // shuttles off the stalled strip every ~50 turns, and one sample anywhere in
+  // the window clears a whole-window AND. patchShare is the share of a window
+  // one Chebyshev-patchRadius patch must hold; radius 5 is the measured live
+  // stall (map35 x=4..5, y=19..29). Below radius 4 the trigger stops firing on
+  // that run at all (6/363 windows at r=3, 0/363 at r=2), at 5 it fires on
+  // 260/363. excludeTurns is how long goto refuses the escaped patch after a
+  // fire. LPP_EXPLORE_PATCH_SHARE=0 reverts the trigger,
+  // LPP_EXPLORE_EXCLUDE_TURNS=0 reverts the exclusion, both independently.
+  explore: {
+    enabled: envN0("LPP_EXPLORE_OVERRIDE", 1) > 0,
+    prompt: envN0("LPP_EXPLORE_PROMPT", 1) > 0,
+    windowTurns: envN("LPP_EXPLORE_WINDOW", 150),
+    minTiles: envN("LPP_EXPLORE_MIN_TILES", 5),
+    stepsK: envN("LPP_EXPLORE_K", 30),
+    clearance: envN("LPP_EXPLORE_CLEARANCE", 3),
+    expireFactor: envN("LPP_EXPLORE_EXPIRE_FACTOR", 3),
+    urgencyTurns: envN("LPP_EXPLORE_URGENCY_TURNS", 60),
+    catchParty: envN("LPP_EXPLORE_CATCH_PARTY", 3),
+    patchShare: envF0("LPP_EXPLORE_PATCH_SHARE", 0.5),
+    patchRadius: envN0("LPP_EXPLORE_PATCH_RADIUS", 5),
+    patchNew: envN0("LPP_EXPLORE_PATCH_NEW", 0),
+    excludeTurns: envN0("LPP_EXPLORE_EXCLUDE_TURNS", 60),
+    // wq#1746: novelty samples an escape is watched for before its `verdict`
+    // record settles `escaped`. One stall window, so the answer covers the
+    // exclusion's 60 turns AND the 90 after it lifts — the interval in which
+    // all nine historical fires were undone. LPP_EXPLORE_VERDICT_TURNS=0 drops
+    // the measurement; nothing else reads it, so nothing else changes.
+    verdictTurns: envN0("LPP_EXPLORE_VERDICT_TURNS", 150),
+  },
+  // wq#1840 SUPERVISOR PIN EXPIRY (src/pin.ts). The stuck supervisor's
+  // notepadPin used to lift on story advance ALONE, so the FIGHT_LOSS_LOOP@3
+  // pin whose own remedy was the blocked story advance sat in the prompt for
+  // fourteen days. maxHours retires the whole directive (pin AND gotoBan) on
+  // the wall clock: the supervisor re-affirms a live stall by rewriting the
+  // file every ~30 minutes (runtime/intervention_log.json), so 6h is twelve
+  // missed re-affirmations and four times the span of a whole K=3 ladder — it
+  // cannot cut an escalation short, because a new attempt rewrites generatedAt
+  // and resets this clock. maxTurns is the fallback for a file with no
+  // parseable timestamp (~300 turns = 6h at the measured 47 turns/h);
+  // it cannot be the primary, because live_agent builds a fresh Agent on every
+  // continue and the turn counter restarts with it. LPP_PIN_MAX_HOURS=0 /
+  // LPP_PIN_MAX_TURNS=0 / LPP_PIN_CONTRADICTION=0 revert each rule
+  // independently, no redeploy.
+  pin: {
+    maxHours: envN0("LPP_PIN_MAX_HOURS", 6),
+    maxTurns: envN0("LPP_PIN_MAX_TURNS", 300),
+    contradiction: envN0("LPP_PIN_CONTRADICTION", 1) > 0,
   },
   // wq#1181 LOSS LEDGER + engagement gates (roadmap item 6). ON by default:
   // unlike the verdict above it cannot act on its own, it can only refuse a
@@ -172,7 +259,7 @@ export const CFG = {
     // deliberately on two DIFFERENT cloud providers so the ladder cannot end
     // on a single failure domain. The last rung is never skipped (see the
     // breaker below), so every turn makes at least one real attempt.
-    fallbackModels: envList("LPP_BRAIN_FALLBACK_MODELS", ["cerebras-oss-120b", "mistral-small"]),
+    fallbackModels: FALLBACK_MODELS,
     // Attempts on the terminal rung only. Non-terminal rungs get one shot —
     // the ladder IS the retry, and retrying a hung rung is what cost 12h.
     terminalAttempts: envN("LPP_BRAIN_TERMINAL_ATTEMPTS", 2),
@@ -277,3 +364,32 @@ export const CFG = {
   },
   runTokenBudget: 3_000_000,  // hard stop per run
 };
+
+/** wq#1664: the two rescue roles must be a SECOND OPINION, not the model that
+ *  just failed. When a unit drop-in pins every role to one model (as lpp-glm did
+ *  on 09-10), `escalate` on stall_12_turns and `actRetry` on a missing ACT line
+ *  both re-ask the model that produced the stall: same prompt, same weights,
+ *  same answer, one extra billed call. That is silent — the escalation is logged
+ *  and looks like it worked — so it is caught at boot instead.
+ *  Returns one message per broken role; empty array = config is sane. */
+export interface BrainRoleConfig {
+  profiles: { primary: BrainProfile; escalate: BrainProfile; actRetry: BrainProfile };
+  brain: { fallbackModels: string[] };
+}
+
+export function brainConfigErrors(cfg: BrainRoleConfig = CFG): string[] {
+  const primary = cfg.profiles.primary.model;
+  const ladder = [primary, ...cfg.brain.fallbackModels].filter((m, i, a) => m && a.indexOf(m) === i);
+  const errs: string[] = [];
+  for (const [role, env] of [["escalate", "LPP_BRAIN_ESCALATE"], ["actRetry", "LPP_BRAIN_ACTRETRY"]] as const) {
+    const model = cfg.profiles[role].model;
+    if (!model) { errs.push(`${role} profile has no model (${env} is set to an empty string).`); continue; }
+    if (model !== primary) continue;
+    const alts = ladder.filter(m => m !== primary);
+    errs.push(`${role} profile model "${model}" is the primary model, so ${role} re-asks the model that just failed. `
+      + `Set ${env} to a different model`
+      + (alts.length ? ` (ladder rungs available: ${alts.join(", ")}).`
+                     : `; no rung of LPP_BRAIN_FALLBACK_MODELS differs from primary either, so there is nothing to escalate to.`));
+  }
+  return errs;
+}

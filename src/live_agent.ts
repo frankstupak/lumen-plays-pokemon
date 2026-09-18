@@ -27,7 +27,7 @@ import { ceruleanGuidance, hasTypeCounter } from "./guidance";   // wq#478, wq#6
 import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
-import { CFG } from "./config";   // wq#476: mapStepBudgets
+import { CFG, brainConfigErrors } from "./config";   // wq#476: mapStepBudgets
 import { GameNames, BADGE_NAMES, STATUS_BITS } from "./names";   // wq#503
 import { MilestoneLog, StuckWatch, RatesCache, sentinelAlerts, objectiveFrom, LOOP_SPAN, LOOP_WINDOW } from "./trainer_panel";
 import { STORY_FLAGS } from "./state";
@@ -46,6 +46,18 @@ const CKPTS = "/home/lumen/pokemon/checkpoints";
 const RUNTIME = "/home/lumen/pokemon/runtime";   // wq#486: persisted notepad lives here
 
 // S2: resume selection lives in resume.ts (viability-gated, sidecar-first).
+
+// wq#1664: refuse to boot a brain whose rescue roles point at the primary model.
+// Before the port bind and before any checkpoint work, so a bad drop-in costs a
+// restart loop with a readable reason rather than a day of no-op escalations.
+// exit 2 (not 3) on purpose: 3 is the designed continue-onto-checkpoint path
+// below, and a restart cannot fix an operator's Environment= line.
+const brainCfgErrs = brainConfigErrors();
+if (brainCfgErrs.length) {
+  for (const e of brainCfgErrs) console.error(`[config] FATAL ${e}`);
+  console.error(`[config] primary=${CFG.profiles.primary.model} fallbackModels=[${CFG.brain.fallbackModels.join(", ")}]`);
+  process.exit(2);
+}
 
 const stream = new StreamServer(8871);
 const sym = new SymbolTable("/home/lumen/pokemon/roms/pokeblue.sym");

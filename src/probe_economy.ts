@@ -3,9 +3,14 @@
 // directions (fires when it should, stays silent when it should not), because
 // the defect this module exists to fix was three guards silently returning
 // null in exactly the state where they most needed to speak.
+//
+// wq#1835 added branch 0 (broke while carrying a sellable). Its red/green lives
+// in probe_sell1835 section C, next to the ROM price table the branch's numbers
+// come from — asserting the directive apart from the prices that feed it would
+// pin the sentence and not the claim.
 import { economyAdvice, cheapestInStock, affordable, PRICE, BALL, BALL_PRICE,
-         MIN_SAFE_PARTY, EconomyCtx } from "./economy";
-import { ITEM, MART_ORDER } from "./items";
+         MIN_SAFE_PARTY, ballMarts, EconomyCtx } from "./economy";
+import { ITEM, MART_ORDER, MART_CITY } from "./items";
 
 let pass = 0, fail = 0;
 function ok(name: string, cond: boolean, detail = "") {
@@ -25,6 +30,19 @@ ok("potion price is the verified Gen 1 300", PRICE[ITEM.POTION] === 300, String(
 ok("antidote price is the verified Gen 1 100", PRICE[ITEM.ANTIDOTE] === 100, String(PRICE[ITEM.ANTIDOTE]));
 ok("every corridor mart that stocks balls is priced",
    [42, 56, 67, 91].every(m => (MART_ORDER[m] ?? []).includes(ITEM.POKE_BALL) && PRICE[ITEM.POKE_BALL] > 0));
+
+// --- wq#1829: ballMarts() is derived, so it cannot go stale -----------------
+ok("MART_CITY names every MART_ORDER map (no mart renders as a bare id)",
+   Object.keys(MART_ORDER).every(m => typeof MART_CITY[Number(m)] === "string"),
+   Object.keys(MART_ORDER).filter(m => !MART_CITY[Number(m)]).join(","));
+ok("MART_CITY has no key MART_ORDER does not stock",
+   Object.keys(MART_CITY).every(m => Array.isArray(MART_ORDER[Number(m)])),
+   Object.keys(MART_CITY).filter(m => !MART_ORDER[Number(m)]).join(","));
+ok("ballMarts() lists all four corridor marts, map-id ordered",
+   ballMarts().join(" | ") === "Viridian (map42) | Pewter (map56) | Cerulean (map67) | Vermilion (map91)",
+   ballMarts().join(" | "));
+ok("ballMarts() skips a mart that does not stock balls",
+   !ballMarts().some(m => m.includes("map99")));
 
 // --- cheapestInStock / affordable ------------------------------------------
 ok("cheapest of the Cerulean stock is the antidote", cheapestInStock(MART_ORDER[67]) === 100, String(cheapestInStock(MART_ORDER[67])));
@@ -59,6 +77,9 @@ ok("mart directive silent when already stocked",
 const funded = economyAdvice(ctx({ money: 650, balls: 0, partyCount: 1 }));
 ok("funded-but-ball-less directive fires", !!funded && funded.includes("ZERO balls"), String(funded));
 ok("funded directive names a mart to route to", !!funded && /map56|map67/.test(funded), String(funded));
+// wq#1829: it used to name Pewter and Cerulean only, from memory. Now derived.
+ok("funded directive names EVERY mart that stocks balls",
+   !!funded && ballMarts().every(m => funded.includes(m)), String(funded));
 
 // --- 4. balls in hand, fragile party ---------------------------------------
 const grow = economyAdvice(ctx({ money: 50, balls: 2, partyCount: 1, leadLevel: 27 }));

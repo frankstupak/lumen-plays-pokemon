@@ -77,6 +77,17 @@ chk("a fossil is now nameable", /fossil/.test(itemLabel(ITEM.DOME_FOSSIL)), item
 chk("the bag's actual item 234 gets an honest label, not a guess", itemLabel(234) === "unknown_item_234", itemLabel(234));
 chk("backfill is idempotent", backfillItemNames(rom, sym).added === 0);
 
+// wq#1829: the live 2026-09-12 bag rendered five slots as raw ids
+// ("item234x1 ... item49x1 ... item80x1 ... item82x1") because backfill was
+// only ever called from probes. It runs at agent boot now, so assert the ids
+// that run actually held resolve to real names against THIS ROM. id49 is the
+// load-bearing one: it is the NUGGET the agent picked up on Nugget Bridge
+// while the prompt was telling it it was broke.
+for (const [id, want] of [[49, "nugget"], [80, "ether"], [82, "elixer"]] as const)
+  chk(`live bag id ${id} names as ${want} after backfill`, itemLabel(id) === want, itemLabel(id));
+chk("ids past the ItemNames table stay explicitly unknown (no invented TM number)",
+  itemLabel(245) === "unknown_item_245" && res.total === 97, itemLabel(245));
+
 console.log("\n== D. possession-claim parsing on the REAL pins ==");
 for (const p of PINS_LIVE) {
   const c = parsePossessionClaim(p);

@@ -77,6 +77,17 @@ MODE CLASSIFICATION (spec wq#671 section 1)
                         This is literally "walked into the gym, walked out
                         again, more than once" — the healing_cycle pattern the
                         spec names by name.
+    OBJECTIVE_DRIFT   — the FIGHT_LOSS_LOOP shape, around a gym whose badge is
+                        ALREADY WON (wq#1867). runtime/fight_ledger.json holds a
+                        win on that gym map recorded at a LOWER badge count than
+                        the player now holds, so nothing is refusing a gym fight
+                        here and there is no fight left to prepare for: the
+                        stall is the agent not leaving for the next objective.
+                        Returned wherever a FIGHT_LOSS_LOOP verdict would
+                        otherwise be, because "you already beat this gym" is
+                        strictly more specific than "you keep losing to it" —
+                        and it is the only one of the two that can be true after
+                        a badge lands.
     NAV_LOOP          — no gym involved, but the recent warp window collapses
                         onto a small set of maps (<=3 distinct ids) with
                         repeats — an overworld/dungeon loop, not a gym fight.
@@ -92,7 +103,7 @@ MODE CLASSIFICATION (spec wq#671 section 1)
                         direction), and no repeated-resume signature. Catch-
                         all, deliberately last in priority order.
 
-  Priority order (RESUME_DEADEND, then FIGHT_LOSS_LOOP, then
+  Priority order (RESUME_DEADEND, then FIGHT_LOSS_LOOP/OBJECTIVE_DRIFT, then
   OBJECTIVE_UNREACHABLE, then NAV_LOOP, then IDLE) exists because a
   same-checkpoint resume loop is the most specific and most actionable signal
   when present — but see MISS below.
@@ -119,6 +130,10 @@ RESUME_REPEAT_FALLBACK = 2   # what src/resume.ts holds today; parse failure mus
 RESUME_VIABLE_FALLBACK = 0.5 # ditto for VIABLE_HP_PCT
 WARP_HISTORY = f"{BASE}/runtime/warp_history.json"
 RESUME_HISTORY = f"{BASE}/runtime/resume_history.json"
+# wq#1867: src/ledger.ts's own record of how every trainer fight ended. The one
+# place in the run that knows a gym fight was WON, which is the fact that makes
+# a FIGHT_LOSS_LOOP verdict on that gym impossible.
+FIGHT_LEDGER = f"{BASE}/runtime/fight_ledger.json"
 # wq#1179: the composite-progress axis. src/novelty.ts samples P once per turn
 # into runtime/progress.json; the constants below are PARSED from that file for
 # the same reason resume_repeat_limit() parses src/resume.ts — a threshold this
@@ -143,7 +158,32 @@ WARP_OSC_WINDOW = 16      # wq#697: recent warp window for oscillation detection
 NOISE_STORM_K = 5          # wq#697: consecutive noise turns to flag NOISE_STORM
 NOISE_RE = re.compile(r"unknown tool|parse_error|tool error|no tool call", re.I)
 
-MODES = ("FIGHT_LOSS_LOOP", "WARP_OSC", "NOISE_STORM", "NAV_LOOP", "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
+MODES = ("FIGHT_LOSS_LOOP", "OBJECTIVE_DRIFT", "WARP_OSC", "NOISE_STORM", "NAV_LOOP",
+         "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
+
+# wq#1867: reach.ts's verdict when the A* cannot leave the region the agent is
+# standing in. Matched as a phrase because that is all it is — src/reach.ts
+# builds it inline, so there is no constant to read; tools/test_stuck1867.py
+# fails if the wording there moves.
+#
+# STOPS SHORT OF THE FULL SENTENCE ON PURPOSE. What this module reads is the
+# turn_summary line, and that is truncated to a fixed width (200 chars live), so
+# a phrase matched near the end of the refusal is a phrase matched on only some
+# of the renders.
+#
+# wq#1877: THE WORDING DID MOVE, and this went dark for it. wq#1870 replaced
+# "you are in a closed-off part of this map. Reachable warps: ..." with two new
+# refusals — "this map is SPLIT and (x,y) is in a part of it you cannot walk to"
+# (stuckHint) and "no opening on the S edge is reachable" (edgeStuckHint) — and
+# nothing here followed. Measured over the six newest live event files at the
+# time of the wq#1877 stall: 68 turn summaries, 0 matching the old phrase, 18
+# matching SPLIT and 9 the edge one. So the pocket clause was silent through the
+# whole 4.6h freeze it exists for. All three shapes are matched now; the old one
+# stays for fixtures written against it.
+CLOSED_OFF_RE = re.compile(
+    r"closed-off part of this"
+    r"|this map is split"
+    r"|no opening on the \S+ edge", re.I)
 
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -332,6 +372,64 @@ def is_heal_or_city(mid, names):
     return "pokecenter" in label or "pokémon center" in label or label.endswith("city") or label.endswith("town")
 
 
+def town_of(label):
+    """The town a ROM map label belongs to — its first word.
+
+    "Cerulean Gym", "Cerulean City", "Cerulean Pokecenter" and "Cerulean Mart"
+    all answer "cerulean". Every one of the eight Gen 1 gyms is labelled
+    "<Town> Gym" and shares that first word with the hub it stands in, because
+    src/names.ts derives both from the same ROM map headers. That is the only
+    adjacency this module needs — which gym belongs to the hub a loop collapsed
+    onto — and it needs no map graph to answer it.
+    """
+    parts = (label or "").split()
+    return parts[0].lower() if parts else ""
+
+
+def cleared_gyms(records, badges, names):
+    """{gym map id: label} for every gym whose badge is already in the bag.
+
+    wq#1867: a gym counts as CLEARED when src/ledger.ts's fight ledger holds a
+    WIN on that map recorded at a LOWER badge count than the player now holds —
+    a fight was won there and the badge total rose after it. That is the test
+    that survives both ways the simpler ones break:
+
+      * "the last outcome on this map is a win" credits a win over a gym's
+        JUNIOR trainer while the leader is still unbeaten. The badge count does
+        not move for those, so this test stays silent on them.
+      * "the freeze began with badges N->N+1" is erased by the next partial
+        tick: advances() restarts the freeze clock on ANY of the three counters
+        rising, which rewrites lastAdvanceWhy and would silently un-clear the
+        gym mid-stall.
+
+    A checkpoint restore that rolls badges back below the record stops clearing
+    the gym, which is right — the badge is not in the bag any more. A missing,
+    empty or (past KEEP_RECORDS=200) rotated-out ledger clears nothing, so every
+    caller degrades to exactly the behaviour it had before this existed.
+    """
+    out = {}
+    for r in records or []:
+        if not isinstance(r, dict) or r.get("outcome") != "win":
+            continue
+        mid = r.get("map")
+        if mid is None or not is_gym(mid, names):
+            continue
+        if (r.get("badges") or 0) < (badges or 0):
+            out[mid] = map_label(mid, names)
+    return out
+
+
+def closed_off_turns(turn_summaries):
+    """How many recent turns ended in reach.ts's closed-off-region verdict.
+
+    Not a mode of its own: it is the local half of why an OBJECTIVE_DRIFT pin
+    must not simply say "walk south". The agent standing in a pocket has already
+    been told by the harness that goto cannot leave it, so a pin repeating the
+    instruction that just failed 26 times is the wq#1091 footgun all over again.
+    """
+    return sum(1 for line in (turn_summaries or []) if CLOSED_OFF_RE.search(line or ""))
+
+
 def load_sidecars(base=BASE):
     out = []
     for p in glob.glob(f"{base}/checkpoints/**/*.json", recursive=True):
@@ -434,7 +532,22 @@ def detect_noise_storm(turn_summaries, k=NOISE_STORM_K):
 
 
 def load_recent_turn_summaries(base=BASE, n=50):
-    """Load recent turn_summary lines from newest event file."""
+    """Load recent turn_summary lines from the two newest event files.
+
+    wq#1867: this read the wrong shape and had returned NOTHING since wq#697
+    shipped. src/events.ts emits `{ t, ...data, kind }` — flat, envelope last
+    (wq#522) — so a turn summary on disk is {"t":..,"line":"T49 ..","kind":
+    "turn_summary"}. This asked for ev["k"] and ev["d"]["line"], a nesting no
+    writer in this repo has ever produced (every other reader — turncost_487,
+    backtest_520, verify_489 — already uses `kind` + a flat `line`). The cost
+    was silent: NOISE_STORM is the only consumer this module had, its detector
+    takes an empty list and reports a streak of 0, so the mode simply never
+    fired on live data. Caught because wq#1867's closed-off-pocket clause reads
+    the same lines and came up empty against a run that was emitting 33 of them.
+
+    The old shape is still accepted so that any fixture written against it keeps
+    working; nothing on disk uses it.
+    """
     events_dir = os.path.join(base, "events")
     try:
         fs = [os.path.join(events_dir, f) for f in os.listdir(events_dir)
@@ -451,13 +564,37 @@ def load_recent_turn_summaries(base=BASE, n=50):
                 for ln in fh:
                     try:
                         ev = json.loads(ln)
-                        if ev.get("k") == "turn_summary":
-                            lines.append(ev.get("d", {}).get("line", ""))
+                        if (ev.get("kind") or ev.get("k")) == "turn_summary":
+                            lines.append(ev.get("line")
+                                         or (ev.get("d") or {}).get("line", ""))
                     except json.JSONDecodeError:
                         continue
         except OSError:
             continue
     return lines[-n:]
+
+
+def _hub_anchor(window, names, town=None):
+    """The hub map a stalled loop is orbiting RIGHT NOW: the last city/town warp
+    in the window, falling back to the last heal/hub map. Optionally restricted
+    to one town.
+
+    wq#1874: recency, never frequency. The old readings took
+    Counter(cities).most_common(1) over the whole 64-warp window, which is a
+    majority vote between towns whenever the window spans two of them — and the
+    ordinary shape of a stall is "just arrived somewhere and was immediately
+    gated", where the town just LEFT still holds more warps than the town the
+    run is stuck in. Counting warps then anchors the incident on the town the
+    run has already finished with. How recently the run warped into a town is
+    what says where it is; how often it did says only how long it was there.
+    """
+    scope = [m for m in window
+             if town is None or town_of(map_label(m, names)) == town]
+    cities = [m for m in scope if map_label(m, names).lower().endswith(("city", "town"))]
+    if cities:
+        return cities[-1]
+    heals = [m for m in scope if is_heal_or_city(m, names)]
+    return heals[-1] if heals else None
 
 
 def _readiness_stall(window, names):
@@ -481,14 +618,14 @@ def _readiness_stall(window, names):
     # why this used to misclassify as WARP_OSC/NAV_LOOP and get prescribed a
     # map ban. Banning these maps can never help: they are the mandatory hub +
     # only heal point (the live WARP_OSC ban even targeted Route 25, the grind
-    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the
-    # most-frequent city/town hub — a STABLE location that collapses the two
+    # map). Route to FIGHT_LOSS_LOOP (grind remedy) and anchor on the city/town
+    # hub the loop is orbiting now (wq#1874: the most RECENT one, not the most
+    # frequent — a window that spans two towns must not anchor the stall on the
+    # one the run has already left) — a STABLE location that collapses the two
     # transient WARP_OSC endpoints into one incident / one ticket.
     heal_city = [m for m in window if is_heal_or_city(m, names)]
     if not gym_hits and len(heal_city) >= max(4, int(0.6 * len(window))):
-        cities = [m for m in heal_city
-                  if map_label(m, names).lower().endswith(("city", "town"))]
-        hub = Counter(cities or heal_city).most_common(1)[0][0]
+        hub = _hub_anchor(window, names) or heal_city[-1]
         labels = ", ".join(sorted({map_label(m, names) for m in heal_city}))
         return "FIGHT_LOSS_LOOP", (
             f"stalled loop collapses onto heal/hub maps ({labels}) with no gym warp "
@@ -515,7 +652,64 @@ def _readiness_stall(window, names):
     return None
 
 
-def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summaries=None):
+def _drift_diagnosis(window, names, cleared, badges, next_milestone):
+    """wq#1867: the fight-loss SHAPE around a gym that is already beaten.
+
+    Returns the same (mode, evidence, location) triple as every other branch, or
+    None when no cleared gym belongs to this loop. The anchor is the town the
+    loop collapsed onto, never the gym: the gym's warps age out of the window
+    long before the stall ends (a win leaves exactly two, the way in and the way
+    out), and an anchor that moves mid-stall splits one incident across two
+    dedup keys and two K budgets.
+    """
+    if not window or not cleared:
+        return None
+    # wq#1872: the town fallback is anchored to the HUB's town, not to any town
+    # appearing anywhere in the window. A 64-warp window routinely spans two
+    # towns — the one just cleared and the one the run has moved on to — and
+    # matching "somewhere in the window" let a stale warp from the cleared town
+    # convert a genuine readiness-gate stall at the NEXT, unbeaten gym into
+    # "that gym is already beaten". That is the inverse of the wq#1867 failure
+    # (false all-clear instead of false grind order) and just as wrong: the pin
+    # named the hub's town while the ledger evidence came from another one.
+    # Only the gym standing IN the town the loop collapsed onto can be the gym
+    # this loop is orbiting.
+    #
+    # wq#1874: and WHICH town that is is a question about now, not about the
+    # window's arithmetic. Picking the hub by Counter(...).most_common re-opened
+    # the same false all-clear one layer down, gated on warp COUNTS instead of
+    # warp PRESENCE: a run that just arrived in Vermilion and was gated at its
+    # unbeaten gym still carries more Cerulean warps than Vermilion ones, so the
+    # majority vote named Cerulean the hub and the Cascade Badge cleared a stall
+    # happening two towns away. The cleared gym the loop actually warped into
+    # settles it outright when there is one; with no gym warp at all — the
+    # readiness-gate shape, where the entry refusal keeps the gym out of the
+    # history — the last town warped into is the only honest answer.
+    seen = [m for m in window if m in cleared]
+    if seen:
+        # the cleared gym the loop orbits: the one warped into most often, and
+        # the most recent of those on a tie.
+        gym_id = max(reversed(seen), key=seen.count)
+        town = town_of(cleared[gym_id])
+    else:
+        town = town_of(map_label(_hub_anchor(window, names) or window[-1], names))
+        hit = [m for m in sorted(cleared) if town and town_of(cleared[m]) == town]
+        if not hit:
+            return None
+        gym_id = hit[0]
+    hub = _hub_anchor(window, names, town) or window[-1]
+    goal = (f"the next milestone the frontier engine names ({next_milestone})"
+            if next_milestone else "the goal its own ROUTE line names")
+    return "OBJECTIVE_DRIFT", (
+        f"the loop orbits {map_label(hub, names)} around {map_label(gym_id, names)}, whose "
+        f"badge is ALREADY WON — the fight ledger holds a win on that map at a lower badge "
+        f"count than the {badges} the player now holds. Nothing is refusing a gym fight "
+        f"here and there is no fight left to prepare for: the stall is not leaving for "
+        f"{goal}"), hub
+
+
+def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summaries=None,
+                  cleared=None, badges=0, next_milestone=None):
     """Returns (mode, evidence_str, location_id). `warps` newest-last, same
     shape as runtime/warp_history.json's "warps" list. `resume_picks`
     newest-last list of resumedFrom checkpoint filenames, same shape as
@@ -549,10 +743,19 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
     if not window:
         return "IDLE", "no warps recorded in the detection window — not moving map-to-map at all", None
 
+    cleared = cleared or {}
     gym_hits = {m: window.count(m) for m in set(window) if is_gym(m, names)}
     heal_hits = {m: window.count(m) for m in set(window) if is_heal_or_city(m, names)}
-    fighting_gym = {m: c for m, c in gym_hits.items() if c >= 2}
-    if fighting_gym and any(c >= 2 for c in heal_hits.values()):
+    bouncing = {m: c for m, c in gym_hits.items() if c >= 2}
+    healing = any(c >= 2 for c in heal_hits.values())
+    # wq#1867: a gym whose badge is already won is not a fight the agent can be
+    # stuck LOSING, and its warps outlive the win by a long way — the two map65
+    # warps that held this verdict through three K attempts were the winning
+    # visit's own way in and out, ~45 warps stale by the time it escalated. Left
+    # in `fighting_gym` they re-diagnose every post-badge orbit as the fight that
+    # was just won, and prescribe grinding for it.
+    fighting_gym = {m: c for m, c in bouncing.items() if m not in cleared}
+    if fighting_gym and healing:
         gym_id = max(fighting_gym, key=fighting_gym.get)
         heal_id = max(heal_hits, key=heal_hits.get)
         return "FIGHT_LOSS_LOOP", (
@@ -560,7 +763,17 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
             f"({fighting_gym[gym_id]}x) <-> {map_label(heal_id, names)} "
             f"({heal_hits[heal_id]}x) — healing-cycle pattern, not travel"), gym_id
 
+    if bouncing and healing:
+        # The same shape with every bouncing gym cleared. Diagnosed here rather
+        # than left to fall through, because the modes downstream of this point
+        # prescribe map BANS, and the maps on offer are the town hub and its only
+        # heal point (wq#1081's lesson: banning those can never help).
+        drift = _drift_diagnosis(window, names, cleared, badges, next_milestone)
+        if drift:
+            return drift
+
     stall = _readiness_stall(window, names)
+    scope = window
     if stall is None:
         # wq#1119: ask again at the tighter, more recent scope WARP_OSC uses.
         # Both diagnoses above test the SHAPE of a loop (<=3 distinct maps, or
@@ -572,9 +785,15 @@ def classify_mode(warps, resume_picks, names, path_exhausted=False, turn_summari
         # scope left the deferral wq#1081/#1084 built here half-done: the real
         # mode stayed hidden and RESUME_DEADEND below went on masking it,
         # which is the exact failure that deferral existed to stop.
-        stall = _readiness_stall(window[-WARP_OSC_WINDOW:], names)
+        scope = window[-WARP_OSC_WINDOW:]
+        stall = _readiness_stall(scope, names)
     if stall:
-        return stall
+        # wq#1867: both diagnoses in _readiness_stall name a readiness gate
+        # refusing a GYM ENTRY. Once that gym's badge is won there is no such
+        # gate — guidance.ts's refusal is scoped to the unbeaten fight — so the
+        # same loop shape is drift, diagnosed on the SAME slice that fired so the
+        # anchor (and the incident key) matches the branch above.
+        return _drift_diagnosis(scope, names, cleared, badges, next_milestone) or stall
 
     # wq#1081/#1084: deferred RESUME_DEADEND — the harness keeps resuming the
     # same checkpoint and the warps DON'T show a fight-readiness stall, so a
@@ -715,15 +934,29 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
         if names is None:
             names = load_map_names()
         path_exhausted = False
+        next_milestone = None
         if lpp_frontier is not None:
             try:
                 fr = lpp_frontier.compute(base=base, now_ms=now_ms, live=False)
                 path_exhausted = bool(fr.get("pathExhausted"))
+                # wq#1867: the frontier already knows where the run goes next
+                # ("Route 5" while this stall ran). Carried into the state so the
+                # pin names the objective the engine picked instead of a target
+                # the supervisor invented — the read-don't-retype rule, applied
+                # to a destination rather than a threshold.
+                next_milestone = fr.get("nextMilestone")
             except Exception:
                 path_exhausted = False
+        summaries = load_recent_turn_summaries(base)
+        ledger = (load_json(FIGHT_LEDGER, {}) or {}).get("records", [])
+        cleared = cleared_gyms(ledger, st.get("badges"), names)
+        st["clearedGyms"] = {str(m): lbl for m, lbl in sorted(cleared.items())}
+        st["nextMilestone"] = next_milestone
+        st["closedOffTurns"] = closed_off_turns(summaries)
         mode, evidence, location_id = classify_mode(
             warps, resume_picks, names, path_exhausted,
-            turn_summaries=load_recent_turn_summaries(base))
+            turn_summaries=summaries, cleared=cleared,
+            badges=st.get("badges") or 0, next_milestone=next_milestone)
         st["mode"] = mode
         # A dP-triggered stall names the signal that fired FIRST, then the mode
         # evidence — a reader (and wq#673's ticket body) must be able to tell

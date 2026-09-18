@@ -25,6 +25,10 @@
 // metrics.ts followed (wq#503): measure first, act later, with the measurement
 // on disk to argue from.
 //
+// wq#1731 is the "act later": src/explore.ts reads the sample window back
+// through recent() to trigger the exploration override. It never writes here,
+// so this module's contract (and lpp_stuck_mode.py's view of it) is unchanged.
+//
 // WHAT A "TILE" IS HERE, PRECISELY. One sample per turn, taken at the turn's
 // END position (the same `after` read that writes the turn summary), keyed
 // (map,x,y). Steps taken INSIDE a nav.goto are not counted — nav_trace (wq#542)
@@ -239,6 +243,9 @@ export class NoveltyTracker {
 
   uniqueTiles(): number { return this.tiles.size; }
   recent(): ProgressSample[] { return this.samples.slice(); }
+  /** The newest sample's seq — monotonic across restarts, unlike Agent.turn, so
+   *  it is what any budget that must survive one counts in (wq#1839). */
+  lastSeq(): number { return this.seq; }
   delta(windowTurns = this.window): DeltaP { return deltaP(this.samples, windowTurns); }
 
   /** Record one turn. Returns the sample; emits a `progress` event carrying the

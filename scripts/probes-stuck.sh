@@ -3,9 +3,11 @@
 #
 # tools/lpp_stuck_*.py and their probes are Python, and the repo had no
 # entrypoint that ran them: probes-main.sh and probes-pure.sh are both tsx-only,
-# so tools/test_stuck697.py and tools/test_stuck1118.py have never been part of
-# any `npm test` surface. Every supervisor change since wq#697 was therefore
-# verified by hand or not at all. This script is that missing surface.
+# so every tools/test_stuck*.py — 697, 1118, and the 1826/1845/1846/1867 set
+# written since — has never been part of any `npm test` surface. Every
+# supervisor change since wq#697 was therefore verified by hand or not at all.
+# This script is that missing surface, and it runs ALL of them: a probe with no
+# runner is a probe that silently rots.
 #
 # Read-only: each probe imports lpp_stuck_mode/lpp_stuck_intervene and asserts
 # against synthetic state, or reads runtime/*.json. None of them writes to
@@ -28,7 +30,8 @@ for a in "$@"; do
   esac
 done
 
-PROBES=(test_stuck697 test_stuck1118 test_stuck1563)
+PROBES=(test_stuck697 test_stuck1118 test_stuck1563
+        test_stuck1826 test_stuck1845 test_stuck1846 test_stuck1867)
 [ "${#selected[@]}" -gt 0 ] && PROBES=("${selected[@]}")
 
 failed=()

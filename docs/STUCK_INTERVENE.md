@@ -53,18 +53,20 @@ already-firing valve, not a repair to the valve itself.
 | Mode | Action | Notes |
 |---|---|---|
 | `FIGHT_LOSS_LOOP` | `grind_sub_objective` | pins the harness's own gym-entry gate — level, potions, roster, type counter — read from `src/guidance.ts` (wq#1091) |
+| `OBJECTIVE_DRIFT` | `advance_to_next_objective` | wq#1867; the same loop shape with the badge already won. Pins no preparation at all — the blocker is gone and the only thing left is to leave. Names the frontier engine's `nextMilestone` and defers the leg to `route.ts`'s own ROUTE line rather than inventing a target. wq#1877: while the turn summaries say the player is pocketed, it STOPS ordering that leg (it cannot be started from where they stand) and defers to the harness's own refusal, which now names the one door out of the region, the NPC on it, and where the game clears that NPC. `gotoBan: []`: the maps on offer are the town hub and its only heal point |
 | `NAV_LOOP` | `checkpoint_restore_then_goto_ban` | pins a goto-ban + fallback-checkpoint instruction |
 | `OBJECTIVE_UNREACHABLE` | `replan_verify_map_data` | pins a re-verify instruction against the frontier's `pathExhausted` milestone |
 | `RESUME_DEADEND` | `advance_past_boot_state` | pins the three conditions `src/resume.ts`'s picker applies to a replacement save — newer than the boot state, not written on a warp tile, at or above `VIABLE_HP_PCT` (read, not retyped). The old `alternate_checkpoint` pin asked the brain to resume from a different checkpoint: it does not choose the save, and the harness's repeat guard had already tried that and found nothing to take (wq#1118) |
-| `WARP_OSC` | `checkpoint_restore_then_goto_ban` | wq#697; bans the two maps of an A↔B bounce — see the edge rule below |
+| `WARP_OSC` | `checkpoint_restore_then_goto_ban` | wq#697; bans the **far side** of an A↔B bounce — see the edge rules below (wq#1119, wq#1826) |
 | `NOISE_STORM` | `history_clear_restart` | wq#697; clears a history poisoned by consecutive invalid tool calls |
 | `IDLE` | *(none)* | the spec defines no IDLE action; guessing one would be exactly the unfounded intervention this module exists to avoid |
 
 ## Bounding and resolution
 
 Each `(mode, locationId)` — the same key wq#671 exposes as `modeLocation` —
-gets up to **K=3** logged attempts. A 4th `decide()` call for the same open
-key returns `exhausted: true` and appends **nothing** to the log; that is the
+gets up to **K=3** logged attempts **per stall episode** (wq#1846). A 4th
+`decide()` call for the same open key returns `exhausted: true` and appends
+**nothing** to the log; that is the
 signal wq#673 uses to file (or append to) its one ticket and stop trying
 locally. An attempt is only eligible to close **once the classifier stops
 naming its key as the live stall** (wq#1162). It then resolves as `"advanced"`
@@ -96,6 +98,59 @@ current counters against the incident's baseline and would `wq done` the
 ticket on a mid-stall tick — retracting an escalation for a stall the
 classifier reported live in that very call. It now skips the key that is
 stalled right now, and resolves it the moment the stall genuinely clears.
+
+### The budget belongs to an episode, not to the key forever (wq#1846)
+
+`open_attempt_count()` counted every attempt ever logged for a key whose outcome
+was not `advanced`, with no window of any kind, while this document and the
+module header both described the budget as counted "since the key's last
+resolution". So a key that spent K once was barred from issuing a numbered
+attempt again, permanently. `FIGHT_LOSS_LOOP@65` spent its three on 2026-08-18
+— all closed `superseded` when a checkpoint restore rolled the save back
+(eventFlags 43→39) — and the unrelated freeze that began 2026-09-02 got **zero**
+interventions across 246h: `decide()` answered `exhausted` on its first tick and
+every tick after. wq#1845 fixed the downstream half, so the key is no longer
+silent; this is the half that lets it try again.
+
+The window is a **stall episode**: one continuous run of the key being the live
+stall. It ends when the key stops being the live stall for longer than the
+classifier's own freeze clock can account for —
+`EPISODE_GAP_WINDOWS`(=12) × the `windowHours` the state was computed with, so
+24h at today's 2h window. The obvious alternative, counting attempts newer than
+`state.lastAdvanceAt`, re-opens wq#1162 exactly: `advances()` restarts the freeze
+clock on *any* of `storyScore`/`badges`/`eventFlags` rising, so a partial tick
+would refund K and bring the ladder back. A gap cannot be manufactured that way —
+after a partial tick the same key re-freezes within one window plus the
+supervisor's ~30min poll. The live ladder's own re-freezes were 9.2h and 7.7h
+apart (`runtime/intervention_log.json`, 2026-08-28T22:53 → 08-29T08:05 → 16:14),
+all comfortably inside one 24h episode; the boundary this fix exists to cross was
+15 days wide.
+
+Liveness is heartbeated into `log["keys"][key]` on **every** `decide()` tick,
+including the exhausted ones that deliberately append no attempt — wq#673 keys
+its one ticket off that invariant, so the heartbeat lives outside
+`log["attempts"]` and leaves it untouched. Without it, an unbroken freeze on an
+exhausted key would look, from the attempt timestamps alone, exactly like a key
+that had been quiet for a month, and K would be refunded to a stall that never
+ended. New entries also carry an `episode` number, forensic only: the budget is
+scoped by the episode's start *timestamp*, because entries written before this
+shipped carry no episode number at all.
+
+The heartbeat is what the boundary is measured against, so stopping
+`lumen-lpp-stuck-supervisor.timer` for more than one gap (24h) and restarting it
+mid-freeze starts a new episode on a stall that never ended, and refunds K once.
+That is the intended reading rather than a hole to plug: nothing was intervening
+for those 24h either, so the budget on the other side is a budget for a stall
+nobody has tried anything against yet. The same logic covers a log rolled back
+or hand-edited — `log["keys"]` is the liveness record, and a key missing from it
+falls back to what its attempt timestamps alone can prove (see
+`_attempt_cluster_start`), which is how the 25-day-old `FIGHT_LOSS_LOOP@65`
+budget refunds on the first tick after this ships — the live log predates the
+`keys` block, so that key has no heartbeat to contradict its timestamps.
+
+Probe: `python3 tools/test_stuck1846.py` — 7 sections, A-G, holding both shapes
+at once: the 25-day-old spent key refunds (once, then re-exhausts at K), and the
+0.96h/2h re-freeze on a live key does not.
 
 ## A pin the agent obeys must agree with the gate that refuses it (wq#1091)
 
@@ -168,6 +223,55 @@ Live warp history at the time of the wq#1119 ticket reclassifies from
 whose pin already says, verbatim, to walk into the grass instead of re-entering
 the doorway, which is the behaviour the trace shows.
 
+## The ban has to be the edge, and only one side of it (wq#1826)
+
+wq#1119 taught the classifier to demand a real A↔B edge before prescribing this
+mode. It left the other half undone: the intervention layer never used that
+edge. `_resolve_loop_maps()` reads the **64-warp** window, and when that window
+holds more than three maps it falls back to its two most *frequent* ids — which
+need not be the oscillation's endpoints at all.
+
+Live, on `WARP_OSC@36` frozen 242.7h (2026-09-02 → 09-12, `storyScore` 10
+throughout), they were not. The directive said, in the same file:
+
+- evidence — `4 alternations between Route 25 <-> Bills House in last 16 warps`
+- `gotoBan` — `[3, 36]`, Cerulean City and Route 25
+
+So the harness banned the town it must heal in and fight Misty in, never banned
+map 88 — the doorway it was actually re-entering — and the bounce ran through
+all three K attempts, each logged `superseded`. Two rules now, both in
+`_resolve_osc_ban()`:
+
+1. **The ban is the detected edge.** Resolved from `detect_warp_osc` over the
+   same slice the classifier used, so a directive's ban can never contradict its
+   own evidence. If the history has drifted so the edge's near side is no longer
+   the incident's location, nothing is banned — that mismatch is the wq#1119
+   scope bug in a new place.
+2. **One side, never both.** The ban is a hard `enter_warp` refusal
+   (`supervisorBans`, `src/agent.ts:802`) that lifts only on story advance, so
+   banning both endpoints seals the agent inside whichever one it stands in:
+   from inside Bills House the only exit warp lands on Route 25 — refused — and
+   no story can advance from in there to lift it. Banning the far side alone
+   breaks the loop and leaves the agent free to walk. A far side that is the
+   town/heal hub is dropped rather than banned (the wq#1081/#1084 rule), and the
+   directive stands on its pin alone.
+
+### K counts tries of the *current* remedy (`rev`)
+
+A corrected prescription that can never be issued is not a fix. WARP_OSC@36 had
+spent all three attempts on the broken ban, and — since the classifier still
+names that key as the live stall — those entries can never close as `advanced`,
+so `decide()` answers `exhausted` for it forever. Each prescription now carries
+a `rev` (default 1), every log entry is stamped with the rev it tried, and
+`open_attempt_count()` counts only the current rev. Bumping a `rev` is the
+deliberate, documented act of refunding K **for that mode alone**: WARP_OSC is
+at rev 2, every other mode's spent budget is untouched, and the old entries stay
+in the log as history. The live log's three rev-1 attempts now read as history,
+and a `--dry-run` against live state issues attempt 1/3 banning `[88]`.
+
+Probe: `python3 tools/test_stuck1826.py` — 10 sections, A-J, including the live
+64-warp window verbatim.
+
 ## A pin must also be addressed to an actor that can act (wq#1118)
 
 `RESUME_DEADEND@None` is the wq#1091 lesson one step further out. Its
@@ -230,10 +334,38 @@ of resetting, logs exactly K entries, credits no win while the key is still
 stalled — and still closes all three as `"advanced"` (refunding K) the moment
 the stall clears, or as `"superseded"` if it clears with nothing moved.
 
+`python3 tools/test_stuck1846.py` — 7 sections. The live `FIGHT_LOSS_LOOP@65`
+and `WARP_OSC@36` log entries are replayed verbatim (timestamps included):
+the 599h-old spent budget refunds and then re-exhausts at K, the 0.96h-old one
+does not; the live ladder's 9.2h/7.7h re-freeze gaps and a 23.9h gap all stay
+inside one episode while 24.1h opens a new one; the boundary scales with
+`windowHours` rather than being a hardcoded day; 25 days of polling an *unbroken*
+freeze (1200 exhausted ticks) refunds nothing while 25 days of silence does; the
+heartbeat stays out of `log["attempts"]`; a prior episode's orphaned open attempt
+gets closed; and wq#1826's `rev` refund still composes inside an episode.
+
+`python3 tools/test_stuck1867.py` — sections G-I cover this module: the
+`OBJECTIVE_DRIFT` directive is `advance_to_next_objective` with `gotoBan: []`,
+its pin names the frontier's milestone and the town it is orbiting, no grind
+text survives into it, and it deliberately trips neither `PIN_CATCH_RE` nor
+`PIN_GRASS_RE` in `src/pin.ts` (both regex literals are re-read from that file,
+so a change there fails the test rather than the run). The closed-off-pocket
+sentence appears only when `closedOffTurns` is non-zero and leaves no dangling
+space when it does not; wq#1877 adds that it prescribes no door of its own, and
+that `closed_off_turns()` is read against the phrases `src/reach.ts` emits
+TODAY — that check was red on main, because wq#1870 rewrote both refusals and
+the counter kept looking for the sentence they replaced. The EXHAUSTED directive still renders for every
+mode — that last one now shares one `_fmt_extras()` with the attempt path, so
+a template that names a new field can no longer `KeyError` only on the
+terminal path.
+
 ## Rollback
 
 Deleting `runtime/intervention_log.json` resets every K counter to zero —
 safe, no live consumer depends on its history yet (see "what this does not
-do yet"). Deleting `runtime/supervisor_directive.json` costs nothing; it is
+do yet"). The wq#1846 `keys` block inside it is additive and optional: a log
+written before it existed loads unchanged, and deleting just that block costs
+only the liveness heartbeat, after which the episode falls back to what the
+attempt timestamps say. Deleting `runtime/supervisor_directive.json` costs nothing; it is
 overwritten in full on every intervening call. Nothing in this module
 touches the game, the service, checkpoints, `events/`, or the work queue.

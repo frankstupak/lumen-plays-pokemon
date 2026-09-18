@@ -10,8 +10,9 @@
 # NOT on GitHub CI — scripts/probes-pure.sh is the CI-safe subset.
 #
 # Excluded on purpose:
-#   probe_battle587, probe_catch559 — real wild-encounter RNG (skip-capable);
-#     run them manually around battle/item work.
+#   probe_battle587, probe_catch559, probe_battlebag1663 — real
+#     wild-encounter RNG (skip-capable); run them manually around
+#     battle/item work.
 #   probe_diag — a diagnostic harness, not a test.
 set -u
 cd "$(dirname "$0")/.."
@@ -36,6 +37,7 @@ PROBES=(
   probe_scope606
   probe_menu620
   probe_items607
+  probe_bagnames1829
   probe_cerulean638
   probe_vision621
   probe_hidden622
@@ -45,10 +47,19 @@ PROBES=(
   probe_mistygate674
   probe_warprace699
   probe_braincfg
+  probe_braincfg1664
+  probe_bootguard1664
   probe_brain907
   probe_novelty1179
+  probe_explore1731
   probe_calc1181
   probe_ledger1181
+  probe_grass1565
+  probe_sell1835
+  probe_pin1840
+  probe_route1849
+  probe_pocket1870
+  probe_guard1877
 )
 
 failed=()

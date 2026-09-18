@@ -55,6 +55,27 @@ export class SymbolTable {
     return this.rev!.get((bank << 16) | addr) ?? [];
   }
 
+  /** wq#1877: the label a ROM address falls inside — the last one defined at or
+   *  before it in the same bank. Names the routine a scanned byte pattern lives
+   *  in (`BillsHouseBillSSTicketText+43`), which is how a found call site gets
+   *  reported as a PLACE rather than as a hex address. */
+  labelBefore(bank: number, addr: number): { name: string; addr: number } | null {
+    this.index();
+    const list = this.ordered!.get(bank);
+    if (!list) return null;
+    let best: number | null = null;
+    for (const a of list) {
+      if (a > addr) break;
+      best = a;
+    }
+    if (best === null) return null;
+    const names = this.labelsAt(bank, best);
+    if (!names.length) return null;
+    // pokered stacks labels at one address; a top-level one names the routine,
+    // a `.local` one names a branch inside whatever came before it.
+    return { name: names.find(n => !n.includes(".")) ?? names[0], addr: best };
+  }
+
   /** Address of the next symbol after `addr` in `bank`. Table lengths are
    *  derived from this, so a ROM whose layout moved throws instead of
    *  silently reading past the end of a table. */

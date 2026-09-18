@@ -10,7 +10,9 @@
 //
 // SKIPS (green) where Minerva is not installed: CI runners have no
 // /home/lumen/minerva, and a probe that failed there would only teach people to
-// ignore it.
+// ignore it. Installed-but-unusable is the opposite case and stays RED (wq#1830):
+// there it is the LIVE persona path that is broken, and persona.ts answers a dead
+// store by bumping a counter nobody reads, so this probe is the only one shouting.
 import { PersonaMemory } from "./persona";
 import { LumenStateStore } from "./persona_store";
 import { CFG } from "./config";
@@ -27,6 +29,17 @@ const ok = (name: string, cond: boolean, note = "") => {
 
 const LUMEN_STATE_PY = process.env.LPP_LUMEN_STATE_PY ?? "/home/lumen/minerva/lumen_state.py";
 
+/** One cheap adapter call before the first assertion, so a store that is present
+ *  but cannot be loaded reports the reason on one line instead of exploding out
+ *  of the tenth assertion as an unhandled stack trace (wq#1830: lumen_state.py
+ *  imported by file location could not find its sibling minerva_audit). */
+function adapterFailure(db: string): string | null {
+  const r = spawnSync(CFG.persona.python,
+    [CFG.persona.adapter, "current", "lpp-probe-preflight", "--db", db], { encoding: "utf8" });
+  if (r.status === 0) return null;
+  return String(r.stderr ?? "").trim().split("\n")[0] || `exit ${String(r.status)}`;
+}
+
 async function main(): Promise<number> {
   if (!existsSync(CFG.persona.adapter) || !existsSync(LUMEN_STATE_PY)) {
     console.log(`SKIP no lumen_state at ${LUMEN_STATE_PY} — nothing to integrate against`);
@@ -38,6 +51,13 @@ async function main(): Promise<number> {
   const db = join(dir, "state.db");
   const subject = "lpp-probe-persona";
   const store = () => new LumenStateStore({ subject, db, regen: "" });
+
+  const broken = adapterFailure(db);
+  if (broken) {
+    ok("lumen_state is loadable — the live persona path depends on it", false, broken);
+    console.log(`\n${pass} PASS / ${fail} FAIL`);
+    return 1;
+  }
 
   // ── a fact stated on one surface, recalled on another, out of the real store ──
   const streamer = new PersonaMemory();
@@ -113,4 +133,9 @@ async function main(): Promise<number> {
   return fail ? 1 : 0;
 }
 
-main().then(code => process.exit(code));
+main().then(code => process.exit(code)).catch(e => {
+  // A throw here is a result too — print it as one, so probes-pure.sh's tail
+  // shows the diagnosis rather than five lines of node stack.
+  console.log(`FAIL probe threw :: ${String(e?.message ?? e).slice(0, 200)}`);
+  process.exit(1);
+});

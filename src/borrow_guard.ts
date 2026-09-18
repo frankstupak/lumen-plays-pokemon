@@ -18,7 +18,7 @@ import { EventBus } from "./events";
 import { NotepadSanitizer } from "./notepad";
 
 const MARKER = /\[\[\/?[A-Z0-9_]+\]\]/;
-const TOOL_CALL = /\b(goto|enter_warp|leave_edge|interact|talk|choose|battle_move|flee|press|use_item|buy_item|heal_at_center|note)\s*\([^)]*\)/i;
+const TOOL_CALL = /\b(goto|enter_warp|leave_edge|interact|talk|choose|battle_move|flee|press|use_item|buy_item|sell_item|heal_at_center|note)\s*\([^)]*\)/i;
 const FENCE = /```|~~~/;
 const CODE_KW = /\b(function|const|let|var|=>|import\s|export\s|for\s*\(|while\s*\()/;
 

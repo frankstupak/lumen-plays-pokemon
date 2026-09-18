@@ -6,7 +6,7 @@ import { join } from "path";
 import { Emulator, KEYS, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
-import { MapModel, Warp } from "./map";
+import { MapModel, Warp, grassLine } from "./map";
 import { mtMoonLeg, MT_MOON_MAPS } from "./mtmoon_route";
 import { corridorPhase } from "./phase";
 import { Navigator, astar } from "./nav";
@@ -23,7 +23,8 @@ import { Notepad } from "./notepad";
 import { PersonaMemory } from "./persona";              // wq#1176
 import { moveLabel, MOVES, pickBestMove } from "./moves";
 import { GameState } from "./state";
-import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER } from "./items";
+import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER,
+         backfillItemNames, backfillItemPrices } from "./items";
 import { Heal, knownCenter } from "./heal";
 import { economyAdvice, BALL_PRICE } from "./economy";  // wq#516
 import { decodeTrainers, pickEngageTarget, engageAdvice } from "./trainers";  // wq#528
@@ -36,13 +37,19 @@ import { Winnability } from "./calc";                              // wq#1181 it
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
+import { ExplorationOverride, overrideLogFile, progressBlock } from "./explore";   // wq#1731
+import { ExclusionGate, exclusionFile, exclusionLift, exclusionSuspended } from "./exclusion";   // wq#1828
+import { pinExpiry, renderPin, type PinnedDirective } from "./pin";   // wq#1840
 import { assess as assessOscillation, historyFile as oscHistoryFile,
          loadHistory as loadOscHistory, saveHistory as saveOscHistory } from "./oscillation";  // wq#517
-import { warpViews, renderWarps, stuckHint, WarpView } from "./reach";   // wq#538
+import { warpViews, renderWarps, stuckHint, edgeStuckHint, reachableEdges, WarpView, EdgeDir,
+         type BlockedCrossing } from "./reach";   // wq#538, wq#1870, wq#1877
+import { clearedByLine } from "./unblock";   // wq#1877
 import { GameNames } from "./names";
 import { parseGotoTarget, crossMapRefusal, scopeNoteCoords, edgeRefusal } from "./scope";  // wq#606
 import { renderMenuLine } from "./menu";  // wq#620
-import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits } from "./objects";  // wq#607
+import { decodeItemObjects, itemBallLine, toggleableFlags, flippedBits,
+         toggleableGlobalIds } from "./objects";  // wq#607, wq#1877
 import { nearbyHiddenItems, hiddenItemLine, hiddenItemFlags } from "./hidden_items";  // wq#622
 import { ActionCeiling, CEILING } from "./ceiling";  // wq#606 deliverable 7
 import { CFG } from "./config";
@@ -83,6 +90,10 @@ interface SupervisorDirective {
   mode: string;
   summary: string;
   notepadPin: string;
+  // wq#1840: the supervisor stamps every file it writes. Read here so the
+  // directive can expire on its own age instead of only on the story advance
+  // it is blocking (src/pin.ts).
+  generatedAt?: string;
   baselineScore?: number;
   baselineBadges?: number;
   baselineEvents?: number;
@@ -115,6 +126,7 @@ export function loadSupervisorDirective(base: string): SupervisorDirective | nul
       mode: d.mode ?? "",
       summary: d.summary ?? "",
       notepadPin: pin,
+      generatedAt: typeof d.generatedAt === "string" ? d.generatedAt : undefined,
       baselineScore: d.baselineScore,
       baselineBadges: d.baselineBadges,
       baselineEvents: d.baselineEvents,
@@ -208,6 +220,13 @@ export class Agent {
   // observe(). wq#724 wired ban consumption but never rendered this, so the
   // entire FIGHT_LOSS_LOOP grind remedy was written to disk and ignored.
   private supervisorPin = "";
+  // wq#1840: what the pin needs to expire on its OWN age. Null whenever no pin
+  // is live; carries the supervisor's generatedAt stamp plus the turn/clock the
+  // agent picked it up at (src/pin.ts).
+  private supervisorPinned: PinnedDirective | null = null;
+  // wq#1840: latch for the suppression event, so the transition is logged once
+  // rather than once per turn for the hundreds of turns the condition holds.
+  private pinSuppressed = false;
   // wq#1563: the breakout rung's map-local goto ban, and the directive mtime
   // the loaded state came from. The mtime exists because loadSupervisorBans()
   // ran ONLY in the constructor: a directive written mid-run was invisible
@@ -215,14 +234,20 @@ export class Agent {
   // cannot reach the process it is recovering is not a recovery step.
   private supervisorStaleMap: number | null = null;
   private supervisorMtimeMs = -1;
-  // wq#1179: tile novelty + composite progress scalar. OBSERVE-ONLY — nothing
-  // below reads it back; observe() writes runtime/{visited_tiles,progress}.json
-  // and emits a `progress` event, and tools/lpp_stuck_mode.py is the consumer.
-  // Assigned in the constructor body rather than as a field initializer because
-  // it needs `checkpointDir` and `bus`, which are parameter properties.
+  // wq#1179: tile novelty + composite progress scalar. observe() writes
+  // runtime/{visited_tiles,progress}.json and emits a `progress` event;
+  // tools/lpp_stuck_mode.py consumes the files. wq#1731: the exploration
+  // override below READS the sample window back (never writes it) to decide a
+  // stall. Assigned in the constructor body rather than as a field initializer
+  // because it needs `checkpointDir` and `bus`, which are parameter properties.
   private novelty!: NoveltyTracker;
-  // wq#1181: the fight loss ledger + its gates. Unlike novelty above this one
-  // IS read back — enter_warp consults it (CFG.fightGate) — which is why every
+  // wq#1731: the hard exploration rung in runTurn's ladder (src/explore.ts).
+  private explore!: ExplorationOverride;
+  // wq#1828: the patch that rung just escaped, refused as a goto destination
+  // until it expires (src/exclusion.ts).
+  private exclusion!: ExclusionGate;
+  // wq#1181: the fight loss ledger + its gates. Unlike the tracker files above
+  // this one gates travel — enter_warp consults it (CFG.fightGate) — which is why every
   // gate it hands out carries three expiries and a fire cap (ledger.ts header).
   private ledger!: FightLedger;
   // Identity of the battle currently in progress, captured on the turn it
@@ -248,6 +273,60 @@ export class Agent {
     // one-off drivers that run from a different cwd than the live deployment.
     this.novelty = new NoveltyTracker({ dir: join(checkpointDir, "..", "runtime"), bus });
     this.ledger = new FightLedger({ dir: join(checkpointDir, "..", "runtime"), bus });
+    this.exclusion = new ExclusionGate(exclusionFile(join(checkpointDir, "..", "runtime")), bus);
+    this.explore = new ExplorationOverride({
+      map: this.map,
+      pos: () => this.nav.posChecked(),
+      step: (dx, dy) => this.nav.step(dx, dy),
+      hop: (dx, dy) => this.nav.hopStep(dx, dy),
+      samples: () => this.novelty.recent(),
+      blocked: () =>
+        (this.emu.mem()[this.sym.addr("wIsInBattle")] !== 0 || this.bat.active()) ? "battle"
+        : (this.dlg.open() || this.sync.textUp()) ? "dialog" : null,
+      // An interrupted goto the transit policy would resume is the brain's
+      // stalled intent; resuming it after the escape walks straight back.
+      onFire: () => this.transit.clear(),
+      // wq#1828: every historical fire read `escaped: true, mapChanged: false` —
+      // the escape worked and the brain walked back. Now it is refused.
+      exclude: e => this.exclusion.set(e),
+      // wq#1746: the verdict record carries what the ban did beside whether the
+      // escape held, so one line answers both.
+      exclusionFires: () => this.exclusion.peek()?.fires ?? 0,
+      // wq#1849: read straight from WRAM rather than a cached GameState — the
+      // override plans between turns, and a badge won mid-escape should move
+      // the bearing to the next gym on the next replan, not at the next
+      // observe().
+      badges: () => this.emu.mem()[this.sym.addr("wObtainedBadges")],
+      bus,
+      logFile: overrideLogFile(join(checkpointDir, "..", "runtime")),
+      cfg: CFG.explore,
+    });
+    // wq#1829: name the bag from THIS ROM's ItemNames table. backfillItemNames
+    // has existed since wq#519 but was called only from probes, so the LIVE
+    // prompt still rendered raw ids: the 2026-09-12 run read
+    // "BAG: item234x1 ... item49x1 ... item80x1 ... item82x1" while the brain
+    // was reasoning about what it could sell or throw. id49 is the NUGGET the
+    // agent picked up on Nugget Bridge. Gaps-only and idempotent by contract
+    // (see items.ts), and a ROM whose tables disagree throws — caught here,
+    // because an unnameable bag must not cost the run its boot.
+    try {
+      const bf = backfillItemNames(rom, sym);
+      bus.emit("tool_call", { tool: "item_names_backfilled", src: "harness", ...bf });
+    } catch (e: any) {
+      bus.emit("tool_call", { tool: "item_names_backfill_failed", src: "harness",
+                              error: String(e?.message ?? e) });
+    }
+    // wq#1835: and PRICE it from the same ROM's ItemPrices table, so the nugget
+    // that names itself above can also be VALUED. No mart stocks it, so
+    // economy.PRICE cannot price it and sell_item would have nothing to check a
+    // payout against. Same contract, same reason for the catch.
+    try {
+      const bp = backfillItemPrices(rom, sym);
+      bus.emit("tool_call", { tool: "item_prices_backfilled", src: "harness", ...bp });
+    } catch (e: any) {
+      bus.emit("tool_call", { tool: "item_prices_backfill_failed", src: "harness",
+                              error: String(e?.message ?? e) });
+    }
     this.loadSupervisorBans();
   }
 
@@ -259,10 +338,34 @@ export class Agent {
       this.supervisorMtimeMs = this.directiveMtimeMs();
       const dir = loadSupervisorDirective(base);
       if (!dir) return;
+      // wq#1563: this runs mid-run now, not just at boot, so every field it
+      // owns is reset here — otherwise a superseding directive would union its
+      // bans with the previous one's and never release a map.
       this.supervisorBans.clear();
+      this.supervisorStaleMap = null;
+      // wq#1840: age it BEFORE it can reach the prompt even once. A directive
+      // whose K-attempt ladder finished days ago is residue, not guidance, and
+      // the 14-day FIGHT_LOSS_LOOP@3 pin was re-loaded on every continue.
+      const pinned: PinnedDirective = {
+        pin: dir.notepadPin || "", mode: dir.mode,
+        generatedAt: dir.generatedAt, loadedTurn: this.turn, loadedMs: Date.now(),
+      };
+      const dead = pinExpiry(pinned, { turn: this.turn, ms: pinned.loadedMs }, CFG.pin);
+      if (dead) {
+        this.supervisorPin = "";
+        this.supervisorPinned = null;
+        this.bus.emit("tool_call", {
+          tool: "supervisor_directive_expired", src: "harness",
+          reason: dead, mode: dir.mode, maps: dir.gotoBan, atBoot: true,
+        });
+        return;
+      }
       for (const m of dir.gotoBan) this.supervisorBans.add(m);
-      this.supervisorPin = dir.notepadPin || "";
+      this.supervisorPin = pinned.pin;
       this.supervisorStaleMap = dir.staleMapGotoBan;
+      // Held whether or not there is a pin: a ban-only directive ages on the
+      // same clock, and a single run outlives the cap (6.7h measured 2026-09-12).
+      this.supervisorPinned = pinned;
       // wq#1081/#1084: load the baseline whenever EITHER a ban or a pin is
       // present, so a guidance-only directive still auto-lifts on advance.
       if (this.supervisorBans.size === 0 && this.supervisorStaleMap === null
@@ -303,6 +406,7 @@ export class Agent {
       this.supervisorBans.clear();
       this.supervisorPin = "";
       this.supervisorStaleMap = null;
+      this.supervisorPinned = null;
       this.supervisorBaseline = null;
       return;
     }
@@ -319,6 +423,26 @@ export class Agent {
     // wq#1081/#1084: baseline is set whenever a ban OR a pin loaded, so gate on
     // it alone — a guidance-only directive must lift its pin on advance too.
     if (!this.supervisorBaseline) return;
+    // wq#1840: age first, because the story-advance test below can never fire
+    // for a directive whose own remedy IS the blocked story advance. Retires
+    // the whole artifact — pin and bans share one generatedAt and one ladder,
+    // and a ban that outlives its ladder wedges exactly as the pin does.
+    if (this.supervisorPinned) {
+      const dead = pinExpiry(this.supervisorPinned, { turn: this.turn, ms: Date.now() }, CFG.pin);
+      if (dead) {
+        this.bus.emit("tool_call", {
+          tool: "supervisor_directive_expired", src: "harness",
+          reason: dead, mode: this.supervisorPinned.mode,
+          maps: [...this.supervisorBans], atBoot: false,
+        });
+        this.supervisorBans.clear();
+        this.supervisorPin = "";
+        this.supervisorStaleMap = null;
+        this.supervisorPinned = null;
+        this.supervisorBaseline = null;
+        return;
+      }
+    }
     try {
       const st = this.reader.read();
       const b = this.supervisorBaseline;
@@ -332,9 +456,18 @@ export class Agent {
         this.supervisorBans.clear();
         this.supervisorPin = "";
         this.supervisorStaleMap = null;   // wq#1563: kill-criterion 5
+        this.supervisorPinned = null;
         this.supervisorBaseline = null;
       }
     } catch { /* never crash on a bookkeeping read */ }
+  }
+
+  /** wq#1829: throwable balls of every grade. One reader, because the catch
+   *  line in progressBlock() and the economy directive must never disagree
+   *  about whether the agent can throw something. */
+  private ballCount(): number {
+    return this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL)
+         + this.items.count(ITEM.ULTRA_BALL);
   }
 
   private mapLabel(id: number): string | null {
@@ -343,6 +476,19 @@ export class Agent {
       try { this.names = new GameNames(this.rom, this.sym); } catch { this.names = null; }
     }
     return this.names ? this.names.mapName(id) : null;
+  }
+
+  /** wq#1877: the second half of a blocked-crossing refusal — where the game
+   *  itself clears the NPC that is holding the region's one door. Read off the
+   *  ROM (unblock.ts): the brain is told to go do that, instead of being left
+   *  with an obstacle and no lever. Silent whenever the ROM does not answer —
+   *  an invented prerequisite is worse than none (wq#1091). */
+  private clearedByHint(bc: BlockedCrossing): string | null {
+    try {
+      const gid = toggleableGlobalIds(this.emu.mem(), this.sym).get(bc.by.slot);
+      if (gid === undefined) return null;
+      return clearedByLine(this.rom, this.sym, gid, id => this.mapLabel(id));
+    } catch { return null; }
   }
 
   /** wq#538: the warp list annotated with reachability from where the player is
@@ -454,7 +600,52 @@ export class Agent {
     // turn. Without this the entire FIGHT_LOSS_LOOP grind remedy was inert —
     // written to runtime/supervisor_directive.json and never read (wq#724 wired
     // ban enforcement but not this). Prefixed "!!" so it reads as high-priority.
-    if (this.supervisorPin) block += `\n!! ${this.supervisorPin}`;
+    // wq#1840: and only when the live bag has not refuted it. A pin ordering a
+    // CATCH at $96 with zero balls is not guidance, it is a second voice
+    // arguing with progressBlock()'s CATCHING IS IMPOSSIBLE line below; a pin
+    // ordering the agent into tall grass while wq#1828's exclusion refuses that
+    // patch gets the exclusion named rather than left to contradict it.
+    if (this.supervisorPin) {
+      // wq#1839: `peek()` plus the pure rules, so rendering a prompt line never
+      // moves gate state. A ban asleep on another map refutes nothing here.
+      const ex = this.exclusion.peek();
+      const seq = this.novelty.lastSeq();
+      const live = ex && !exclusionLift(ex, seq) && !exclusionSuspended(ex, st.map)
+        ? { tiles: ex.tiles.length, map: ex.map, turnsLeft: Math.max(0, ex.untilSeq - seq) } : null;
+      const r = renderPin(this.supervisorPin,
+        { balls: this.ballCount(), money: st.money, ballPrice: BALL_PRICE }, live, CFG.pin);
+      if (r) block += `\n!! ${r.text}`;
+      // Rising edge only: the condition holds for hundreds of consecutive
+      // turns (wq#1829 measured $96 for a whole run), and an event per turn
+      // would bury the transition that is the actual finding.
+      const now = !!r?.suppressed;
+      if (now !== this.pinSuppressed) {
+        this.pinSuppressed = now;
+        this.bus.emit("tool_call", {
+          tool: now ? "supervisor_pin_suppressed" : "supervisor_pin_restored", src: "harness",
+          balls: this.ballCount(), money: st.money,
+        });
+      }
+    }
+
+    // wq#1731: the reward weights as stated goals. Overworld only, so a fight
+    // never gets a "leave this map" line in the middle of it; the battle branch
+    // above returns before this.
+    if (CFG.explore.prompt) {
+      try {
+        const here = this.nav.posChecked();
+        block += `\n${progressBlock({ badges: st.badges, partyCount: st.partyCount,
+          map: st.map, samples: this.novelty.recent(),
+          balls: this.ballCount(), money: st.money,
+          // wq#1849: the same table the WARPS list above is indexed by, so a
+          // route leg through a door names the index rather than only the tile.
+          warps: this.map.warps,
+          // wq#1877: which edges are walkable from HERE, so the ROUTE line can
+          // stop ordering a leg that starts across a seam.
+          edges: reachableEdges(this.map, here.x, here.y),
+        }, CFG.explore)}`;
+      } catch { /* prompt salience must never cost the turn */ }
+    }
 
     // wq#1181 (roadmap item 6): the grind governor. Evaluated ONLY while a loss
     // gate is live — that is the state in which the harness itself put the
@@ -516,13 +707,16 @@ export class Agent {
     {
       const eco = economyAdvice({
         money: st.money,
-        balls: this.items.count(ITEM.POKE_BALL) + this.items.count(ITEM.GREAT_BALL)
-             + this.items.count(ITEM.ULTRA_BALL),
+        balls: this.ballCount(),
         partyCount: st.party.length,
         leadLevel: st.party[0]?.level ?? 0,
         inMart: !!stock,
         martStock: stock,
         gymMinLevel: MISTY_MIN_LEVEL,
+        // wq#1835: what the bag is WORTH. The 2026-09-12 run was broke while
+        // carrying $5000 of nugget; nothing in the prompt could say so because
+        // nothing had ever asked what an item sells for.
+        sellables: this.items.sellables(),
       });
       if (eco) block += `\n${eco}`;
     }
@@ -538,7 +732,25 @@ export class Agent {
     this.map.build();
     const p = this.nav.posChecked();
     block += `\n${renderWarps(this.currentWarpViews())}`;
-    block += `\nMAPGRID (P=you W=warp N=npc B=item ball #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+    block += `\nMAPGRID (P=you W=warp N=npc B=item ball G=tall grass #=wall .=open)\n${this.map.ascii(p.x, p.y)}`;
+    // wq#1565: encounter-tile perception. Wild Pokemon in Gen 1 roll per step
+    // and ONLY on the tileset's grass tile, so a grid that renders grass as
+    // plain open ground makes catching unsolvable by observation — which is
+    // what froze the campaign on Route 24 (map35) for 582h at "we must go into
+    // tall grass ... assume we can move to a grass tile". Perception + a nudge,
+    // never a nav goal, same rule as the item-ball line below.
+    {
+      const cells = this.map.grassCells(p.x, p.y);
+      const onGrass = this.map.isGrass(p.x, p.y);
+      let nearest: { x: number; y: number } | null = null, steps: number | null = null;
+      for (const c of cells) {
+        const path = astar(this.map, p.x, p.y, c.x, c.y, new Set<string>());
+        if (!path) continue;
+        nearest = c; steps = path.length; break;
+      }
+      const gline = grassLine({ count: cells.length, onGrass, nearest, steps });
+      if (gline) block += `\n${gline}`;
+    }
     // wq#607: item-ball perception — the line renders ONLY when a ball is on
     // this map (no dead prose). Steps via the same astar goto() uses, so
     // "N steps" is a promise the executor can keep. NO auto-detour: this is
@@ -643,6 +855,22 @@ export class Agent {
 
     const cpos = this.nav.posChecked();
     const argsKey = args.join(",");
+    // wq#1662: a goto ceilinged by a sprite blocking the route is worth
+    // re-arming the instant that sprite moves — the walk that failed 3x in a
+    // row was refused by an NPC that is, by construction, not permanent
+    // terrain. Re-checking the same tile after it clears is not a verbatim
+    // retry of the failure; it is the first attempt that can actually
+    // succeed. Anything else ceilinged (terrain, no_path) is left alone: the
+    // ceiling's job there is exactly to stop the repeat.
+    if (tool === "goto") {
+      const ob = this.nav.lastGotoObstacle();
+      if (ob && ob.kind === "sprite") {
+        this.map.build();
+        const stillThere = this.map.sprites.some(
+          sp => sp.x === ob.x && sp.y === ob.y && sp.pic === ob.spritePic);
+        if (!stillThere) this.ceiling.reset();
+      }
+    }
     const pre = this.ceiling.check(tool, argsKey, cpos);
     if (pre) return pre;
     const result = await this.dispatchInner(tool, args, rawArgs);
@@ -692,6 +920,15 @@ export class Agent {
               `help. LEAVE THE MAP: leave_edge at a boundary, or enter_warp through a door.`;
           }
           const tx = tgt.x, ty = tgt.y;
+          // wq#1828: the patch the exploration override just escaped is not a
+          // destination for the next excludeTurns turns. Movement only — the
+          // route may still cross it, so an escape cannot seal the map.
+          // wq#1839: counted in novelty seq, which survives a restart.
+          {
+            const ex = this.exclusion.refuse(this.novelty.lastSeq(), st0.map, tx, ty,
+              this.mapLabel(st0.map) ?? `map${st0.map}`);
+            if (ex) return `goto: ${ex}`;
+          }
           // wq#601: past the cave, the Mt Moon re-entry warp tile is refused
           // here, not in prose. reader.read() is fresh RAM; map15 is ranked on
           // every tile so corridorPhase needs no prev there.
@@ -742,7 +979,8 @@ export class Agent {
             // turn again. Say WHY it failed and name what would work instead.
             this.map.build();
             return `goto -> stuck now ${JSON.stringify(p)}` +
-              stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews());
+              stuckHint(this.map, p.x, p.y, tx, ty, this.currentWarpViews(),
+                        this.nav.lastGotoObstacle(), p.map, bc => this.clearedByHint(bc));
           }
           // wq#674: "warped" lands on the new map's arrival tile with zero
           // steps taken there yet; anything else that actually got the player
@@ -901,6 +1139,18 @@ export class Agent {
           const r = await this.nav.leaveMapEdge(dir as any);
           if (r === "battle") return "leave_edge interrupted by a wild battle - fight it with battle_move";
           if (r === "dialog") return "leave_edge blocked: a dialog or sign text is open - use talk() to clear it first";
+          // wq#1870: leaveMapEdge tries every walkable cell on that boundary and
+          // then returns a bare "stuck", which reads as "retry" — and on a split
+          // map the retry is doomed for as long as the player stands where they
+          // are. Say that the edge is in a part of the map they cannot walk to,
+          // and name the ones they can.
+          if (r === "stuck") {
+            const p = this.nav.posChecked();
+            this.map.build();
+            return `leave_edge -> stuck now ${JSON.stringify(p)}` +
+              edgeStuckHint(this.map, p.x, p.y, dir as EdgeDir, this.currentWarpViews(), p.map,
+                            bc => this.clearedByHint(bc));
+          }
           // wq#674: edge crossings land off any warp tile, so they can't
           // trigger the door-bounce refusal above - but they DO count as
           // having moved, same as a successful goto.
@@ -1023,6 +1273,13 @@ export class Agent {
           if (this.bat.active()) return "buy_item: not during a battle";
           const qty = Math.max(1, Math.min(9, Number(args[1] ?? 1) || 1));
           return await this.items.buy(id, qty);
+        }
+        case "sell_item": {
+          const id = itemId(args[0] ?? "");
+          if (id === null) return `sell_item: unknown item "${args[0]}" (use the name the BAG line shows)`;
+          if (this.bat.active()) return "sell_item: not during a battle";
+          const qty = Math.max(1, Math.min(99, Number(args[1] ?? 1) || 1));
+          return await this.items.sell(id, qty);
         }
         case "heal_at_center": {
           return await this.heal.atCenter();
@@ -1423,6 +1680,20 @@ export class Agent {
     return `battle_lock: forced battle_move(${slot}) [${moveLabel(b.moves[slot])}] after ${this.btTurns} turns (stall ${this.btStall})`;
   }
 
+  /** wq#1731: the exploration rung. Never acts in a battle (wIsInBattle must
+   *  read 0 on this turn's state); src/explore.ts owns the trigger, the escape
+   *  plan and the telemetry. A throw here is swallowed into the brain path: the
+   *  rung is a loop breaker, and a bug in it must not cost the turn. */
+  private async explorationOverride(before: GameState): Promise<string | null> {
+    if (before.inBattle !== 0) return null;
+    try { return await this.explore.tick(this.turn); }
+    catch (e: any) {
+      this.bus.emit("exploration_override", { stage: "error", turn: this.turn,
+        reason: String(e?.message ?? e).slice(0, 200) });
+      return null;
+    }
+  }
+
   async runTurn(): Promise<void> {
     this.turn++;
     await this.sync.settle();
@@ -1442,17 +1713,29 @@ export class Agent {
     let think = "", act = "", result = "";
     let plannedTurn = false;
     const forced = await this.battleLockForce();
+    // wq#1731: hard exploration override. Below the soft-lock escalation (which
+    // only acts in battle, and this rung never does), above everything that
+    // would hand the turn back to the brain's stalled intent.
+    const explored = forced === null ? await this.explorationOverride(before) : null;
     // wq#487: transit turns (flee an interrupting encounter / resume the
     // interrupted goto). Checked BEFORE plannedAuto and independent of the
     // wq#472 budget: soft-lock escalation still outranks it.
-    const transited = forced === null ? await this.transitAuto() : null;
+    const transited = (forced === null && explored === null) ? await this.transitAuto() : null;
     // wq#472: planned deterministic turn between brain calls (null = feature
     // off, budget spent, or state needs judgment -> brain path).
-    const planned = (forced === null && transited === null && this.autoBudget > 0) ? await this.plannedAuto() : null;
+    const planned = (forced === null && explored === null && transited === null && this.autoBudget > 0)
+      ? await this.plannedAuto() : null;
     if (forced !== null) {
       result = forced;
       act = "AUTO:battle_lock";
       think = "[soft-lock escalation - harness action, no brain call]";
+    } else if (explored !== null) {
+      // A harness turn, so it stays out of the brain's stall accounting, the
+      // same as transit: stallTurns measures the brain failing to progress.
+      plannedTurn = true;
+      result = explored;
+      act = "AUTO:grass_breakout";
+      think = "[exploration override - no brain call]";
     } else if (transited !== null) {
       plannedTurn = true;
       result = transited.result;
@@ -1498,7 +1781,7 @@ export class Agent {
         this.noiseStreak++;
         if (this.noiseStreak === Agent.NOISE_K) {
           const validTools = "goto(x,y), enter_warp(idx), leave_edge(N|S|E|W), talk(), " +
-            "battle_move(slot), flee(), use_item(name), buy_item(name,qty), " +
+            "battle_move(slot), flee(), use_item(name), buy_item(name,qty), sell_item(name,qty), " +
             "heal_at_center(), note(text), interact(x,y), choose(yes|no|idx), press(btn)";
           result += `\n! NOISE STORM (${this.noiseStreak} consecutive invalid calls): ` +
             `you are pattern-completing failures. VALID TOOLS: ${validTools}. ` +
@@ -1551,7 +1834,13 @@ export class Agent {
     // arriving map's id (the wq#699 class) and invent tiles that do not exist.
     // Wrapped because bookkeeping may never break a turn; the tracker's own file
     // I/O is fail-soft too, so this catch is for arithmetic on a torn read.
-    try { this.novelty.observe(this.turn, after); } catch { /* observe-only */ }
+    try {
+      const s = this.novelty.observe(this.turn, after);
+      // wq#1828: the same sample decides whether the exclusion still holds —
+      // new ground inside the patch means it was not dead after all — and
+      // wq#1839: ages it, in the sample's own seq rather than in `this.turn`.
+      this.exclusion.observe(s.seq, s.map, s.x, s.y, s.newTiles);
+    } catch { /* observe-only */ }
 
     const line = `T${this.turn} [map${after.map} ${after.x},${after.y}] ${act.slice(0, 60)} => ${result.slice(0, 120)}`;
     this.hist.push(line);

@@ -24,7 +24,7 @@
 // Item ids come from src/items.ts — the single source of truth. An earlier
 // draft of this module duplicated them from memory and got POTION and ANTIDOTE
 // backwards; probe_economy caught it on the first run. Do not re-duplicate.
-import { ITEM } from "./items";
+import { ITEM, MART_ORDER, MART_CITY, Sellable } from "./items";
 
 export const BALL = ITEM.POKE_BALL;
 
@@ -51,6 +51,20 @@ export const BALL_PRICE = PRICE[BALL];
 export const MIN_SAFE_PARTY = 3;
 /** Keep enough to re-buy one ball after a whiteout halves the purse. */
 export const PURSE_RESERVE = 0;
+
+/** wq#1829: every mart whose stock list contains a Poke Ball, as
+ *  "City (mapNN)". DERIVED from MART_ORDER so adding a mart there cannot leave
+ *  this list stale — the hand-written version named Pewter and Cerulean only,
+ *  which is how a prompt could tell a broke agent to "route through a mart"
+ *  without mentioning the two nearest ones. Sorted by map id for a stable
+ *  string, not by distance: nothing in this pure module knows where the player
+ *  is, and an invented "nearest" is exactly the kind of confident guess the
+ *  corridor pack bans. */
+export function ballMarts(): string[] {
+  return Object.keys(MART_ORDER).map(Number).sort((a, b) => a - b)
+    .filter(map => MART_ORDER[map].includes(BALL))
+    .map(map => `${MART_CITY[map] ?? "mart"} (map${map})`);
+}
 
 /** Cheapest priced item in a mart's stock list, or Infinity if none priced. */
 export function cheapestInStock(stock: readonly number[] | undefined): number {
@@ -79,6 +93,11 @@ export interface EconomyCtx {
   martStock?: readonly number[];   // MART_ORDER[map] when inMart
   /** Level the campaign wants before the next gym (guidance.MISTY_MIN_LEVEL). */
   gymMinLevel: number;
+  /** wq#1835: bag entries a clerk will pay for that the campaign does not need,
+   *  richest first (items.sellables()). Prices come from the ROM's own
+   *  ItemPrices table, never from PRICE above — PRICE only knows mart stock,
+   *  and the item this branch exists for is a NUGGET, which no mart sells. */
+  sellables?: readonly Sellable[];
 }
 
 /**
@@ -89,6 +108,25 @@ export interface EconomyCtx {
  */
 export function economyAdvice(c: EconomyCtx): string | null {
   const canBuyBall = c.money >= BALL_PRICE;
+
+  // 0. BROKE WHILE RICH. Outranks BROKE because BROKE's advice ("money comes
+  //    ONLY from beating TRAINERS") is FALSE while the bag holds treasure, and
+  //    a directive that sends the run grinding past $5000 of nugget is worse
+  //    than silence. Measured 2026-09-12: $96 for 318 turns, carrying item 49.
+  //    Only a sale that clears one ball's price qualifies -- selling $50 of
+  //    junk does not relieve the binding constraint, it just spends the turn.
+  const best = (c.sellables ?? []).find(s => s.value >= BALL_PRICE);
+  if (!canBuyBall && best) {
+    const balls = Math.floor(best.value / BALL_PRICE);
+    const head = `! BROKE AT $${c.money} BUT CARRYING $${best.value}: your ${best.name}` +
+      ` sells for $${best.unit}${best.qty > 1 ? ` each (${best.qty} of them)` : ""} at any Poke Mart` +
+      ` counter -- ${balls} Poke Ball${balls === 1 ? "" : "s"} worth, more than the trainers between`+
+      ` here and the next town pay.`;
+    return c.inMart
+      ? `${head} You are STANDING IN ONE: sell_item(${best.name}, ${best.qty}) right now.`
+      : `${head} Route to a Mart and sell_item(${best.name}, ${best.qty}) there.` +
+        ` Balls and healing items are deliberately NOT on this list -- they are worth more than their resale.`;
+  }
 
   // 1. BROKE. The condition that has held for ~81 hours of play. Nothing else
   //    matters until it changes, so say so in the loudest slot and name the
@@ -113,8 +151,8 @@ export function economyAdvice(c: EconomyCtx): string | null {
   // 3. Can afford balls but nowhere to buy: name the constraint, not the wish.
   if (canBuyBall && c.balls <= 0) {
     return `! You have $${c.money} and ZERO balls. Catching is impossible until you buy some` +
-      ` ($${BALL_PRICE} each) — the nearest marts on this corridor are Pewter (map56) and` +
-      ` Cerulean (map67). Route through one before expecting to grow the party.`;
+      ` ($${BALL_PRICE} each) — the marts that stock them are ${ballMarts().join(", ")}.` +
+      ` Route through one before expecting to grow the party.`;
   }
 
   // 4. Balls in hand, party still fragile: spend them.
