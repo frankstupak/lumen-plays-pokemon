@@ -44,12 +44,14 @@ export function parseGotoTarget(raw: string): GotoTarget | null {
 }
 
 /** The one-line cross-map refusal, or null when the target is executable.
- *  Names BOTH maps (ticket deliverable 1) and says what to do instead. */
+ *  Names BOTH maps (ticket deliverable 1) and says what to do instead.
+ *  wq#1090: opens with "refused - " like every other nav guard, so the retry
+ *  ceiling can recognise a refusal without matching this line's prose. */
 export function crossMapRefusal(t: GotoTarget, curMap: number,
                                 label: (id: number) => string | null): string | null {
   if (t.m === null || t.m === curMap) return null;
   const tn = label(t.m), cn = label(curMap);
-  return `target (${t.x},${t.y}) is on map${t.m}${tn ? ` (${tn})` : ""}, you are on ` +
+  return `refused - target (${t.x},${t.y}) is on map${t.m}${tn ? ` (${tn})` : ""}, you are on ` +
     `map${curMap}${cn ? ` (${cn})` : ""} — coordinates are MAP-LOCAL and do not transfer. ` +
     `Pick a tile on map${curMap} (MAPGRID/WARPS are current), or travel to map${t.m} first.`;
 }
@@ -99,19 +101,20 @@ export function connNames(c: number): string[] {
 export interface WarpLike { x: number; y: number; destMap: number }
 
 /** Refusal line for leave_edge, or null when the edge exit is plausible.
- *  Decided from the CONNECTION BYTE, never a hardcoded map list (ticket). */
+ *  Decided from the CONNECTION BYTE, never a hardcoded map list (ticket).
+ *  wq#1090: opens with "refused - ", same reason as crossMapRefusal above. */
 export function edgeRefusal(connections: number, dir: "N" | "S" | "E" | "W",
                             warps: WarpLike[], mapId: number,
                             label: string | null): string | null {
   const name = label ? ` (${label})` : "";
   if (connections === 0) {
     const list = warps.map((w, i) => `${i}:(${w.x},${w.y})->map${w.destMap}`).join(" ");
-    return `map${mapId}${name} is an INTERIOR — no edge connections exist; ` +
+    return `refused - map${mapId}${name} is an INTERIOR — no edge connections exist; ` +
       `interiors exit via door warps. Warps here: ${list || "(none)"} — use enter_warp(<index>).`;
   }
   const bit = { E: CONN.EAST, W: CONN.WEST, S: CONN.SOUTH, N: CONN.NORTH }[dir];
   if (!(connections & bit))
-    return `map${mapId}${name} has no ${dir} connection — this map's walkable edges: ` +
+    return `refused - map${mapId}${name} has no ${dir} connection — this map's walkable edges: ` +
       `${connNames(connections).join(",")}.`;
   return null;
 }
