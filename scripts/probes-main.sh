@@ -35,6 +35,7 @@ PROBES=(
   probe_goto583
   probe_warp579
   probe_scope606
+  probe_ceiling1090
   probe_menu620
   probe_items607
   probe_bagnames1829
@@ -61,6 +62,8 @@ PROBES=(
   probe_route1849
   probe_pocket1870
   probe_guard1877
+  probe_resume1177
+  probe_checkpoint1177
 )
 
 # wq#1180: probe_romtables1180 verifies the Moves/TypeEffects/BaseStats decodes

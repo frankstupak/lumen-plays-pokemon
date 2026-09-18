@@ -25,6 +25,7 @@ import { PRICE, BALL, MIN_SAFE_PARTY } from "./economy";
 import { moveMeta } from "./moves";
 import { TYPE } from "./romtables";
 import { GateDecision, GrindVerdict, GATE_LEVEL_RISE } from "./ledger";
+import { REFUSAL_BUDGET_PHRASE } from "./ceiling";   // wq#1090: exempt from the retry ceiling
 
 // Story flag bit indices (see src/state.ts STORY_FLAGS for derivation)
 const F_BEAT_BROCK = 0x077;
@@ -276,7 +277,7 @@ export function engagementGateLine(d: GateDecision, label: string): string {
   const mins = Math.max(1, Math.round((d.msLeft ?? 0) / 60000));
   return `refused - LOSS GATE on ${label}: ${d.reason}. ` +
     `Re-entry opens when party levelSum reaches ${d.needLevelSum} (+${GATE_LEVEL_RISE} from the loss), ` +
-    `or automatically in ${mins} min, or after ${d.firesLeft} more refusals. ` +
+    `or automatically in ${mins} min, or after ${d.firesLeft} ${REFUSAL_BUDGET_PHRASE}. ` +
     `Losing the same fight again costs half your money and respawns you at the centre - ` +
     `GRIND first (route grass and trainers near here), heal, then come back.`;
 }

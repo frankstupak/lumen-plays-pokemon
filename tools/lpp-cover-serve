@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""lpp-cover-serve — the idle cover for :8871, which always loses the port to live.
+
+wq#1661. :8871 has exactly one intended owner: lumen-pokemon-live (the agent's
+own stream server). The cover exists only so pokemon.lumennode.uk shows a splash
+instead of a 502 while live is down, and it must never be the reason live cannot
+bind. `python3 -m http.server` cannot express that: once bound it holds the port
+until something stops it, so every start of live raced a cover that had no idea
+live was coming.
+
+Three rules, in order:
+
+  1. SETTLE — refuse to bind while live is up, coming up or going down, and keep
+     refusing for --settle-sec after that. A restart hands the port back within
+     milliseconds; the settle window means a cover raised during one never binds.
+     Refusal is exit 0, not a failure: it is the normal outcome of a restart.
+  2. CLAIM — bind once. A port held by someone else is exit 3 (see the unit's
+     RestartPreventExitStatus) so a foreign squatter never becomes a retry storm.
+  3. YIELD — while serving, watch live. The moment it is activating or active,
+     shut down and exit 0. Live's own bind retry (src/stream.ts, 12 tries over
+     ~110s) then succeeds on its first or second attempt instead of going FATAL.
+
+Rule 3 is what makes the invariant hold no matter how the units race: the cover
+can lose a race for a second, but it cannot keep the port.
+"""
+from __future__ import annotations
+
+import argparse
+import errno
+import os
+import subprocess
+import sys
+import threading
+import time
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+# States in which live owns :8871. 'deactivating' is included because a stop
+# that is really a restart passes through it, and 'activating' covers both a
+# start and the RestartSec holddown of an auto-restart (SubState=auto-restart).
+LIVE_OWNS = {"active", "activating", "reloading", "deactivating"}
+
+EXIT_YIELDED = 0
+EXIT_PORT_HELD = 3
+
+
+def live_state(systemctl: str, unit: str) -> str:
+    try:
+        out = subprocess.run([systemctl, "show", "-P", "ActiveState", unit],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return out.stdout.strip() or "unknown"
+
+
+def log(msg: str) -> None:
+    print(f"lpp-cover-serve: {msg}", file=sys.stderr, flush=True)
+
+
+def settle(systemctl: str, unit: str, settle_sec: float, poll_sec: float) -> bool:
+    """True if live stayed down for the whole window, i.e. the cover may bind."""
+    deadline = time.monotonic() + settle_sec
+    while time.monotonic() < deadline:
+        state = live_state(systemctl, unit)
+        if state in LIVE_OWNS:
+            log(f"{unit} is '{state}' — it owns the port, standing down")
+            return False
+        time.sleep(poll_sec)
+    return True
+
+
+def serve(port: int, directory: str) -> ThreadingHTTPServer:
+    handler = partial(SimpleHTTPRequestHandler, directory=directory)
+    return ThreadingHTTPServer(("0.0.0.0", port), handler)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--port", type=int, default=int(os.environ.get("LPP_COVER_PORT", "8871")))
+    ap.add_argument("--dir", default=os.environ.get("LPP_COVER_DIR", "/home/lumen/pokemon/assets"))
+    ap.add_argument("--live-unit", default=os.environ.get("LPP_LIVE_UNIT", "lumen-pokemon-live.service"))
+    ap.add_argument("--settle-sec", type=float, default=float(os.environ.get("LPP_COVER_SETTLE_SEC", "5")))
+    ap.add_argument("--poll-sec", type=float, default=float(os.environ.get("LPP_COVER_POLL_SEC", "1")))
+    args = ap.parse_args(argv)
+
+    systemctl = os.environ.get("LPP_SYSTEMCTL", "/usr/bin/systemctl")
+    poll = max(0.05, args.poll_sec)
+
+    if not settle(systemctl, args.live_unit, args.settle_sec, poll):
+        return EXIT_YIELDED
+
+    try:
+        httpd = serve(args.port, args.dir)
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            log(f"port {args.port} is held by another process — refusing to fight for it")
+            return EXIT_PORT_HELD
+        raise
+    log(f"covering :{args.port} from {args.dir} while {args.live_unit} is down")
+
+    def watch() -> None:
+        while True:
+            time.sleep(poll)
+            state = live_state(systemctl, args.live_unit)
+            if state in LIVE_OWNS:
+                log(f"{args.live_unit} is '{state}' — yielding :{args.port}")
+                httpd.shutdown()
+                return
+
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return EXIT_YIELDED
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

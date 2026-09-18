@@ -110,6 +110,7 @@ run by a single operator, as a demonstration of what that setup can do.
 - [`docs/PLAN-SURVIVABILITY.md`](docs/PLAN-SURVIVABILITY.md) — harness hardening log
 - [`docs/WHITEOUT-RECOVERY.md`](docs/WHITEOUT-RECOVERY.md) — how a loss is detected and recovered
 - [`docs/SENTINEL.md`](docs/SENTINEL.md) — the standing health monitor
+- [`docs/PORT-8871.md`](docs/PORT-8871.md) — who owns the stream port, and how the idle cover gives it back
 - [`docs/STREAMER_CHAT.md`](docs/STREAMER_CHAT.md) — one-way audience chat and cross-platform persona memory
 - [`docs/multiplayer/`](docs/multiplayer) — link-cable trade and battle work
 
