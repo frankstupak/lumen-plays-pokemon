@@ -6,6 +6,11 @@
 //   3. disconnect       both sides ABORT with a reason, promptly, un-wedged
 // Usage: npx tsx src/link/probe_rendezvous.ts
 import { spawn } from "child_process";
+import { resolve } from "path";
+
+// Spawn the sides from THIS tree. A hardcoded checkout ran the probe against
+// somebody else's source, so a worktree could never test its own change.
+const ROOT = resolve(__dirname, "..", "..");
 
 let pass = 0, fail = 0;
 const ok = (n: string, c: boolean, note = "") => {
@@ -17,7 +22,7 @@ interface SideResult { tag: string; ok: boolean; phase: string; room?: number; y
 function side(env: Record<string, string>, timeoutMs: number): Promise<{ code: number | null; res?: SideResult; out: string }> {
   return new Promise(resolve => {
     const p = spawn("npx", ["tsx", "src/link/rdv_side.ts"], {
-      cwd: "/home/lumen/pokemon",
+      cwd: ROOT,
       env: { ...process.env, ...env },
     });
     let out = "";
@@ -70,36 +75,11 @@ const TC = 239;   // $EF Trade Center
   ok("disconnect: cores left in a sane map, not mid-transfer", a3.res?.map !== TC && b3.res?.map !== TC, `maps ${a3.res?.map}/${b3.res?.map}`);
   ok("disconnect: both processes exited (no hung core)", a3.code !== null && b3.code !== null, `exits ${a3.code}/${b3.code}`);
 
-  // ---- scenario 4: WORK IN PROGRESS, NOT PART OF THE GREEN GATE ----------
-  // Goal: rendezvous -> 415-byte party exchange -> M5b invariants on the block
-  // the peer sent. STATUS 2026-08-13 (wq#483): DOES NOT WORK YET. Measured:
-  // both sides rendezvous fine but the block exchange never runs (exchanges=30
-  // = the handshake only), so $D887/$D893 still hold uninitialised RAM and the
-  // M5b validator correctly rejects it (count=36, level=0, hp>maxHp...) — the
-  // validator is behaving right; the driving is not there. Root cause to chase:
-  // the in-process 415-byte path needs fine-slicing + peer catch-up
-  // (serialbus deferTicks/peerRunner, see lockstep.ts + wq#436); the bridge
-  // path has no equivalent, and the seat navigation inside map $EF is
-  // unverified. Run explicitly with RDV_PROBE_CONTINUATION=1 while working it.
-  if (process.env.RDV_PROBE_CONTINUATION !== "1") {
-    console.log("=== 4. continuation: SKIPPED (WIP — set RDV_PROBE_CONTINUATION=1) ===");
-    console.log(`\n${pass} PASS / ${fail} FAIL`);
-    process.exit(fail ? 1 : 0);
-  }
-  console.log("=== 4. continuation: party block exchange + M5b invariants (WIP) ===");
-  const p4a = side({ RDV_ROLE: "listen", RDV_PORT: "9384", RDV_TAG: "A", RDV_CONTINUE: "block", RDV_LINGER_MS: "45000" }, 600000);
-  await new Promise(r => setTimeout(r, 3000));
-  const p4b = side({ RDV_ROLE: "connect", RDV_PORT: "9384", RDV_TAG: "B", RDV_CONTINUE: "block", RDV_LINGER_MS: "45000" }, 600000);
-  const [a4, b4] = await Promise.all([p4a, p4b]);
-  const bc = (o: { out: string }) => { const m = o.out.match(/BLOCKCHECK (\{.*\})/); try { return m ? JSON.parse(m[1]) : undefined; } catch { return undefined; } };
-  const ba = bc(a4), bb = bc(b4);
-  ok("continuation: both sides rendezvoused", !!a4.res?.ok && !!b4.res?.ok, `${a4.res?.phase}/${b4.res?.phase}`);
-  ok("continuation: side A got a block check", !!ba, ba ? `count=${ba.peerCount} slot0=${JSON.stringify(ba.peerSlot0)}` : "none");
-  ok("continuation: side B got a block check", !!bb, bb ? `count=${bb.peerCount} slot0=${JSON.stringify(bb.peerSlot0)}` : "none");
-  ok("continuation: M5b invariants PASS on A's received block", !!ba?.ok, ba ? JSON.stringify(ba.failures) : "no check");
-  ok("continuation: M5b invariants PASS on B's received block", !!bb?.ok, bb ? JSON.stringify(bb.failures) : "no check");
-  ok("continuation: bytes actually crossed the bridge", (ba?.exchanges ?? 0) > 100 && (bb?.exchanges ?? 0) > 100, `A=${ba?.exchanges} B=${bb?.exchanges}`);
-
+  // The continuation — rendezvous -> 415-byte party exchange -> M5b invariants
+  // — landed in wq#511 and has its own gate: src/link/probe_m5c3.ts. It is a
+  // separate probe because it costs a multi-minute two-process run, and because
+  // this one's job is the three RENDEZVOUS scenarios above.
+  console.log("=== continuation (M5c-3): see npx tsx src/link/probe_m5c3.ts ===");
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   process.exit(fail ? 1 : 0);
 })();

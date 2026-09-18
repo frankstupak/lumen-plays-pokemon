@@ -79,7 +79,8 @@ stated as such.
 ## What is still missing
 
 The transport was the easy half. Three things genuinely change when the peer is
-remote; **1 and 3 are now solved** (M5b wq#482, M5a wq#481); 2 is not:
+remote. All three are now solved (M5b wq#482, M5a wq#481, M5c wq#483+wq#511);
+what is left is the trade and battle sequences themselves, not the link:
 
 1. **The peer's RAM is unreadable — SOLVED (M5b, wq#482).**
    `src/link/invariants.ts` re-expresses the mirror checks one-sided, using
@@ -98,10 +99,11 @@ remote; **1 and 3 are now solved** (M5b wq#482, M5a wq#481); 2 is not:
    is none to verify; a structurally valid block from a hostile peer can still
    contain a legal-but-false party. One-sided verification cannot detect that
    and does not claim to.
-2. **We cannot drive the peer's menus.** The trade rendezvous parks one side
-   until its partner arrives, decided by reading both. Against a remote agent
-   each side drives only itself and the rendezvous becomes a real distributed
-   protocol problem.
+2. **We cannot drive the peer's menus — SOLVED (M5c, wq#483 + wq#511).**
+   Each side drives only its own core and infers the partner's state from its
+   own RAM plus link liveness: rendezvous to the room (wq#483), then the
+   415-byte party exchange (wq#511, "Continuation" below). What remains unbuilt
+   is the trade itself — selection, confirm, swap — against a remote peer.
 3. **Latency replaces lockstep — SOLVED (M5a).** `src/link/bridge.ts` binds a
    core's SB/SC to a `BgbLink` endpoint; a master transfer stays OPEN until the
    remote sync2 arrives, and the core is NOT stepped while a byte is pending,
@@ -322,3 +324,126 @@ required.
 running), with 5 orchestrator-level retries across the 8 runs. Every stranded
 pair recovered on the first or second retry. Without the retry mechanism, the
 same workload produced 4/8 (rabbit2) and 4/8 (rabbit15).
+
+# Continuation (M5c-3, wq#511) — the 415-byte party exchange
+
+Rendezvous ends with both sides standing in the room. wq#483 stopped there and
+recorded the gap honestly: `exchanges=30` is the handshake and nothing else, so
+the enemy-party RAM still held whatever was in it at boot and M5b rejected the
+result. The validator was right; the driving was missing. This is that driving —
+`RDV_CONTINUE=block` in `src/link/rdv_side.ts`, gated by
+`npx tsx src/link/probe_m5c3.ts`.
+
+## Driving it without reading the peer
+
+Same shape as the rendezvous: every transition is an observation of OUR core.
+
+1. Take a seat by ROLE — master left `(3,4)` facing right, slave right `(6,4)`
+   facing left. Role comes from `$FFAA`, which both sides can read locally, so
+   the two never contend for the same tile.
+2. Press A at the table until our own `wLinkState` leaves the idle state.
+3. Keep pressing A until `wLinkState == 50` — the ROM has taken the block in and
+   put the trade menu up. **That is the completion signal**: not a byte count,
+   not a timer, and not anything about the peer.
+
+Step 3 runs under FINE slicing (`lockstep.ts`, ~512 cycles ≈ one DMG transfer
+window). A whole frame freezes the core for ~70k cycles; a block clocked at one
+byte per frame leaves a partner sitting in its serial wait loop for 400 frames.
+Navigation and dialog stay COARSE — full frames — because they are long, and the
+traffic there is only position sync.
+
+## Where the received block actually lives
+
+Read this before concluding that a block is garbage. The 415 bytes are NOT
+contiguous and the tail does not start where the staging buffer's name suggests:
+
+| part | symbol | length |
+| --- | --- | --- |
+| trainer name | `wLinkEnemyTrainerName` `$D887` | 11 |
+| party tail | `wEnemyPartyCount` `$D89C` → nicknames end | 404 |
+
+`wSerialEnemyDataBlock` (`$D893`) is the RAW STAGING BUFFER and sits **nine
+bytes before** the parsed party. Reassembling from it yields `count=$FD`,
+`level=0`, `hp>maxHp` — a perfectly good block that reads as noise, which is
+what wq#483 saw. `invariants.readPartyBlock()` builds the block from symbols and
+asserts the partitioning, so a wrong assumption dies at construction instead of
+surfacing 400 bytes downstream.
+
+## Three pacing rules the transport must obey
+
+None of these are visible on the wire. Both sides' transfer tapes can be
+byte-identical while the received party is one byte short with its whole tail
+shifted — which is exactly how this failed, roughly one run in three, always on
+the passive side.
+
+1. **Yield on a MACROTASK every step.** Node only reads a socket on a macrotask;
+   a core stepping through microtask-only awaits starves its own link. Every
+   slice ends in `setImmediate` — the check phase, which runs AFTER poll, so a
+   packet that arrived during the frame is read before the next one starts.
+   `Emulator.framePacer` exists so this reaches navigation and dialog too: the
+   walk to the trade table is precisely where the ROM clocks the partner's
+   position every frame.
+2. **Hand over at most one byte per executed step, and only when the ROM can
+   take it.** Gen1's serial ISR parks the received byte in a ONE-DEEP slot
+   (`hSerialReceiveData`) for the main loop. Delivering on packet arrival lets
+   the next byte overwrite the last, and the ROM drops a byte the transport
+   thinks it delivered. The gate: transfer armed on the EXTERNAL clock, no
+   serial IRQ still pending, a fresh out-byte staged, and the ROM has READ the
+   previous byte out of the slot. Watch a READ of the DATA, not the flag beside
+   it (`hSerialReceivedNewData`) — other link routines clear that flag before
+   they wait, which reopens the gate a step early.
+3. **Leave the peer's transfer OPEN until your core consumed the byte** (BGB
+   `DEFER_REPLY`: answer the sync1 late). Your sync2 is the backpressure; it is
+   what stops a free-running master from out-pacing its partner.
+4. **Never deliver faster than the cable could** — one byte per 4096 CPU cycles
+   (`BridgeOptions.byteTicks`; DMG serial is an 8192 Hz bit clock, 1 KB/s). A
+   socket will hand you bytes orders of magnitude faster than that, and if you
+   take them, your ROM's game loop drifts out of phase with the peer's while
+   both are still nominally in the same routine. Because your reply is the
+   master's backpressure, pacing your own deliveries paces the master too —
+   which is precisely what a cable does.
+
+**Patience is bounded** (`BridgeOptions.holdCycles`, default 4096 ≈ eight
+transfer windows). Real hardware has none — the slave's shift register swaps
+whether or not the ROM is ready — so a byte held longer than the hardware ever
+would is not fidelity, it is a hang, and it hangs BOTH sides because the peer is
+holding its transfer open for us. Measured: an unbounded gate deadlocked the
+Cable Club handshake at 17 bytes with the master parked in the ROM's serial loop.
+Because the bound is in cycles, it means the same thing at any slice size, and
+it only bites where it matters: under fine slicing, around the block.
+
+## Contract for the other side
+
+Sit at the free chair, face the table, and drive your own A-presses. Answer
+sync1 when your core has taken the byte, not when the packet lands. Nothing new
+goes on the wire — this is all local pacing, and a BGB-correct implementation
+that happens to be slow is indistinguishable from ours.
+
+Rendezvous can still land in STRANDED before the continuation ever starts
+(wq#510); the remedy is unchanged and lives at the orchestrator — relaunch both
+sides, bump the port. `probe_m5c3` applies the same policy `tools/rdv-soak`
+does, and prints the retry count rather than hiding it.
+
+## Verified (wq#511)
+
+`npx tsx src/link/probe_m5c3.ts` — **14/14**, two independent processes, no
+shared memory:
+
+- Both sides reach map 239, one master and one slave, and both ROMs report
+  `wLinkState == 50`: the 415-byte block went in and the trade menu came up.
+- **717 exchanges** across the bridge (wq#483 measured 30 — the handshake).
+- M5b structural invariants **pass on both received blocks**; the peer's party
+  reads as a real one (count=1, species 178, L20, hp 57/57).
+- Every one of the 415 bytes matches our own party block **byte for byte, both
+  directions**. The measurement that got there labels each differing byte by
+  section (`mon0+22:134/23`, `ot0+3:128/80`): when the received byte at one
+  offset equals ours N offsets later, that is N bytes LOST, not corruption —
+  which is how a four-byte loss inside the mon array was found and fixed.
+
+`npx tsx src/link/probe_invariants.ts` — 38/38, including the layout assertions
+(`$D89C`, not `$D893`), a mirror that catches a one-byte-short shifted block,
+and one that correctly ignores never-filled party slots.
+
+**Honest limit:** both sides boot the same snapshot, so this proves the BLOCK
+crossed intact, not that a trade swapped anything. Two different identities and
+the post-swap check (`verifyPostTrade`) are the next milestone, not this one.

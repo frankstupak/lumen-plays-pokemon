@@ -6,7 +6,8 @@
 import { Emulator, loadSnapshotFile } from "../emulator";
 import { SymbolTable } from "../symbols";
 import { offsetsFromSymbols, verifyTradeBlock, verifyPostTrade, verifyBattleLedger,
-         viewBlock, combine, BLOCK, MonOffsets } from "./invariants";
+         viewBlock, combine, BLOCK, MonOffsets, TAIL_LEN,
+         partyBlockLayout, readPartyBlock, diffBlocks, sectionOf } from "./invariants";
 import { ckptPath, romPath } from "../fixtures";
 
 let pass = 0, fail = 0;
@@ -30,16 +31,7 @@ function realBlock(): number[] {
   const emu = new Emulator(romPath("pokeblue.gb"));
   loadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));
   emu.frames(4);
-  const m = emu.mem();
-  const rd = (a: number, n: number) => Array.from({ length: n }, (_, i) => m[a + i] & 0xFF);
-  return [
-    ...rd(sym.addr("wPlayerName"), BLOCK.nameLen),
-    m[sym.addr("wPartyCount")] & 0xFF,
-    ...rd(sym.addr("wPartySpecies"), BLOCK.speciesListLen),
-    ...rd(sym.addr("wPartyMon1"), BLOCK.maxSlots * BLOCK.structSize),
-    ...rd(sym.addr("wPartyMonOT"), BLOCK.maxSlots * BLOCK.nameLen),
-    ...rd(sym.addr("wPartyMonNicks"), BLOCK.maxSlots * BLOCK.nameLen),
-  ];
+  return readPartyBlock(emu.mem(), sym, "own");
 }
 
 const good = realBlock();
@@ -109,6 +101,35 @@ redFails("RED battle: no settled turns at all is FAIL-CLOSED, not a pass",
   verifyBattleLedger({ turns: [{ ...turns[0], settled: false }], wireBytes: wire, ownMoveIds: OWN }), "has_settled_turns");
 redFails("RED combine: zero verdicts is fail-closed", combine(), "combine");
 ok("combine rolls up mixed verdicts as failed", !combine(gv, verifyTradeBlock(good.slice(0, 10), O)).ok, "");
+
+// ---- wq#511: WHERE the block lives, and the diff that sees a lost byte ----
+const enemy = partyBlockLayout(sym, "enemy");
+ok("enemy block tail starts at wEnemyPartyCount, not the staging buffer",
+   enemy.tail === sym.addr("wEnemyPartyCount") && enemy.tail !== sym.addr("wSerialEnemyDataBlock"),
+   `tail=$${enemy.tail.toString(16)} staging=$${sym.addr("wSerialEnemyDataBlock").toString(16)} (${enemy.tail - sym.addr("wSerialEnemyDataBlock")} bytes apart)`);
+ok("enemy and own layouts agree on the 404-byte tail",
+   enemy.tailLen === TAIL_LEN && partyBlockLayout(sym, "own").tailLen === TAIL_LEN, `${enemy.tailLen}`);
+ok("offset labelling matches the partitioning",
+   sectionOf(0, O) === "name+0" && sectionOf(BLOCK.nameLen, O) === "count" &&
+   sectionOf(monBase, O) === "mon0+0" && sectionOf(BLOCK.total - 1, O) === "nick5+10",
+   `${sectionOf(monBase, O)} .. ${sectionOf(BLOCK.total - 1, O)}`);
+
+ok("GREEN mirror: a block equals itself", diffBlocks(good, good, O, view.count).ok, "");
+const oneOff = good.slice(); oneOff[monBase + O.level] ^= 1;
+ok("RED mirror: one byte flipped in an OCCUPIED slot is caught",
+   !diffBlocks(good, oneOff, O, view.count).ok, JSON.stringify(diffBlocks(good, oneOff, O, view.count).where));
+const deadSlot = good.slice(); deadSlot[monBase + 5 * O.stride] ^= 0xFF;
+ok("mirror scoped to the party ignores a never-filled slot", diffBlocks(good, deadSlot, O, view.count).ok, "");
+ok("...but the unscoped mirror still sees it", !diffBlocks(good, deadSlot, O).ok, "");
+
+// THE wq#511 regression: a block that lost one byte and shifted its tail.
+// Structural validation may or may not notice, depending on where the shift
+// lands (it caught this one on hp>maxHp, and passed a real one that shifted
+// only unused slots). The mirror sees it every time, and says at which byte.
+const shifted = [...good.slice(0, 12), ...good.slice(13), 0];
+ok("RED mirror: a one-byte-short, tail-shifted block is caught",
+   !diffBlocks(good, shifted, O, view.count).ok,
+   `structural verdict was ${verifyTradeBlock(shifted, O).ok ? "PASS (which is why the mirror exists)" : "FAIL"}, mirror diffs=${diffBlocks(good, shifted, O, view.count).diffs}`);
 
 console.log(`\n${pass} PASS / ${fail} FAIL`);
 process.exit(fail ? 1 : 0);

@@ -63,6 +63,105 @@ export function offsetsFromSymbols(sym: SymbolTable): MonOffsets {
   return o;
 }
 
+// ---------------------------------------------------------------------------
+// WHERE A PARTY BLOCK ACTUALLY LIVES (wq#511)
+// ---------------------------------------------------------------------------
+// The 415 bytes are NOT contiguous: 11 bytes of trainer name sit apart from the
+// 404-byte party tail, and the tail does NOT start where the name of the staging
+// buffer suggests. wq#483 read the received block as wLinkEnemyTrainerName + 404
+// bytes from wSerialEnemyDataBlock ($D893) — but $D893 is the raw staging area
+// and the parsed party begins at wEnemyPartyCount ($D89C), NINE bytes later. A
+// perfectly good block read that way looks like garbage (count=$FD, level 0,
+// hp>maxHp), which is what "the exchange never ran" turned out to mean.
+//
+// Nothing here is a remembered address: every bound is a symbol, and the
+// partitioning is ASSERTED, so a wrong assumption dies at construction instead
+// of surfacing as an invariant failure 400 bytes downstream.
+export const TAIL_LEN = BLOCK.total - BLOCK.nameLen;   // 404
+
+const BLOCK_SYMS = {
+  own:   { name: "wPlayerName",           count: "wPartyCount",      mons: "wPartyMons", ot: "wPartyMonOT",  nicks: "wPartyMonNicks" },
+  enemy: { name: "wLinkEnemyTrainerName", count: "wEnemyPartyCount", mons: "wEnemyMons", ot: "wEnemyMonOT",  nicks: "wEnemyMonNicks" },
+} as const;
+
+export type BlockSide = keyof typeof BLOCK_SYMS;
+export interface PartyBlockLayout { name: number; tail: number; tailLen: number }
+
+export function partyBlockLayout(sym: SymbolTable, side: BlockSide): PartyBlockLayout {
+  const S = BLOCK_SYMS[side];
+  const at = (k: keyof typeof S) => sym.addr(S[k]);
+  const must = (what: string, got: number, want: number) => {
+    if (got !== want) throw new Error(`invariants: ${side} block ${what} is ${got}, protocol says ${want}`);
+  };
+  must("count->mons", at("mons") - at("count"), 1 + BLOCK.speciesListLen);
+  must("mons->OT", at("ot") - at("mons"), BLOCK.maxSlots * BLOCK.structSize);
+  must("OT->nicks", at("nicks") - at("ot"), BLOCK.maxSlots * BLOCK.nameLen);
+  const tailLen = at("nicks") + BLOCK.maxSlots * BLOCK.nameLen - at("count");
+  must("tail length", tailLen, TAIL_LEN);
+  return { name: at("name"), tail: at("count"), tailLen };
+}
+
+/** Reassemble a 415-byte party block out of live RAM: ours, or the peer's as
+ *  our ROM stored it. Verify-only — never writes to the core. */
+export function readPartyBlock(mem: number[] | Uint8Array, sym: SymbolTable, side: BlockSide): number[] {
+  const L = partyBlockLayout(sym, side);
+  const out: number[] = [];
+  for (let i = 0; i < BLOCK.nameLen; i++) out.push(mem[L.name + i] & 0xFF);
+  for (let i = 0; i < L.tailLen; i++) out.push(mem[L.tail + i] & 0xFF);
+  return out;
+}
+
+/** Which part of a block an offset falls in — "mon3+12", "ot0+4", "nick5+2".
+ *  A diff report that says WHERE is the difference between "the link lost a
+ *  byte" and "those slots were never party members". */
+export function sectionOf(i: number, o: MonOffsets): string {
+  if (i < BLOCK.nameLen) return `name+${i}`;
+  if (i === BLOCK.nameLen) return "count";
+  const species = BLOCK.nameLen + 1;
+  const mons = species + BLOCK.speciesListLen;
+  const ot = mons + BLOCK.maxSlots * o.stride;
+  const nicks = ot + BLOCK.maxSlots * BLOCK.nameLen;
+  if (i < mons) return `species[${i - species}]`;
+  if (i < ot) return `mon${Math.floor((i - mons) / o.stride)}+${(i - mons) % o.stride}`;
+  if (i < nicks) return `ot${Math.floor((i - ot) / BLOCK.nameLen)}+${(i - ot) % BLOCK.nameLen}`;
+  return `nick${Math.floor((i - nicks) / BLOCK.nameLen)}+${(i - nicks) % BLOCK.nameLen}`;
+}
+
+/** Is this offset part of a party the block actually claims to have? Slots at
+ *  or past `count` are whatever RAM held — the protocol sends the fixed 404
+ *  bytes either way and promises nothing about the unused ones. */
+export function isLiveOffset(i: number, count: number, o: MonOffsets): boolean {
+  const s = sectionOf(i, o);
+  const m = s.match(/^(mon|ot|nick)(\d)/);
+  if (m) return Number(m[2]) < count;
+  const sp = s.match(/^species\[(\d)\]$/);
+  if (sp) return Number(sp[1]) <= count;      // count ids plus the $FF terminator
+  return true;                                 // name, count
+}
+
+export interface BlockDiff { ok: boolean; diffs: number; first?: { at: number; ours: number; theirs: number }; where?: string[] }
+
+/** Byte-for-byte comparison of two blocks. Structural validation passes a block
+ *  that lost a byte and shifted its tail; this does not. Pass `o` to label the
+ *  offsets, and `count` to compare only the slots the party actually holds. */
+export function diffBlocks(
+  ours: number[] | Uint8Array, theirs: number[] | Uint8Array,
+  o?: MonOffsets, count?: number,
+): BlockDiff {
+  const a = Array.from(ours), b = Array.from(theirs);
+  const out: BlockDiff = { ok: a.length === b.length, diffs: 0 };
+  const where: string[] = [];
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] === b[i]) continue;
+    if (o && count !== undefined && !isLiveOffset(i, count, o)) continue;
+    out.diffs++; out.ok = false;
+    out.first ??= { at: i, ours: a[i], theirs: b[i] };
+    if (o && where.length < 12) where.push(`${sectionOf(i, o)}:${a[i]}/${b[i]}`);
+  }
+  if (where.length) out.where = where;
+  return out;
+}
+
 export interface Failure { check: string; detail: string }
 export interface Verdict { ok: boolean; failures: Failure[]; checked: string[] }
 
