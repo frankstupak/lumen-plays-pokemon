@@ -1,7 +1,7 @@
 // wq#1181 (roadmap item 5): Gen 1 damage calc + winnability verdict.
 //
 // WHY THIS EXISTS
-//   Battles had no winnability model. moves.ts is a hand-typed 34-move table
+//   Battles had no winnability model. moves.ts was a hand-typed 25-move table
 //   with no type chart and no damage formula, so every "can I win this fight"
 //   question in the harness was answered by a level number (MISTY_MIN_LEVEL) or
 //   by a stall counter that only fires after 15 wasted turns (softlock.ts). Both
@@ -10,60 +10,40 @@
 //   badge boosts (CalculateModifiedStats/ApplyBadgeStatBoosts) into
 //   wBattleMon*/wEnemyMon*, so reading them needs no stat-stage math.
 //
-// PURE MODULE. No emulator, no fs, no symbols — battle.ts collects the RAM into
-// Combatants and this file does arithmetic, which is what makes the whole thing
-// probe-testable without a ROM (probe_calc1181.ts).
+// PURE ARITHMETIC. No emulator and no I/O of its own — battle.ts collects the
+// RAM into Combatants and this file does arithmetic, which is what makes the
+// whole thing probe-testable without a ROM (probe_calc1181.ts). Since wq#1180 it
+// imports romtables.ts for the Gen 1 type ids; that module only READS a ROM when
+// a decoder is called, so nothing here needs a cartridge to run.
 //
 // ITEM-4 SEAM (read this before editing the table below). Roadmap item 4
-// (wq#1180) decodes `Moves`, `TypeEffects` and `BaseStats` out of the ROM; at
-// the time this landed that branch was still empty, so the type chart here is
-// transcribed from pret/pokered `data/types/type_matchups.asm` and the move
-// metadata comes from moves.ts. BOTH are injected, never reached for directly:
-// pass a MoveSource and a TypeChart and this file has no opinion about where
-// they came from. When item 4 lands, `chartFromTriples(romTypeEffects(...))`
-// and a ROM-backed MoveSource replace the defaults at the two call sites in
-// battle.ts and nothing in here changes.
-import { MOVES } from "./moves";
+// (wq#1180) has since landed: romtables.ts decodes `Moves`, `TypeEffects` and
+// `BaseStats` out of the cartridge and agent.ts installs them at boot. Both
+// seams held — nothing in this file's arithmetic changed. The type chart and
+// move source below are now the FALLBACK path, used when the ROM decode threw
+// or disagreed with its golden set, and both are still injectable (pass a
+// MoveSource / TypeChart) for probes that want a fixed table.
+import { moveMeta, type MoveMeta } from "./moves";
+import { TYPE, TYPE_NAME, TYPE_ID, FIRST_SPECIAL_TYPE, isPhysical, TypeTriple } from "./romtables";
 
-// ---------------------------------------------------------------- types
-
-/** Gen 1 internal type ids (constants/type_constants.asm). These are the raw
- *  values in wBattleMonType1/wEnemyMonType1, so no translation is needed.
- *  Physical types are 0-8, special types 20-26 — the split is BY TYPE in Gen 1,
- *  not by move, which is why isPhysical() below is a comparison and not a
- *  table. BIRD (6) is unused by any real species; it is here so a garbage read
- *  during a map load resolves to a name instead of undefined. */
-export const TYPE = {
-  NORMAL: 0, FIGHTING: 1, FLYING: 2, POISON: 3, GROUND: 4, ROCK: 5,
-  BIRD: 6, BUG: 7, GHOST: 8,
-  FIRE: 20, WATER: 21, GRASS: 22, ELECTRIC: 23, PSYCHIC: 24, ICE: 25, DRAGON: 26,
-} as const;
-
-export const TYPE_NAME: Record<number, string> = Object.fromEntries(
-  Object.entries(TYPE).map(([k, v]) => [v, k]));
-
-/** moves.ts stores move types as STRINGS; this is the bridge until item 4's
- *  ROM decode makes the ids primary. PSYCHIC is spelled the same on both sides. */
-export const TYPE_ID: Record<string, number> = Object.fromEntries(
-  Object.entries(TYPE).map(([k, v]) => [k, v as number]));
-
-/** First special type id. Gen 1 splits physical/special by TYPE. */
-export const FIRST_SPECIAL_TYPE = TYPE.FIRE;
-export const isPhysical = (t: number): boolean => t < FIRST_SPECIAL_TYPE;
+// Type ids are ROM facts, so they live with the decoders (romtables.ts). They
+// are re-exported here because this is where callers already import them from.
+export { TYPE, TYPE_NAME, TYPE_ID, FIRST_SPECIAL_TYPE, isPhysical };
+export type { TypeTriple };
+export type { MoveMeta } from "./moves";
 
 // ---------------------------------------------------------------- type chart
-
-/** One TypeEffects row, in the ROM's own shape: [attacking type, defending
- *  type, multiplier x10]. Item 4's decode emits exactly this, which is why the
- *  built-in table below is written in it rather than as a nested map. */
-export type TypeTriple = [number, number, number];
 
 /** Transcribed from pret/pokered data/types/type_matchups.asm. Anything not
  *  listed is 1x. Gen 1 quirks are deliberate and load-bearing: Poison IS super
  *  effective against Bug (and Bug against Poison), Ghost does nothing to
- *  Psychic, and Ice is NOT resisted by Fire. This table is UNVERIFIED against
- *  the cartridge (roms/*.gb is untracked — copyright); item 4's ROM decode is
- *  the verification path, and chartFromTriples() takes its output unchanged. */
+ *  Psychic, and Ice is NOT resisted by Fire.
+ *
+ *  wq#1180 VERIFIED this transcription against roms/pokeblue.gb: the cartridge
+ *  lists 82 matchups, this table lists the same 82, and every multiplier
+ *  agrees (probe_romtables1180 asserts it). It stays as the fallback rather
+ *  than being deleted, because a ROM decode that fails must leave the verdict
+ *  with a chart rather than with 1x for everything. */
 export const TYPE_EFFECTS: TypeTriple[] = [
   [TYPE.WATER, TYPE.FIRE, 20], [TYPE.FIRE, TYPE.GRASS, 20], [TYPE.FIRE, TYPE.ICE, 20],
   [TYPE.GRASS, TYPE.WATER, 20], [TYPE.ELECTRIC, TYPE.WATER, 20], [TYPE.WATER, TYPE.ROCK, 20],
@@ -108,7 +88,24 @@ export function chartFromTriples(triples: TypeTriple[]): TypeChart {
   return { x10: (a, d) => m.get(a * 256 + d) ?? 10 };
 }
 
+/** The transcribed chart. Still the fallback; no longer necessarily the one in
+ *  use — see activeChart(). */
 export const DEFAULT_CHART: TypeChart = chartFromTriples(TYPE_EFFECTS);
+
+let installedChart: TypeChart | null = null;
+
+/** wq#1180: hand the verdict THIS cartridge's TypeEffects table. Called once at
+ *  boot (agent.ts) with romtables.loadRomTables().typeEffects; a null or failed
+ *  decode never calls it and every reader stays on DEFAULT_CHART. */
+export function installTypeChart(triples: TypeTriple[] | null): boolean {
+  if (!triples || !triples.length) return false;
+  installedChart = chartFromTriples(triples);
+  return true;
+}
+
+/** The chart winnability() uses when the caller passes none. */
+export function activeChart(): TypeChart { return installedChart ?? DEFAULT_CHART; }
+export function chartSource(): "rom" | "fallback" { return installedChart ? "rom" : "fallback"; }
 
 /** Combined multiplier against a (possibly dual-typed) defender. Gen 1 applies
  *  each type separately with truncation between them, so 2x then 0.5x is not
@@ -124,25 +121,17 @@ export function effectiveness(chart: TypeChart, atkType: number, d1: number, d2:
 
 // ---------------------------------------------------------------- move source
 
-export interface MoveMeta { id: number; name: string; type: number; power: number; lockIn?: boolean }
-
-/** Where move metadata comes from. Item 4's ROM `Moves` decode implements this
- *  with full 165-move coverage; the default below is the hand-typed table. */
+/** Where move metadata comes from. wq#1180's ROM `Moves` decode covers all 165;
+ *  moves.ts picks ROM-first and falls back to its 25 hand-typed entries. */
 export interface MoveSource { get(id: number): MoveMeta | undefined }
 
-/** moves.ts adapter. Returns undefined for the ~130 moves the hand-typed table
- *  does not cover — deliberately NOT the old "assume power 30" guess, because
- *  the verdict has to be able to tell "weak move" from "unknown move" to know
- *  whether it is allowed to make a claim (see UNKNOWN_POWER). */
-export const DEFAULT_MOVES: MoveSource = {
-  get(id: number): MoveMeta | undefined {
-    const m = MOVES[id];
-    if (!m) return undefined;
-    const type = TYPE_ID[m.type];
-    if (type === undefined) return undefined;
-    return { id, name: m.name, type, power: m.power, lockIn: m.lockIn };
-  },
-};
+/** moves.ts adapter — ROM-backed once agent.ts has installed the decode, the
+ *  hand-typed fallback before that. Returns undefined for an id NEITHER table
+ *  knows, deliberately NOT the old "assume power 30" guess: the verdict has to
+ *  be able to tell "weak move" from "unknown move" to know whether it is allowed
+ *  to make a claim (see UNKNOWN_POWER). On the ROM path that gap closes to zero,
+ *  which is what lifts most verdicts from LOW to HIGH confidence. */
+export const DEFAULT_MOVES: MoveSource = { get: (id: number) => moveMeta(id) };
 
 /** Power assumed for a move whose metadata is missing. Same 30-power spirit as
  *  moves.ts's picker, nudged to a plausible mid attacker so an unknown-heavy
@@ -306,7 +295,7 @@ export interface Winnability {
  */
 export function winnability(me: Combatant, foe: Combatant, opts: WinnabilityOpts = {}): Winnability {
   const src = opts.src ?? DEFAULT_MOVES;
-  const chart = opts.chart ?? DEFAULT_CHART;
+  const chart = opts.chart ?? activeChart();
   const remaining = Math.max(1, Math.floor(opts.foeRemaining ?? 1));
 
   const mineOpt = moveEstimates(me, foe, src, chart, ROLL_MAX);

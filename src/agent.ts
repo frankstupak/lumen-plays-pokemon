@@ -21,7 +21,8 @@ import { Brain } from "./brain";
 import { History, buildMessages, renderState } from "./prompt";
 import { Notepad } from "./notepad";
 import { PersonaMemory } from "./persona";              // wq#1176
-import { moveLabel, MOVES, pickBestMove } from "./moves";
+import { moveLabel, pickBestMove, installRomMoves, moveTableInfo } from "./moves";
+import { loadRomTables, installBaseStats } from "./romtables";     // wq#1180 item 4
 import { GameState } from "./state";
 import { Items, itemId, ITEM_NAME, ITEM, MART_ORDER,
          backfillItemNames, backfillItemPrices } from "./items";
@@ -33,7 +34,7 @@ import { MISTY_MIN_LEVEL, mistyGymEntryRefusal,
 import { catchAdvice, WANTED } from "./catch_policy";
 import { assessBattleLock, assessWinnability } from "./softlock";
 import { FightLedger, fightWasLost, grindJustified, GateCtx } from "./ledger";   // wq#1181 item 6
-import { Winnability } from "./calc";                              // wq#1181 item 5
+import { Winnability, installTypeChart, chartSource } from "./calc";   // wq#1181 item 5, wq#1180 item 4
 import { RecoveryTracker } from "./recovery";
 import { TransitTracker, repelAdvice } from "./transit";   // wq#487
 import { NoveltyTracker, levelSum } from "./novelty";   // wq#1179 (observe-only)
@@ -306,6 +307,35 @@ export class Agent {
       bus.emit("tool_call", { tool: "item_prices_backfilled", src: "harness", ...bp });
     } catch (e: any) {
       bus.emit("tool_call", { tool: "item_prices_backfill_failed", src: "harness",
+                              error: String(e?.message ?? e) });
+    }
+    // wq#1180 (roadmap item 4): decode Moves / TypeEffects / BaseStats from THIS
+    // cartridge and hand them to the pickers and the winnability verdict. Same
+    // contract as the two backfills above and the same reason for the try: an
+    // unreadable table must cost the run its move POWERS, not its boot.
+    //
+    // FAIL-CLOSED PER TABLE. loadRomTables returns null for any table that threw
+    // or disagreed with its golden set, install*() refuses a null, and the
+    // readers stay on their hand-typed fallbacks — so a bad decode degrades to
+    // exactly the behaviour that shipped before this ticket. The emitted event
+    // names the source each reader ended up on, because the failure mode worth
+    // fearing is a silent fallback nobody can see from the outside.
+    try {
+      const rt = loadRomTables(rom, sym);
+      installRomMoves(rt.moves);
+      installTypeChart(rt.typeEffects);
+      installBaseStats(rt.baseStats);
+      const mt = moveTableInfo();
+      bus.emit("tool_call", {
+        tool: "rom_tables_loaded", src: "harness",
+        moves: mt.source, moveEntries: mt.entries,
+        chart: chartSource(), typeEffects: rt.counts.typeEffects,
+        baseStats: rt.counts.baseStats,
+        errorCount: rt.errors.length, errors: rt.errors,
+      });
+      for (const e of rt.errors) console.error(`[romtables] ${e}`);
+    } catch (e: any) {
+      bus.emit("tool_call", { tool: "rom_tables_load_failed", src: "harness",
                               error: String(e?.message ?? e) });
     }
     this.loadSupervisorBans();
