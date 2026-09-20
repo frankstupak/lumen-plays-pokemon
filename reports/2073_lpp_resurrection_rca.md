@@ -117,6 +117,13 @@ whoever happens to be holding an adjacent ticket.
 
 ## Not fixed here, and why
 
+> **Superseded 2026-09-20** — the second half below was picked up on the retry of
+> this ticket and is answered in `2073_cerebras_cascade_finding.md`. The
+> suspicion recorded here was right: line 159 is `messenger-re`'s, not
+> Cerebras's, and the rejected value turned out to be `disable` sent by
+> Minerva's verify judge. The gateway-side amplifier is fixed; the caller's one
+> word is still wq#2068's.
+
 **`litellm_config.yaml:159` — `reasoning_effort` on `cerebras-oss-120b`** (the
 ticket's second half, owned by wq#2068). That file is outside this lane's
 filesystem grant: `/home/lumen` is not readable from here, the gateway's

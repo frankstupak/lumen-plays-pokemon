@@ -1,0 +1,41 @@
+### pre-change state
+sha256 before: ae00682aad88d74e22e1db0ca8e39836f2057a0ff36c142a49f78e5e21c60168
+health before: 200
+backup: /home/lumen/agent/litellm_config.yaml.bak.20260920_202642_pre_wq2073
+
+### patch
+PATCHED /home/lumen/agent/litellm_config.yaml at line 363
+sha256 after:  46e8c739c241d41c1d2bb9aa75a6cdd7875ca421413bacc8017daa61aa2301bc
+--- router_settings head ---
+362:router_settings:
+363-  # wq#2073: a 400 from the provider's request validator is a CLIENT bug --
+364-  # a bad param value -- not a rung that is down. Retrying it sends the same
+365-  # rejected value out num_retries more times, and every attempt drags this
+366-  # group's fallback edge onto a free local rung with it. That is how one
+367-  # caller's reasoning_effort=disable became 2,786 dead-end hops onto isis
+368-  # in 24h (wq#2068 cascade; evidence in the pokemon repo at
+369-  # ops/wq2073-cerebras-reasoning-effort/). Retry budgets are for transient
+370-  # faults only; these two classes are deterministic.
+371-  retry_policy:
+372-    BadRequestErrorRetries: 0
+373-    AuthenticationErrorRetries: 0
+374-  routing_strategy: least-busy   # wq#2127: only local-worker has >1 deployment; single-deployment groups unaffected
+
+### reload
+time="2026-09-20T20:26:42Z" level=warning msg="/home/lumen/docker/docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Container litellm  Restarting
+ Container litellm  Started
+
+### health after reload
+t+10s http=000
+t+20s http=000
+t+30s http=000
+t+40s http=000
+t+50s http=200
+
+### post-reload sanity: model groups still served
+0
+config-load errors: 0
+cerebras-oss-120b present in loaded config: 1
+messenger-re reasoning_effort untouched: 1
+RESULT=APPLIED

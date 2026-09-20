@@ -1,0 +1,22 @@
+### patcher on a copy
+PATCHED /tmp/wq2073_dryrun.IYaxY0.yaml at line 363
+exit=0
+
+### diff (copy vs live) — must be exactly the inserted block
+362a363,373
+>   # wq#2073: a 400 from the provider's request validator is a CLIENT bug --
+>   # a bad param value -- not a rung that is down. Retrying it sends the same
+>   # rejected value out num_retries more times, and every attempt drags this
+>   # group's fallback edge onto a free local rung with it. That is how one
+>   # caller's reasoning_effort=disable became 2,786 dead-end hops onto isis
+>   # in 24h (wq#2068 cascade; evidence in the pokemon repo at
+>   # ops/wq2073-cerebras-reasoning-effort/). Retry budgets are for transient
+>   # faults only; these two classes are deterministic.
+>   retry_policy:
+>     BadRequestErrorRetries: 0
+>     AuthenticationErrorRetries: 0
+diff_exit=1
+
+### idempotency: second run must be a no-op
+ALREADY_PRESENT
+DRYRUN_OK

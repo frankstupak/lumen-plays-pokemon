@@ -1,0 +1,66 @@
+### every systemd unit whose name mentions lpp / pokemon
+lpp-24h-capture.service                                                       disabled        enabled
+lpp-restart.service                                                           masked          enabled
+lpp-snapshot.service                                                          static          -
+lpp-watchdog.service                                                          static          -
+lumen-guardian-lpp.service                                                    masked          enabled
+lumen-lpp-frontier.service                                                    static          -
+lumen-lpp-sentinel.service                                                    static          -
+lumen-lpp-stuck-supervisor.service                                            static          -
+lumen-pokemon-live.service                                                    masked          enabled
+lpp-snapshot.timer                                                            disabled        enabled
+lpp-watchdog.timer                                                            disabled        enabled
+lumen-lpp-frontier.timer                                                      disabled        enabled
+lumen-lpp-sentinel.timer                                                      disabled        enabled
+lumen-lpp-stuck-supervisor.timer                                              disabled        enabled
+
+### load state of each
+lumen-pokemon-live.service         load=masked     active=inactive   enabled=masked
+lumen-guardian-lpp.service         load=masked     active=inactive   enabled=masked
+lpp-restart.service                load=masked     active=inactive   enabled=masked
+lpp-probes.service                 load=not-found  active=inactive   enabled=not-found
+lpp-probes.timer                   load=not-found  active=inactive   enabled=not-found
+lumen-pokemon-stream.service       load=not-found  active=inactive   enabled=not-found
+
+### anything that Wants/Requires/BindsTo lumen-pokemon-live.service
+RequiredBy=
+WantedBy=
+BoundBy=
+TriggeredBy=
+
+### unit files under /etc that reference the pokemon tree in an ExecStart
+/etc/systemd/system/lumen-pokemon-live.service.KILLED-1789805573
+/etc/systemd/system/lumen-lpp-stuck-supervisor.service
+/etc/systemd/system/lumen-pokemon-live.service.DISABLED-COST-2026-09-13
+/etc/systemd/system/lumen-lpp-sentinel.service
+/etc/systemd/system/lumen-kiosk-idle.service
+/etc/systemd/system/lumen-lpp-frontier.service
+
+### drop-ins that survive a mask (dir kept even when unit -> /dev/null)
+/etc/systemd/system/lumen-pokemon-live.service.d
+24h-retention.conf
+30-brain-env.conf
+30-brain-env.conf.bak.20260828_184808_pre_wq1079_cerebras_bypass
+30-brain-env.conf.bak.20260901_055301_pre_brainfix
+30-brain-env.conf.bak.20260909_063521_pre_cerebras_restore
+30-brain-env.conf.bak.20260910_025520_pre_zai
+30-brain-env.conf.bak.20260910_044816
+35-brain-escalate-1664.conf
+no-deepseek.conf
+no-deepseek.conf.bak.20260909_063521_pre_cerebras_restore
+zz-cost-hold.conf
+
+### timers that could fire anything lpp-shaped
+(no lpp/pokemon timers)
+
+### crontab entries mentioning pokemon/lpp (lumen + root)
+15 */6 * * * for r in /home/lumen/foreman /home/lumen/pokemon /home/lumen/mailbot; do /home/lumen/foreman/harness/harness-preflight $r >> /home/lumen/logs/preflight.log 2>&1; done
+
+### the mask itself
+lrwxrwxrwx 1 root root 9 Sep 19 08:12 /etc/systemd/system/lumen-pokemon-live.service -> /dev/null
+lrwxrwxrwx 1 root root 9 Sep 19 08:12 /etc/systemd/system/lpp-restart.service -> /dev/null
+lrwxrwxrwx 1 root root 9 Sep 19 08:12 /etc/systemd/system/lumen-guardian-lpp.service -> /dev/null
+
+### is the tombstone present in the tree the unit runs out of?
+-rw-r--r-- 1 lumen lumen 2068 Sep 20 20:17 /home/lumen/pokemon/DECOMMISSIONED.md
+62d76d9 fix(ops): keep LPP's decommission in the tree, not in a systemctl verb

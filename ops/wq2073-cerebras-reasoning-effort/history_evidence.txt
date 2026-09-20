@@ -1,0 +1,77 @@
+### reasoning_effort across the recent backup trail (file: line: text)
+-- litellm_config.yaml
+200:      reasoning_effort: high
+-- litellm_config.yaml.bak.20260920_152128_pre_wq2127
+159:      reasoning_effort: high
+-- litellm_config.yaml.bak.20260919_080723_add_mac_rungs
+147:      reasoning_effort: high
+-- litellm_config.yaml.bak.20260918_052310_hathor_down
+147:      reasoning_effort: high
+-- litellm_config.yaml.bak.PREAPPLY
+147:      reasoning_effort: high
+
+### line 159 in each of those files
+-- litellm_config.yaml:   litellm_params:|    model: deepseek/deepseek-v4-flash|    api_key: <REDACTED>    max_token<REDACTED> 8192|    timeout: 60|    extra_body:|      thinking:|        type: disabled|
+-- litellm_config.yaml.bak.20260920_152128_pre_wq2127:     timeout: 180|    extra_body:|      thinking:|        type: enabled|      reasoning_effort: high|  model_info:|    mode: chat|- model_name: gemini-flash|
+-- litellm_config.yaml.bak.20260919_080723_add_mac_rungs:   model_info:|    mode: chat|- model_name: openrouter-free|  litellm_params:|    model: openrouter/deepseek/deepseek-v4-flash|    api_base: https://openrouter.ai/api/v1|    api_key: <REDACTED>    max_token<REDACTED> 2048|
+
+### cerebras-oss-120b block in pre_wq2127 backup
+71:- model_name: cerebras-oss-120b
+72-  litellm_params:
+73-    model: cerebras/gpt-oss-120b
+74-    api_key: <REDACTED>
+75-    timeout: 30
+76-  model_info:
+77-    mode: chat
+
+### what wq2127 changed (pre_wq2127 -> current), reasoning/cerebras/fallback only
+>     timeout: 2460          # wq#2127: first-frame budget + 60 s; LiteLLM's disconnect watcher stops after 600 s, so this bounds a zombie
+>     stream_timeout: 2460
+>     num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+>     max_parallel_requests: 2
+>     timeout: 1560          # wq#2127: first-frame budget + 60 s; LiteLLM's disconnect watcher stops after 600 s, so this bounds a zombie
+>     stream_timeout: 1560
+>     num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+>     max_parallel_requests: 2
+> - model_name: local-worker   # wq#2127: Mac worker group; least-busy across deployments, per-box slots
+>   litellm_params:
+>     model: openai/llama3.1:8b
+>     api_base: http://100.80.71.13:11434/v1
+>     api_key: <REDACTED>
+>     timeout: 1560          # wq#2127: first-frame budget + 60 s; LiteLLM's disconnect watcher stops after 600 s, so this bounds a zombie
+>     stream_timeout: 1560
+>     num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+>     max_parallel_requests: 2
+>     cooldown_time: 900
+>   model_info: {mode: chat, id: local-worker-hathor, max_input_token<REDACTED> 28672, max_output_token<REDACTED> 4096, description: "llama3.1:8b on hathor, 2 slots x 32768 served"}
+> - model_name: local-worker   # wq#2127: Mac worker group; least-busy across deployments, per-box slots
+>   litellm_params:
+>     model: openai/qwen3:14b
+>     api_base: http://100.98.74.87:11434/v1
+>     api_key: <REDACTED>
+>     timeout: 2460          # wq#2127: first-frame budget + 60 s; LiteLLM's disconnect watcher stops after 600 s, so this bounds a zombie
+>     stream_timeout: 2460
+>     num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+>     max_parallel_requests: 2
+>     cooldown_time: 900
+>   model_info: {mode: chat, id: local-worker-nephthys, max_input_token<REDACTED> 28672, max_output_token<REDACTED> 4096, description: "qwen3:14b on nephthys, 2 slots x 32768 served"}
+> - model_name: local-worker   # wq#2127: Mac worker group; least-busy across deployments, per-box slots
+>   litellm_params:
+>     model: openai/qwen3.6-35b-a3b
+>     api_base: http://100.100.129.24:8095/v1
+>     api_key: <REDACTED>
+>     timeout: 960          # wq#2127: first-frame budget + 60 s; LiteLLM's disconnect watcher stops after 600 s, so this bounds a zombie
+>     stream_timeout: 960
+>     num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+>     max_parallel_requests: 2
+>     cooldown_time: 900
+
+### retry_policy / allowed_fails present today?
+44:    num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+54:    num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+80:    num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+91:    num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+102:    num_retries: 0         # wq#2127: a retried 20-min prefill for a dead client is a zombie; fworker re-dispatches instead
+364:  num_retries: 3
+366:  allowed_fails: 2
+369:  # back to Cerebras is a paid rung wearing a free rung's name, and with num_retries
