@@ -2,7 +2,10 @@
   "criteria": [
     {
       "id": "AC1",
-      "citation": "src/agent.ts:1899"
+      "citation": "src/explore.ts:562-580",
+      "cmd_run": "npx tsx src/probe_explore1731.ts",
+      "exit_code": 0,
+      "note": "stallMap() names the map a dominant_patch verdict convicts (src/explore.ts:205); tick() holds a fire that blames a map the player is not standing on (src/explore.ts:485-487 -> hold() at 562-580); start() builds footprintHere/excludeTiles from that anchor (src/explore.ts:594-598). Probe section G (src/probe_explore1731.ts:766-861) replays the live STALL_WINDOW from its real last sample on map36: 116 PASS / 0 FAIL, and scripts/probes-pure.sh is PROBES GREEN 21/21."
     }
   ]
 }

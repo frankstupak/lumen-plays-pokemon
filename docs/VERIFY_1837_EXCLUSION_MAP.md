@@ -48,6 +48,16 @@ whose window ends on the excursion map.
 
 Fixed after merge, for the record: v1 exclusion was turn-keyed and reset on restart; wq#1839 moved it to seq.
 
+## Fixed by wq#2160
+
+`stallMap()` (explore.ts) names the map a verdict convicts — the patch's for `dominant_patch`, where the player
+stands for the two whole-window triggers — and `tick()` HOLDS a fire that would blame a map the player is not on
+(`hold()`, logged once as an `ev: "defer"` record naming the map it waits for). The shuttle's next swing back onto
+the strip fires it, so the escape and the ban both land on map35; the fire record carries `deferredTurns`. No
+timeout is needed: the verdict is a share of the last `windowTurns` samples, so an agent that stays away loses the
+patch and the hold lapses. Probe section G in `probe_explore1731.ts` replays this window from its real last
+sample (Route 25) — G4 reads 41 strip tiles banned, 0 on Route 25, against the 0/10 measured above.
+
 ## Repro
 
 Save as `repro.ts` at the repo root and run `npx tsx repro.ts`:
