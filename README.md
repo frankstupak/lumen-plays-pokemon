@@ -86,6 +86,7 @@ src/
   persona_store.ts  those facts in lumen_state, the fleet's bi-temporal store
   persona_llm.ts    "did he just state a durable fact about himself?"
   persona_cli.ts    the same store from any process: recall / ask / state
+  meta_text.ts      the model's homework: never spoken, never remembered
   link/             Game Boy link cable over TCP (multiplayer work)
   probe_*.ts        acceptance probes, one per shipped capability
 docs/               doctrine, research, roadmap, survivability plan

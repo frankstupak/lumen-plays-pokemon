@@ -31,6 +31,7 @@
 // then has to keep telling.
 import { readFileSync, renameSync, existsSync } from "fs";
 import { CFG } from "./config";
+import { isMetaText } from "./meta_text";
 import {
   LumenStateStore, MemoryPersonaStore, PersonaStore,
   decodePredicate, decodeSource, encodePredicate, encodeSource, today,
@@ -41,6 +42,10 @@ export const RECALL_BUDGET = 900;      // chars of persona injected into a promp
 export const MAX_VALUE_CHARS = 160;
 export const MAX_CONFLICTS = 5;        // per fact; enough to see a pattern, not a log
 export const MAX_KEY_CHARS = 48;
+/** Values kept per SET-VALUED slot in the recall view. "i am" is a slot whose
+ *  members accumulate, and a slot that accumulated freely spent the whole
+ *  900-char recall budget on itself — 36 rows of it, in the first live week. */
+export const MAX_SET_MEMBERS = 6;
 
 /** A restatement that CONTRADICTED a fact stated the SAME day. Kept locally,
  *  never ingested: the canonical value stands (see observe()). */
@@ -168,7 +173,31 @@ export function buildClaim(key: string, rawValue: string, raw: string, single: b
   const value = displayValue(rawValue);
   const norm = normValue(value);
   if (norm.length < 2) return null;
+  // A model restating its own instructions is not Lumen telling you something
+  // about himself, and canonising it is how lumen-persona ended up holding
+  // "i am: Lumen, a Pokemon streamer, dry and tired, one sentence about a film
+  // or show I watched recently, not tied to the game" (wq#1176). The gate is on
+  // the VALUE and the KEY, not the surrounding sentence: extraction hands us
+  // fragments, and the fragment is what becomes the fact.
+  if (isMetaText(value) || isMetaText(k)) return null;
+  // Run-on self-description, same root cause seen from the other side: a
+  // legitimate copular fact is short ("an AI", "a dry, tired streamer"). Five
+  // clauses of adjectives is the system prompt being read back, and every
+  // rephrasing of it opens ANOTHER set-valued row (36 of them, before this).
+  if (!single && isSelfDescription(k) && isRunOn(value)) return null;
   return { key: k, value, norm, raw: String(raw ?? "").trim().slice(0, 240), single };
+}
+
+/** The copular slot: "i am X" / "i'm X". The one slot whose values are adjective
+ *  piles rather than distinct claims, which is why it needs its own rules. */
+export function isSelfDescription(key: string): boolean {
+  return key === "i am" || key === "i";
+}
+
+/** Too many clauses to be one thing he believes about himself. */
+export function isRunOn(value: string): boolean {
+  const commas = (value.match(/,/g) ?? []).length;
+  return commas >= 3 || normValue(value).split(" ").length > 9;
 }
 
 /**
@@ -236,6 +265,27 @@ export function nearDuplicate(a: string, b: string): boolean {
   return ta.length === tb.length && ta.every((t, i) => t === tb[i]);
 }
 
+/**
+ * Two values in the SAME set-valued slot that are the same claim.
+ *
+ * Word-set equality (nearDuplicate) is the general rule and stays deliberately
+ * tight: "caves" and "caves at night" are different things to like. The copular
+ * slot is the exception, because its values are adjective piles rather than
+ * distinct claims — "a dry, tired streamer" and "a dry, tired Pokemon streamer"
+ * are one self-description said twice, and filing them separately is how one
+ * slot grew 36 rows. There, containment in either direction is sameness.
+ */
+export function sameSetMember(key: string, a: string, b: string): boolean {
+  if (nearDuplicate(a, b)) return true;
+  if (!isSelfDescription(key)) return false;
+  const ta = new Set(a.split(" ").filter(Boolean));
+  const tb = new Set(b.split(" ").filter(Boolean));
+  if (!ta.size || !tb.size) return false;
+  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  for (const t of small) if (!big.has(t)) return false;
+  return true;
+}
+
 /** Model-backed extraction, injected by the surface (live_agent, persona_cli).
  *  persona.ts must not import persona_llm: the LLM path is optional and the
  *  store has to work on a machine with no gateway at all. */
@@ -258,6 +308,10 @@ export class PersonaMemory {
    *  swallowed: a persona that has quietly stopped reading fleet state looks
    *  exactly like a persona with nothing to say. */
   storeErrors = 0;
+  /** Rows the last read held back: scaffolding, run-on self-description, or a
+   *  set slot over its ceiling. Nonzero is not an error — it is the guard
+   *  working — but a number that climbs says the writer upstream is sick. */
+  suppressed = 0;
   private lastRead = 0;
   private cacheTtlMs = CFG.persona.cacheTtlMs;
 
@@ -360,7 +414,48 @@ export class PersonaMemory {
         conflicts: p && !changed ? p.conflicts : [],
       };
     });
+    this.facts = this.quarantine(this.facts);
     this.trimView();
+  }
+
+  /**
+   * The READ-SIDE half of the scaffolding guard.
+   *
+   * buildClaim stops new junk being written, but lumen_state already holds a
+   * week of it — 36 `i_am__*` rows, several of them the topic mixer's
+   * instructions in a fact's clothes — and those rows are loaded into the
+   * generator prompt and the Messenger prompt on every single call. Filtering
+   * on READ fixes both surfaces immediately and without touching fleet state:
+   * nothing is deleted, the rows stay queryable for an audit, and if this
+   * judgement is ever wrong the fix is a deploy, not a restore.
+   *
+   * Also the per-slot ceiling: a set-valued slot is allowed to accumulate, but
+   * not to eat the recall budget. Shortest values first (a clean descriptor is
+   * what a persona slot is for), then the ones he has held longest.
+   */
+  private quarantine(facts: PersonaFact[]): PersonaFact[] {
+    const kept: PersonaFact[] = [];
+    let dropped = 0;
+    for (const f of facts) {
+      if (isMetaText(f.value) || (isSelfDescription(f.key) && isRunOn(f.value))) { dropped++; continue; }
+      kept.push(f);
+    }
+    this.suppressed = dropped;
+
+    const sets = new Map<string, PersonaFact[]>();
+    const out: PersonaFact[] = [];
+    for (const f of kept) {
+      if (f.single) { out.push(f); continue; }
+      const arr = sets.get(f.key);
+      if (arr) arr.push(f); else sets.set(f.key, [f]);
+    }
+    for (const arr of sets.values()) {
+      arr.sort((a, b) => a.value.length - b.value.length ||
+        (a.validFrom < b.validFrom ? -1 : a.validFrom > b.validFrom ? 1 : 0));
+      this.suppressed += Math.max(0, arr.length - MAX_SET_MEMBERS);
+      out.push(...arr.slice(0, MAX_SET_MEMBERS));
+    }
+    return out;
   }
 
   /**
@@ -402,7 +497,7 @@ export class PersonaMemory {
     for (const c of claims) {
       const prior = c.single
         ? this.facts.find(f => f.key === c.key && f.single)
-        : this.facts.find(f => f.key === c.key && !f.single && nearDuplicate(f.norm, c.norm));
+        : this.facts.find(f => f.key === c.key && !f.single && sameSetMember(f.key, f.norm, c.norm));
       const predicate = encodePredicate(c.key, c.single, c.norm);
 
       if (!prior) {
@@ -410,7 +505,7 @@ export class PersonaMemory {
         if (fact) events.push({ outcome: "new", key: fact.key, value: fact.value, fact });
         continue;
       }
-      if (nearDuplicate(prior.norm, c.norm)) {
+      if (nearDuplicate(prior.norm, c.norm) || (!c.single && sameSetMember(prior.key, prior.norm, c.norm))) {
         // Reaffirmation. No write: the value in the store is already this one,
         // persona predicates carry no half-life, so an identical ingest would
         // buy nothing but a subprocess on the turn loop.
@@ -521,7 +616,7 @@ export class PersonaMemory {
       `the original stands. Stay consistent.`).join("\n");
   }
 
-  stats(): { facts: number; single: number; conflicts: number; platforms: string[]; store: string; storeErrors: number } {
+  stats(): { facts: number; single: number; conflicts: number; platforms: string[]; store: string; storeErrors: number; suppressed: number } {
     return {
       facts: this.facts.length,
       single: this.facts.filter(f => f.single).length,
@@ -529,6 +624,7 @@ export class PersonaMemory {
       platforms: [...new Set(this.facts.map(f => f.platform))].sort(),
       store: this.store.kind,
       storeErrors: this.storeErrors,
+      suppressed: this.suppressed,
     };
   }
 

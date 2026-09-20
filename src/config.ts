@@ -320,6 +320,15 @@ export const CFG = {
   streamer: {
     enabled: envN0("LPP_STREAMER_ENABLE", 1) > 0,
     model: envS("LPP_STREAMER_MODEL", "deepseek-v4-flash"),
+    // wq#1176: the cheap rung is a THINKING model, and a thinking model asked
+    // for one sentence spends its budget thinking and returns an empty
+    // `content`. gatewayLLM used to read `reasoning_content` when that
+    // happened, which put "Let me think about the screen state" on a public
+    // stream for 82% of the first week's lines (tools/scan_chat_meta.ts over
+    // runtime/chat.jsonl). Chat wants the answer, never the working: same
+    // switch CFG.profiles.persona uses, same reason. "" sends nothing, for a
+    // gateway alias that bakes it in or a model that rejects the field.
+    thinking: envS("LPP_STREAMER_THINKING", "disabled"),
     timeoutMs: envN("LPP_STREAMER_TIMEOUT_MS", 20_000),
     maxTokensOut: envN("LPP_STREAMER_MAX_TOKENS", 160),
     temperature: Number(envS("LPP_STREAMER_TEMP", "0.9")),
