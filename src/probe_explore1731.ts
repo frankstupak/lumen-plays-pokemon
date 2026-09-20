@@ -12,7 +12,7 @@ process.env.LPP_OVERRIDE_LOG = `/tmp/explore1731-${TAG}.jsonl`;
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import type { ProgressSample } from "./novelty";
 import {
-  assessStall, dominantPatch, planEscape, pathToDirs, footDistance, progressBlock, progressCounters,
+  assessStall, dominantPatch, stallMap, planEscape, pathToDirs, footDistance, progressBlock, progressCounters,
   ExplorationOverride, overrideLogFile, recoverFlushSeq, recoverWatch, FALLBACK_SEQUENCE,
   type ExploreCfg, type GridLike,
 } from "./explore";
@@ -759,6 +759,108 @@ function stripWorld(opts: { enclosed?: boolean; corridor?: boolean; warpAt?: str
       records().filter(r => r.ev === "fire").length >= 2 && v.length === 1 &&
       v[0].reason === "superseded",
       JSON.stringify({ fires: records().filter(r => r.ev === "fire").length, v: v.map(x => x.reason) }));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+
+  // ------------------------------------------- G. the patch's map (wq#2160)
+  // Every case above starts the player ON the stalled ground, which is the one
+  // shape the live shuttle almost never has: STALL_WINDOW ends on Route 25
+  // (map36) while the patch it convicts is the map35 strip, and 19 of the 20
+  // firing windows in the live fixtures are off the patch's map
+  // (docs/VERIFY_1837_EXCLUSION_MAP.md). Fired there, wq#1828 banned Route 25 —
+  // the ground the agent was covering — and left the strip open.
+  console.log("=== G. the ban lands on the patch's map, not the player's ===");
+  /** The live window on open ground, so the escape always has somewhere to go.
+   *  The sample log is fixed: this replays a window, it does not grow one. */
+  function liveWorld(start: { map: number; x: number; y: number }) {
+    const g = new Grid(60, 60);
+    const uniq = `${TAG}-${Math.random().toString(36).slice(2)}`;
+    const w = {
+      g, pos: { ...start }, fires: 0, samples: rehydrate(STALL_WINDOW),
+      log: `/tmp/explore2160-${uniq}.jsonl`, exFile: `/tmp/explore2160-${uniq}.json`,
+    };
+    const gate = new ExclusionGate(w.exFile);
+    const move = async (dx: number, dy: number, n: number) => {
+      const nx = w.pos.x + dx * n, ny = w.pos.y + dy * n;
+      if (!g.passableFrom(w.pos.x, w.pos.y, nx, ny)) return "blocked";
+      w.pos = { ...w.pos, x: nx, y: ny };
+      return "moved";
+    };
+    const ov = new ExplorationOverride({
+      map: g, pos: () => ({ ...w.pos }),
+      step: (dx, dy) => move(dx, dy, 1), hop: (dx, dy) => move(dx, dy, 2),
+      samples: () => w.samples, blocked: () => null, onFire: () => { w.fires++; },
+      exclude: e => gate.set(e), exclusionFires: () => gate.peek()?.fires ?? 0,
+      logFile: w.log, cfg: CFG,
+    });
+    const records = () => existsSync(w.log)
+      ? readFileSync(w.log, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
+    const seqNow = () => w.samples[w.samples.length - 1].seq;
+    return { w, ov, records, gate, seqNow };
+  }
+  const onMap = (tiles: string[], map: number) => tiles.filter(k => k.startsWith(`${map},`)).length;
+  {
+    const live = rehydrate(STALL_WINDOW);
+    const last = live[live.length - 1];
+    const v = assessStall(live, 0, CFG);
+    chk("G1 the live window's own last sample is off the patch it convicts",
+      last.map === 36 && v.trigger === "dominant_patch" && v.patch!.map === 35,
+      JSON.stringify({ standing: last.map, patch: v.patch!.map }));
+    chk("G1b stallMap blames the patch, not the player's map", stallMap(v, last) === 35);
+    chk("G1c and blames where you stand when the verdict has no patch to point at",
+      stallMap(assessStall(strip(150), 0, CFG), { map: 99, x: 1, y: 1 }) === 99);
+  }
+  {
+    const { w, ov, records, gate, seqNow } = liveWorld({ map: 36, x: 7, y: 4 });
+    const held: (string | null)[] = [];
+    for (let t = 1; t <= 6; t++) held.push(await ov.tick(t));
+    const defers = records().filter(r => r.ev === "defer");
+    chk("G2 standing on Route 25 the rung holds instead of firing on Route 25",
+      held.every(l => l === null) && w.fires === 0 && !records().some(r => r.ev === "fire") &&
+      w.pos.x === 7 && w.pos.y === 4,
+      JSON.stringify({ lines: held.filter(Boolean).length, at: w.pos }));
+    chk("G2b the hold is logged once, naming the map it is waiting for",
+      defers.length === 1 && defers[0].waitingFor === 35 && defers[0].at.map === 36 &&
+      defers[0].trigger === "dominant_patch" && defers[0].patch.at[0] === 35,
+      JSON.stringify(defers.map(d => ({ wait: d.waitingFor, at: d.at.map }))));
+
+    w.pos = { map: 35, x: 4, y: 24 };                     // the shuttle swings back
+    const fired = await ov.tick(7);
+    const fire = records().find(r => r.ev === "fire");
+    chk("G3 back on the strip it fires, and counts the turns it waited",
+      !!fired && !!fire && fire.at.map === 35 && fire.trigger === "dominant_patch" &&
+      fire.deferredTurns === 6, JSON.stringify(fire && { at: fire.at, held: fire.deferredTurns }));
+
+    for (let t = 8; t <= 45 && ov.active(); t++) await ov.tick(t);
+    const e = gate.current();
+    chk("G4 the ban is the patch's map — the defect was 10 map36 tiles and 0 strip tiles",
+      !!e && e.map === 35 && onMap(e.tiles, 35) === e.tiles.length && e.tiles.length > 0 &&
+      onMap(e.tiles, 36) === 0,
+      JSON.stringify(e && { map: e.map, strip: onMap(e.tiles, 35), route25: onMap(e.tiles, 36) }));
+    chk("G4b so the walk back into the strip is refused",
+      gate.refuse(seqNow(), 35, 4, 24, "map35") !== null);
+    chk("G4c and Route 25, the ground it was covering, is not",
+      gate.refuse(seqNow(), 36, 7, 4, "map36") === null);
+    const end = records().find(r => r.ev === "end");
+    chk("G4d the escape walked out of the strip, not off Route 25",
+      !!end && end.from.map === 35 && end.at.map === 35 && end.escaped === true,
+      JSON.stringify(end && { from: end.from, at: end.at, reason: end.reason }));
+    try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
+  }
+  {
+    // The hold needs no timeout: the verdict is a share of the last windowTurns
+    // samples, so an agent that stays away loses the patch and the hold lapses.
+    const { w, ov, records, gate } = liveWorld({ map: 36, x: 7, y: 4 });
+    await ov.tick(1);
+    const from = w.samples[w.samples.length - 1].seq;
+    w.samples = w.samples.concat(Array.from({ length: CFG.windowTurns }, (_, i) =>
+      ({ ...sample(36, i % 40, 4 + (i % 3), 1), seq: from + 1 + i, turn: from + 1 + i })));
+    const after = await ov.tick(2);
+    w.pos = { map: 35, x: 4, y: 24 };
+    const back = await ov.tick(3);
+    chk("G5 a hold whose window recovered lapses — it is not a fire queued for later",
+      records().filter(r => r.ev === "defer").length === 1 && after === null && back === null &&
+      !records().some(r => r.ev === "fire") && gate.current() === null && w.fires === 0);
     try { unlinkSync(w.exFile); } catch {} try { unlinkSync(w.log); } catch {}
   }
 

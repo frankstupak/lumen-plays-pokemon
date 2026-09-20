@@ -195,6 +195,17 @@ export function assessStall(samples: ProgressSample[], sinceSeq: number,
   };
 }
 
+/** The map a verdict convicts.
+ *
+ *  `tight_pace` and `no_new_ground` are whole-window verdicts on ground the
+ *  player is standing on: one map, no patch to point at, so they blame here.
+ *  `dominant_patch` is the opposite — it judges a window that SPANS maps and
+ *  names the one small patch inside it that earned nothing, and the shuttle it
+ *  was written for is off that patch's map most of the time (wq#2160). */
+export function stallMap(v: StallVerdict, here: Tile): number {
+  return v.trigger === "dominant_patch" && v.patch ? v.patch.map : here.map;
+}
+
 /** What the planner needs from MapModel. Declared structurally so the probe
  *  can hand it a synthetic grid without a ROM. */
 export interface GridLike {
@@ -438,6 +449,8 @@ export class ExplorationOverride {
   private flushSeq: number;
   private fires = 0;
   private watch: Watch | null = null;
+  /** wq#2160: a stall held back because the player is off the patch's map. */
+  private deferred: { map: number; turns: number } | null = null;
 
   constructor(private d: OverrideDeps) {
     this.flushSeq = recoverFlushSeq(d.logFile);
@@ -468,7 +481,10 @@ export class ExplorationOverride {
     this.settleWatch();     // overworld only: it reads where the player stands
     if (!this.run) {
       const v = assessStall(this.d.samples(), this.flushSeq, cfg);
-      if (!v.stalled) return null;
+      if (!v.stalled) { this.deferred = null; return null; }
+      const here = this.d.pos();
+      const blame = stallMap(v, here);
+      if (blame !== here.map) { this.hold(turn, v, here, blame); return null; }
       this.start(turn, v);
     }
     this.run!.turn = turn;
@@ -529,6 +545,35 @@ export class ExplorationOverride {
     try { return this.d.exclusionFires?.() ?? 0; } catch { return 0; }
   }
 
+  /** wq#2160: hold a fire that convicts a patch on a map the player is not on.
+   *
+   *  Firing anyway spends the escape and the ban on wherever the player happens
+   *  to be standing when the tick lands: on the checked-in live window that is
+   *  Route 25, the ground the agent was actually covering, while the map35
+   *  strip it paced stayed open (19 of the 20 firing windows are off the patch's
+   *  map — docs/VERIFY_1837_EXCLUSION_MAP.md). Held, the fire waits for the
+   *  shuttle's next swing back onto the strip, and then walks out of and bans
+   *  the ground that earned the verdict.
+   *
+   *  The wait needs no timeout: the verdict is a share of the last
+   *  `windowTurns` samples, so a player who stays away drops the patch below
+   *  `patchShare` within one window and the hold lapses on its own. Nothing is
+   *  pressed while it holds, so the rest of the stuck ladder still runs. */
+  private hold(turn: number, v: StallVerdict, here: Tile, map: number): void {
+    if (this.deferred?.map !== map) {
+      this.deferred = { map, turns: 0 };
+      const rec = {
+        v: 1, ev: "defer", fire: this.fires + 1, turn, ts: Date.now(), iso: new Date().toISOString(),
+        at: here, trigger: v.trigger, patch: v.patch && { at: [v.patch.map, v.patch.x, v.patch.y],
+          r: v.patch.radius, share: +v.patch.share.toFixed(3), cells: v.patch.cells.length },
+        waitingFor: map, fromSeq: v.fromSeq, toSeq: v.toSeq,
+      };
+      appendOverrideLog(this.d.logFile, rec);
+      this.d.bus?.emit("exploration_override", { stage: "defer", ...rec });
+    }
+    this.deferred.turns++;
+  }
+
   private start(turn: number, v: StallVerdict): void {
     const cfg = this.d.cfg;
     // A fresh stall while an escape is still being judged means the escape did
@@ -536,15 +581,21 @@ export class ExplorationOverride {
     if (this.watch) { this.writeVerdict(this.watch, "superseded"); this.watch = null; }
     this.d.map.build();
     const p = this.d.pos();
-    const footprintHere = v.tiles.filter(t => t.map === p.map).map(t => ({ x: t.x, y: t.y }));
-    // wq#1828: what goto is refused afterwards is the footprint ON THIS MAP,
-    // not the whole window. A dominant_patch window spans every map the shuttle
+    // wq#1828: what goto is refused afterwards is the footprint on ONE map, not
+    // the whole window. A dominant_patch window spans every map the shuttle
     // touched (map36, map88, map3 on the live run), and banning Route 25
     // because the agent paced Route 24 would be the opposite of the fix.
     // Narrower than this does not hold either: the acceptance replay refused
     // the patch core and the stub brain was back on the strip one turn later,
     // through a paced tile just outside it.
-    const excludeTiles = v.tiles.filter(t => t.map === p.map).map(t => tileKey(t.map, t.x, t.y));
+    // wq#2160: that one map is the map the VERDICT names. It equals p.map here
+    // — tick() holds any fire that would say otherwise — and saying it in the
+    // filter is what keeps the two from drifting apart again.
+    const anchor = stallMap(v, p);
+    const deferred = this.deferred;
+    this.deferred = null;
+    const footprintHere = v.tiles.filter(t => t.map === anchor).map(t => ({ x: t.x, y: t.y }));
+    const excludeTiles = v.tiles.filter(t => t.map === anchor).map(t => tileKey(t.map, t.x, t.y));
     this.fires++;
     const run: Run = {
       fire: this.fires, firedTurn: turn, turn, from: p, map: p.map,
@@ -559,7 +610,7 @@ export class ExplorationOverride {
     try { this.d.onFire?.(); } catch {}
     const rec = {
       v: 1, ev: "fire", fire: run.fire, turn, ts: Date.now(), iso: new Date().toISOString(),
-      at: p, trigger: v.trigger,
+      at: p, trigger: v.trigger, deferredTurns: deferred?.turns ?? 0,
       window: { turns: v.windowTurns, samples: v.samples, uniqueTiles: v.uniqueTiles,
                 newTiles: v.newTiles, maps: v.maps, fromSeq: v.fromSeq, toSeq: v.toSeq,
                 patch: v.patch && { at: [v.patch.map, v.patch.x, v.patch.y], r: v.patch.radius,
