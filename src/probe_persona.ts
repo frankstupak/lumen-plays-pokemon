@@ -325,6 +325,75 @@ async function main(): Promise<number> {
     } finally { globalThis.fetch = realFetch; }
   }
 
+  // ---- 11. one question is one slot, whatever words the sentence used ----
+  //
+  // The live failure this section pins (wq#1176, lumen-persona at 100 open
+  // rows): the extractor names a slot after the phrasing, so "my former city",
+  // "my previous city" and "my old city" became three permanent rows holding
+  // one answer. Three rows means the slot can never be reaffirmed, never
+  // revised, and — the part that matters — never contradict itself, because
+  // every contradiction check in apply() matches on key.
+  {
+    ok("'former'/'previous'/'prior' are one slot with 'old'",
+      normKey("my former city") === "my old city" && normKey("my previous city") === "my old city" &&
+      normKey("my prior city") === "my old city",
+      [normKey("my former city"), normKey("my previous city"), normKey("my prior city")].join(" | "));
+    ok("the same trade under three nouns is one slot",
+      normKey("my previous work") === "my old job" && normKey("my old workplace") === "my old job",
+      `${normKey("my previous work")} | ${normKey("my old workplace")}`);
+    // The fold must not reach past the modifier: these are different questions,
+    // and merging them would manufacture a contradiction out of two true answers.
+    ok("'my old job' stays distinct from 'my job'", normKey("my old job") !== normKey("my job"), "");
+    ok("'my hometown' is not 'my city'", normKey("my hometown") !== normKey("my city"), "");
+    ok("'my ex-wife' is a person, not an old wife", normKey("my ex-wife") !== normKey("my old wife"), "");
+    ok("'my last name' is not 'my old name'", normKey("my last name") !== normKey("my old name"), "");
+
+    // Write side: the second phrasing now lands on the SAME slot, so the
+    // bi-temporal rules apply to it instead of opening a parallel row.
+    const h = mem("2026-09-01");
+    await h.m.observe("My previous city is San Francisco", "stream");
+    const clash = await h.m.observe("My former city is Oakland", "stream");
+    ok("a rephrased slot contradicting the same day is refused",
+      clash[0]?.outcome === "conflict" &&
+      h.m.facts.filter(f => f.key === "my old city").length === 1 &&
+      h.m.facts.find(f => f.key === "my old city")?.value === "San Francisco",
+      `${clash[0]?.outcome} :: ${h.m.facts.find(f => f.key === "my old city")?.value}`);
+    h.at("2026-09-03");
+    const changed = await h.m.observe("My old city is Oakland", "stream");
+    ok("and on a later day it is one slot revised, not a second row",
+      changed[0]?.outcome === "updated" && h.m.facts.filter(f => f.key === "my old city").length === 1,
+      `${changed[0]?.outcome} facts=${h.m.facts.filter(f => f.key === "my old city").length}`);
+    ok("the superseded phrasing is closed in the store, not left open",
+      h.store.current().filter(r => decodePredicate(r.predicate).key.endsWith("old city")).length === 1,
+      h.store.current().map(r => r.predicate).join(","));
+    ok("closing is a valid_to, so the history survives",
+      h.store.rows.filter(r => r.value === "San Francisco").every(r => r.validTo !== null),
+      JSON.stringify(h.store.rows.filter(r => r.value === "San Francisco").map(r => r.validTo)));
+
+    // Read side: rows written BEFORE the fold existed re-key on load, which is
+    // what makes this a fix for the 100 rows already in lumen_state and not
+    // only for the next ones.
+    const legacy = new MemoryPersonaStore();
+    for (const [p, v, d] of [
+      ["my_city", "San Francisco", "2026-09-10"],
+      ["my_former_city", "San Francisco", "2026-09-10"],
+      ["my_previous_city", "San Francisco", "2026-09-12"],
+      ["my_old_city", "San Francisco", "2026-09-11"],
+    ] as [string, string, string][]) legacy.ingest({ predicate: p, value: v, validFrom: d, source: "lpp:stream" });
+    const l = mem("2026-09-20", legacy);
+    l.m.refresh(true);
+    const cityLines = l.m.recall().split("\n").filter(s => s.includes("San Francisco"));
+    ok("four stored spellings render as two questions, not four",
+      cityLines.length === 2, cityLines.join(" / "));
+    ok("the surviving answer is the one he holds today",
+      l.m.facts.find(f => f.key === "my old city")?.validFrom === "2026-09-12",
+      String(l.m.facts.find(f => f.key === "my old city")?.validFrom));
+    ok("the folded-away rows are reported, not silently dropped",
+      l.m.stats().suppressed === 2, `suppressed=${l.m.stats().suppressed}`);
+    ok("nothing is deleted from the store by a read",
+      legacy.current().length === 4, `open=${legacy.current().length}`);
+  }
+
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   return fail ? 1 : 0;
 }

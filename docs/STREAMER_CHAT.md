@@ -299,6 +299,39 @@ Set-valued slots accumulate instead of either: liking two things is not a
 contradiction. The prompt carries the current facts back in a `PERSONA` block,
 ahead of the notepad — a persona fact holds until he revises it, a note does not.
 
+### One question is one slot
+
+All of the above matches on the slot, so two spellings of one question are two
+facts that can never disagree. That is not hypothetical: after a week live,
+`lumen-persona` answered "where is he from?" at six open predicates — `my city`,
+`my former city`, `my old city`, `my previous city`, `my hometown`, `my old
+home`, every one of them "San Francisco" — because the extractor names a slot in
+whatever words the sentence used.
+
+`normKey` (`src/persona.ts`) folds the spellings that ask the same question:
+`former`/`previous`/`prior` → `old`, `work`/`workplace` → `job`, `town` → `city`.
+The fold stops at the modifier — `my old job` stays distinct from `my job`, and
+`my hometown` from `my city` — because merging those would manufacture a
+contradiction out of two true answers. A wrong fold costs a refused fact; a
+missed one costs a duplicate row, which the reader below still survives.
+
+Normalization runs on **load**, not just on write, so rows already in lumen_state
+re-key when they are read. Where that lands several rows on one single-valued
+slot, the newest `valid-from` is the one rendered — the bi-temporal answer to
+"what does he believe today" — and the rest are counted in `stats().suppressed`.
+Nothing is deleted by a read. When Lumen himself revises a slot whose previous
+answer sat at a pre-fold spelling, that row is `close`d (a `valid_to`, never a
+delete) so it stops resurfacing on the next refresh.
+
+Rows written before the fold stay open until he next revises that slot. To
+retire a batch of known junk deliberately, the adapter takes a glob and reports
+first:
+
+```bash
+python3 tools/lumen_state_json.py close lumen-persona --glob 'i_am__*' \
+    --reason 'wq#1176 scaffolding rows' --dry-run
+```
+
 ### Other platforms
 
 `src/persona_cli.ts` is the door for anything that is not this repo's TypeScript:
@@ -348,7 +381,7 @@ serves the current view read-only.
 
 ## Probes
 
-`src/probe_persona.ts` (71 checks), `src/probe_persona_state.ts` (12 checks),
+`src/probe_persona.ts` (85 checks), `src/probe_persona_state.ts` (22 checks),
 `src/probe_chat.ts` (27 checks) and `src/probe_streamer.ts` (83 checks) run in
 `scripts/probes-pure.sh`, so CI covers all four. `probe_persona`, `probe_chat`
 and `probe_streamer` are pure logic — no ROM, no emulator, no network.
