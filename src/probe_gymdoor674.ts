@@ -138,11 +138,29 @@ async function main() {
   // Prove the guard is scoped to "replay MY OWN just-taken warp", not a
   // blanket freeze on every warp in the building - a DIFFERENT warp on this
   // map (destined elsewhere, not back where we just came from) must not be
-  // refused by this check. map65's table has several (Cerulean Mart/other
-  // building interiors share this bank); pick any other than the exit.
-  const other = map.warps.find(w => w !== doorInside);
-  if (other) {
-    const otherIdx = map.warps.indexOf(other);
+  // refused by this check.
+  //
+  // wq#2220: pick that warp by INDEX, never by object identity. map.build()
+  // above rebuilds this.warps into FRESH object literals (map.ts:198-200), so
+  // `doorInside` - captured before that rebuild - is a stale reference and
+  // `w !== doorInside` matched the arrival door itself at index 0. The probe
+  // was then asserting the arrival door must NOT be refused four lines after
+  // asserting that it MUST be, and the contradiction read as the wq#674 guard
+  // over-matching every warp on the map. It never did: the guard keys on the
+  // arrival TILE and on justWarpedBack's {map,index} (agent.ts:1106-1124),
+  // both of which are already specific to one door.
+  //
+  // Interior doorways in this ROM are two tiles wide (map65's table above is
+  // exactly that: 4,13 and 5,13, same destMap/destWarp), so prefer a warp that
+  // actually leads somewhere else; fall back to any other index when the map
+  // only has the one doorway, which still exercises the scoping claim.
+  const exit = map.warps[exitIdx];
+  const elsewhere = map.warps.findIndex((w, i) => i !== exitIdx &&
+    (w.destMap !== exit.destMap || w.destWarp !== exit.destWarp));
+  const otherIdx = elsewhere >= 0
+    ? elsewhere
+    : map.warps.findIndex((_, i) => i !== exitIdx);
+  if (otherIdx >= 0) {
     const rOther = await agent.dispatch(`enter_warp(${otherIdx})`);
     chk("a DIFFERENT warp on the same map is not caught by the guard",
         !/wq#674/.test(rOther), rOther);
