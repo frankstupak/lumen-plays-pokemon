@@ -11,7 +11,7 @@ import {
   normValue, normKey, MAX_FACTS, MAX_SET_MEMBERS, PersonaClaim,
 } from "./persona";
 import { MemoryPersonaStore, decodePredicate, encodePredicate } from "./persona_store";
-import { extractWithModel } from "./persona_llm";
+import { extractWithModel, gatewayExtractor } from "./persona_llm";
 import { mkdtempSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -297,6 +297,32 @@ async function main(): Promise<number> {
     ok("a set-valued slot is capped in the view",
       m.facts.length === MAX_SET_MEMBERS && m.stats().suppressed === 4,
       `facts=${m.facts.length} suppressed=${m.stats().suppressed}`);
+  }
+
+  // ---- 10. the extractor has the same reasoning bug, one layer down ----
+  //
+  // gatewayExtractor() parses its text for JSON claims, so falling back to
+  // `reasoning_content` did not merely waste a call: it fed a thinking model's
+  // monologue to the claim parser, which is how a monologue becomes something
+  // Lumen believes about himself.
+  {
+    process.env.LITELLM_MASTER_KEY = "sk-probe";        // never touch the real key file
+    const realFetch = globalThis.fetch;
+    const stub = (message: any) => {
+      globalThis.fetch = (async () =>
+        ({ ok: true, json: async () => ({ choices: [{ message }] }) }) as any) as any;
+    };
+    try {
+      stub({ content: "", reasoning_content: 'The user wants JSON: {"facts":[{"key":"my name","value":"Ash"}]}' });
+      const leaked = await gatewayExtractor()("My name is Lumen");
+      ok("a thinking-only extraction yields no claims, not the monologue", leaked.length === 0,
+        JSON.stringify(leaked));
+
+      stub({ content: '{"facts":[{"key":"my name","value":"Lumen","single":true}]}', reasoning_content: "internal" });
+      const real = await gatewayExtractor()("My name is Lumen");
+      ok("real content still extracts", real.length === 1 && real[0].value === "Lumen",
+        JSON.stringify(real.map(c => c.value)));
+    } finally { globalThis.fetch = realFetch; }
   }
 
   console.log(`\n${pass} PASS / ${fail} FAIL`);

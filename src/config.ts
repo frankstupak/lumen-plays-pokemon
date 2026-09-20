@@ -104,7 +104,12 @@ export const CFG = {
     // climbing to an expensive model would cost more than the feature.
     persona: {
       model: envS("LPP_BRAIN_PERSONA", "deepseek-v4-flash"),
-      maxTokensOut: envN("LPP_BRAIN_PERSONA_MAXTOK", 400),
+      // The answer is a few lines of JSON; the budget is the rung's reasoning
+      // headroom (wq#1176 — same arithmetic as CFG.streamer.maxTokensOut). At
+      // 400 a reasoning rung returns no content at all, and an extractor that
+      // silently never extracts looks exactly like a character with nothing to
+      // say about himself.
+      maxTokensOut: envN("LPP_BRAIN_PERSONA_MAXTOK", 2400),
       thinking: "disabled",
     } as BrainProfile,
   },
@@ -320,17 +325,25 @@ export const CFG = {
   streamer: {
     enabled: envN0("LPP_STREAMER_ENABLE", 1) > 0,
     model: envS("LPP_STREAMER_MODEL", "deepseek-v4-flash"),
-    // wq#1176: the cheap rung is a THINKING model, and a thinking model asked
-    // for one sentence spends its budget thinking and returns an empty
-    // `content`. gatewayLLM used to read `reasoning_content` when that
-    // happened, which put "Let me think about the screen state" on a public
-    // stream for 82% of the first week's lines (tools/scan_chat_meta.ts over
-    // runtime/chat.jsonl). Chat wants the answer, never the working: same
-    // switch CFG.profiles.persona uses, same reason. "" sends nothing, for a
-    // gateway alias that bakes it in or a model that rejects the field.
+    // wq#1176: THE CHEAP RUNG REASONS, AND CHAT MUST SURVIVE THAT.
+    //
+    // Sent because it is free where the rung honours it, and it is the same
+    // switch CFG.profiles.persona sets for the same reason. It is NOT the fix:
+    // on glm-5.3-flash-zai reasoning is mandatory (see `escalate` above,
+    // wq#1616), and the day the gateway stops passing the field this silently
+    // becomes a no-op. What actually protects the overlay is streamer.ts
+    // refusing to read `reasoning_content` at all. "" sends nothing, for a
+    // gateway alias that bakes the setting in or a model that rejects the field.
     thinking: envS("LPP_STREAMER_THINKING", "disabled"),
     timeoutMs: envN("LPP_STREAMER_TIMEOUT_MS", 20_000),
-    maxTokensOut: envN("LPP_STREAMER_MAX_TOKENS", 160),
+    // BUDGET IS REASONING HEADROOM, NOT SENTENCE LENGTH. The line is still one
+    // sentence. But deepseek-v4-flash reasons ~2-4k tokens before it writes any
+    // content (see `actRetry`, which budgets 6000 for the same reason), so a
+    // 160-token ceiling meant the rung routinely spent the whole budget
+    // thinking and returned `content: ""` with finish_reason "length" — which
+    // is how the reasoning fallback came to supply 82% of the first live week's
+    // chat. A cap is not a charge: nothing bills for headroom nobody uses.
+    maxTokensOut: envN("LPP_STREAMER_MAX_TOKENS", 2400),
     temperature: Number(envS("LPP_STREAMER_TEMP", "0.9")),
     // Jittered so the stream does not tick like a metronome. Spec: 60-120s.
     minIntervalMs: envN("LPP_STREAMER_MIN_MS", 60_000),

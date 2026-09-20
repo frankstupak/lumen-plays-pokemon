@@ -88,13 +88,20 @@ to back is the exact failure the 60/40 split exists to avoid.
 
 Five filters, in order:
 
-0. The transport takes `content` and **never** `reasoning_content`. A thinking
-   model asked for one sentence often spends its budget thinking and hands back
-   an empty `content`; reading its notes out instead is how
-   `Let me think about the screen state` ended up on a public stream. The
-   request also carries `thinking: disabled` (`LPP_STREAMER_THINKING`), so the
-   cheap rung answers rather than deliberates. An empty `content` is a failure
-   with a reason on `/streamer.json`, not a line.
+0. The transport takes `content` and **never** `reasoning_content`. After the
+   2026-09-10 switch to `glm-5.3-flash-zai` — a rung whose reasoning is
+   mandatory — a 160-token ceiling was spent entirely on thinking and the
+   completion came back `content: ""` with `finish_reason: "length"`, so
+   reading the notes instead put `Let me think about the screen state` on a
+   public stream for three days. An empty `content` is now a failure with a
+   reason on `/streamer.json`, not a line. Two settings support that rule
+   without being the rule: `thinking: disabled` (`LPP_STREAMER_THINKING`) where
+   the rung honours it, and a budget with **reasoning headroom**
+   (`LPP_STREAMER_MAX_TOKENS`, `LPP_BRAIN_PERSONA_MAXTOK`) — the line is still
+   one sentence, but a rung that reasons for 2-4k tokens before writing any
+   content needs room to reach it, and a cap is not a charge. The extractor
+   (`persona_llm.ts`) had the identical bug and the identical fix: it parses its
+   text for claims, so a monologue there becomes a *fact about Lumen*.
 1. `firstSentence()` strips model preamble (`Sure! Here's a line:`) and keeps
    one sentence, and `unterminated()` drops a completion with no sentence
    terminator anywhere — half a thought (`Frank used to ping me at`) reads as a
@@ -308,7 +315,7 @@ serves the current view read-only.
 | `LPP_STREAMER_RECENT` | `10` | lines shown back to the model, and checked for repeats |
 | `LPP_STREAMER_DENY` | (empty) | extra refused terms, on top of the structural patterns |
 | `LPP_STREAMER_TIMEOUT_MS` | `20000` | hard deadline on the one request |
-| `LPP_STREAMER_MAX_TOKENS` | `160` | it is one sentence |
+| `LPP_STREAMER_MAX_TOKENS` | `2400` | reasoning headroom, not sentence length — see below |
 | `LPP_STREAMER_TEMP` | `0.9` | he is supposed to have a voice |
 | `LPP_PERSONA_ENABLE` | `1` | `0` = nothing recorded, no `PERSONA` block |
 | `LPP_PERSONA_SUBJECT` | `lumen-persona` | lumen_state subject holding the facts |
@@ -317,14 +324,15 @@ serves the current view read-only.
 | `LPP_PERSONA_RECALL_BUDGET` | `900` | chars of persona per prompt |
 | `LPP_PERSONA_LLM_EXTRACT` | `1` | `0` = regex fast path only, no model call |
 | `LPP_BRAIN_PERSONA` | `deepseek-v4-flash` | extraction rung; keep it cheap |
+| `LPP_BRAIN_PERSONA_MAXTOK` | `2400` | reasoning headroom for extraction, same arithmetic |
 | `LPP_PERSONA_CACHE_TTL_MS` | `60000` | how long a turn may reuse the last store read |
 | `LPP_PERSONA_ADAPTER` | `tools/lumen_state_json.py` | the lumen_state door |
 | `LPP_LUMEN_STATE_DB` | *(unset)* | tests only: a throwaway sqlite file |
 
 ## Probes
 
-`src/probe_persona.ts` (69 checks), `src/probe_persona_state.ts` (12 checks),
-`src/probe_chat.ts` (21 checks) and `src/probe_streamer.ts` (81 checks) run in
+`src/probe_persona.ts` (71 checks), `src/probe_persona_state.ts` (12 checks),
+`src/probe_chat.ts` (21 checks) and `src/probe_streamer.ts` (83 checks) run in
 `scripts/probes-pure.sh`, so CI covers all four. `probe_persona`, `probe_chat`
 and `probe_streamer` are pure logic — no ROM, no emulator, no network.
 `probe_persona_state` drives the real `lumen_state.py` subprocess against a

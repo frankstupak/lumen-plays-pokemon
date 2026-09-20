@@ -497,6 +497,12 @@ void (async () => {
 }
 
 // ── 15. the gateway transport never speaks the model's notes ────────────────
+//
+// The live failure, exactly: after the 2026-09-10 switch to glm-5.3-flash-zai —
+// a rung whose reasoning is MANDATORY (config.ts, wq#1616) — a 160-token
+// ceiling was spent entirely on thinking, and the completion came back
+// `content: ""` with finish_reason "length". Three days of the model's
+// monologue went out as Lumen's chat until it was caught on 2026-09-13.
 {
   process.env.LITELLM_MASTER_KEY = "sk-probe";          // never touch the real key file
   const realFetch = globalThis.fetch;
@@ -521,6 +527,15 @@ void (async () => {
       sent?.thinking?.type === "disabled" && sent?.model === CFG.streamer.model,
       `model=${sent?.model} thinking=${sent?.thinking?.type}`);
   } finally { globalThis.fetch = realFetch; }
+
+  // The budget invariant the live failure turned on: `thinking: disabled` is
+  // best-effort (the rung may reason anyway, or the gateway may drop the
+  // field), so the ceiling has to leave room for reasoning BEFORE content or
+  // every completion is a truncation. A cap is not a charge.
+  ok("the chat budget has reasoning headroom", CFG.streamer.maxTokensOut >= 1200,
+    `max_tokens=${CFG.streamer.maxTokensOut}`);
+  ok("so does the extraction budget", CFG.profiles.persona.maxTokensOut >= 1200,
+    `max_tokens=${CFG.profiles.persona.maxTokensOut}`);
 }
 
 console.log(`\nprobe_streamer: ${pass} passed, ${fail} failed`);
