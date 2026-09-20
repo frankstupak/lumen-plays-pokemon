@@ -332,7 +332,7 @@ serves the current view read-only.
 ## Probes
 
 `src/probe_persona.ts` (71 checks), `src/probe_persona_state.ts` (12 checks),
-`src/probe_chat.ts` (21 checks) and `src/probe_streamer.ts` (83 checks) run in
+`src/probe_chat.ts` (27 checks) and `src/probe_streamer.ts` (83 checks) run in
 `scripts/probes-pure.sh`, so CI covers all four. `probe_persona`, `probe_chat`
 and `probe_streamer` are pure logic — no ROM, no emulator, no network.
 `probe_persona_state` drives the real `lumen_state.py` subprocess against a
