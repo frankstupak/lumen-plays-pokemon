@@ -85,6 +85,11 @@ async function pair(port: number): Promise<[Side, Side]> {
   for (const [tag, s] of [["A", a], ["B", b]] as const) {
     const bl = s.block;
     ok(`side ${tag} reported a block check`, !!bl, bl ? `count=${bl.peerCount}` : "no BLOCKCHECK line");
+    // Seat nav inside $EF, checked directly. The exchange completing implies we
+    // sat down, but only as a corollary — if the walk ever lands on the wrong
+    // tile this says so, instead of leaving a dead handshake to explain.
+    ok(`side ${tag}: seated at its own chair inside the room`, !!bl?.seat?.ok,
+       `want=${JSON.stringify(bl?.seat?.want ?? null)} at=${JSON.stringify(bl?.seat?.at ?? null)}`);
     ok(`side ${tag}: the ROM finished the exchange`, !!bl?.exchangeDone, `linkState=${bl?.linkState}`);
     ok(`side ${tag}: M5b invariants PASS on the received block`, !!bl?.ok, bl ? JSON.stringify(bl.failures).slice(0, 200) : "no check");
     ok(`side ${tag}: received block mirrors our own party byte-for-byte`, !!bl?.mirror?.ok,

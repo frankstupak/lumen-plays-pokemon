@@ -23,7 +23,7 @@ import { Screen } from "../screen";
 import { Sync } from "../sync";
 import { Dialog } from "../dialog";
 import { SerialBridge } from "./bridge";
-import { Rendezvous, CoreView, RoomName } from "./rendezvous";
+import { Rendezvous, CoreView, RoomName, ROOM_MAP, ROOM as ROOM_ID } from "./rendezvous";
 import { setSlice, clearSlice, transferSliceDivisor } from "./lockstep";
 import { offsetsFromSymbols, verifyTradeBlock, viewBlock, readPartyBlock, diffBlocks } from "./invariants";
 import { readLinkState } from "./linkstate";
@@ -142,19 +142,30 @@ const LS_TRADE_MENU = 50;
   if (res.ok && process.env.RDV_CONTINUE === "block") {
     const master = core.role() === 2;
     const seat = master ? { x: 3, y: 4, face: KEYS.RIGHT } : { x: 6, y: 4, face: KEYS.LEFT };
+    // The room we actually resolved to, not the one we asked for: room select
+    // can yield to the peer's choice, and a seat checked against the wrong map
+    // would pass in the one case worth catching.
+    const seatMap = ROOM_MAP[res.room ?? ROOM_ID[ROOM]];
     console.log(`[${TAG}] continuation: ${master ? "MASTER->left" : "SLAVE->right"} seat (${seat.x},${seat.y})`);
     const FINE = transferSliceDivisor(emu.core);
     let reached = 0;
+    let seated: { map: number; x: number; y: number } | null = null;
     // Forces before the block are expected and harmless: they land while the ROM
     // is rendering text or copying BG rows (measured PCs: $390A
     // PrintLetterDelay, $1DD7 TransferBgRows), where the only traffic is
     // position sync. A force DURING the block is a lost byte, so count that
     // separately instead of pretending the two are the same event.
     let forcedBefore = 0;
+    // wq#511 deliverable (2): seat navigation inside $EF is VERIFIED, not
+    // assumed. The exchange completing is strong evidence we sat down, but it
+    // is indirect — record where the walk actually left us so a probe can fail
+    // on the seat itself, and so a future map change names the seat as the
+    // culprit instead of surfacing as a mysterious dead handshake.
     try {
       await nav.goto(seat.x, seat.y);
       await core.step(16, seat.face);
       await core.step(16);
+      seated = nav.pos();
       // engage: A at the table until the ROM leaves the idle link state
       for (let r = 0; r < 60 && !bridge.closed && core.linkState() < LS_ENGAGED; r++) {
         await core.step(6, KEYS.A);
@@ -190,6 +201,8 @@ const LS_TRADE_MENU = 50;
     console.log("BLOCKCHECK " + JSON.stringify({
       tag: TAG, ok: v.ok, checks: v.checked, failures: v.failures,
       linkState: core.linkState(), engagedAt: reached,
+      seat: { want: { map: seatMap, x: seat.x, y: seat.y }, at: seated,
+        ok: !!seated && seated.map === seatMap && seated.x === seat.x && seated.y === seat.y },
       exchangeDone: core.linkState() === LS_TRADE_MENU,
       mirror: { ok: mirror.ok, diffs: mirror.diffs, first: mirror.first, where: mirror.where },
       mirrorAll: { ok: mirrorAll.ok, diffs: mirrorAll.diffs, where: mirrorAll.where },
