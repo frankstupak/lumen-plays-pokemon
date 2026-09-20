@@ -5,7 +5,7 @@
 // audience message enters the store, and refusals are reported rather than
 // silently dropped).
 import { StreamChat, MAX_TEXT } from "./chat";
-import { existsSync, unlinkSync, mkdtempSync } from "fs";
+import { existsSync, unlinkSync, mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -85,6 +85,31 @@ try {
   j.bind(join(dir, "nope", "deep", "chat.json"));
 } catch { threw = true; }
 ok("junk input and a fresh nested path do not throw", !threw, "");
+
+// ---- the overlay (wq#1176 item 1) ----
+//
+// The kiosk page is a template string inside stream.ts, so the assertions are
+// over the source. Crude, and still the only thing standing between a layout
+// requirement and a refactor that quietly drops it: until now nothing in the
+// suite knew the #chat panel was supposed to exist at all.
+{
+  const page = readFileSync(join(__dirname, "stream.ts"), "utf8");
+  ok("the overlay has a chat panel with a name tag",
+    /id="chat"/.test(page) && /LUMEN SAYS/.test(page), "");
+  ok("ws chat events render into it, not into the ticker",
+    /m\.kind === "chat"/.test(page) && /addChat\(/.test(page), "");
+  ok("newest at the bottom, and the view follows unless scrolled up",
+    /scrollTop = chatlog\.scrollHeight/.test(page) && /atBottom/.test(page), "");
+  ok("the panel is bounded so a long session cannot grow it without limit",
+    /chatlog\.children\.length > \d+/.test(page), "");
+  ok("there is a polling fallback for a dead websocket",
+    /fetch\("\/chat\.json"/.test(page), "");
+  // wq#503: the game frame must not be squeezed by a sibling panel. The comment
+  // says flex:none is load-bearing; this is the part that notices when someone
+  // edits it away.
+  ok("the wq#503 flex:none constraint on the game frame survives",
+    /#game \{ flex:none/.test(page), "");
+}
 
 try { unlinkSync(file); } catch {}
 console.log(`\n${pass} PASS / ${fail} FAIL`);

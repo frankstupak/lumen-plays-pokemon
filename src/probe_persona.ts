@@ -8,10 +8,10 @@
 //   5. wq#1176's JSON store migrates into the fleet store on first bind
 import {
   PersonaMemory, extractPersonaClaims, buildClaim, nearDuplicate,
-  normValue, normKey, MAX_FACTS, PersonaClaim,
+  normValue, normKey, MAX_FACTS, MAX_SET_MEMBERS, PersonaClaim,
 } from "./persona";
 import { MemoryPersonaStore, decodePredicate, encodePredicate } from "./persona_store";
-import { extractWithModel } from "./persona_llm";
+import { extractWithModel, gatewayExtractor } from "./persona_llm";
 import { mkdtempSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -215,6 +215,115 @@ async function main(): Promise<number> {
   const deadEvents = await dead.observe("My name is Lumen", "stream");
   ok("an unreachable store yields no fact and no throw", deadEvents.length === 0 && dead.storeErrors > 0,
      `errors=${dead.storeErrors}`);
+
+  // ---- 9. the model's homework is not a memory (wq#1176) ----
+  //
+  // THE REGRESSION THIS EXISTS FOR: lumen-persona held 36 `i_am__*` rows after
+  // one live week, several of them the topic mixer's instructions parsed as
+  // self-description —
+  //   "i am: Lumen, a Pokemon streamer, dry and tired, one sentence about a
+  //    film or show I watched recently, not tied to the game"
+  // — because the generator was speaking its own scratchpad (see
+  // probe_streamer section 14) and everything Lumen says is a candidate fact.
+  // Guarded on both sides: nothing scaffolding-shaped is written, and rows
+  // already in the fleet store are held back on read.
+  {
+    const { m } = mem();
+    const scaffolding = [
+      "The user wants one sentence about my previous life.",
+      "Let me think about what to say.",
+      "I am Lumen, a Pokemon streamer, dry and tired, one sentence about a film I watched recently, not tied to the game.",
+    ];
+    let wrote = 0;
+    for (const s of scaffolding) wrote += (await m.observe(s, "stream")).length;
+    ok("scaffolding never becomes a durable fact", wrote === 0 && m.facts.length === 0, `wrote=${wrote}`);
+
+    ok("a run-on self-description is refused",
+      buildClaim("i am", "Lumen, a dry, tired, funny Pokemon streamer", "raw", false) === null, "");
+    ok("a real self-description still lands",
+      buildClaim("i am", "a dry, tired streamer", "raw", false) !== null, "");
+  }
+  {
+    // Re-describing himself is the same claim said again, not a 37th row.
+    const { m } = mem();
+    await m.observe("I am a dry, tired streamer", "stream");
+    const again = await m.observe("I am a dry, tired Pokemon streamer", "stream");
+    ok("a re-worded self-description reaffirms the slot instead of growing it",
+      m.facts.filter(f => f.key === "i am").length === 1 && again[0]?.outcome === "reaffirmed",
+      `rows=${m.facts.filter(f => f.key === "i am").length} outcome=${again[0]?.outcome}`);
+
+    // ...but two genuinely different likes stay two likes. The loose rule is
+    // for the adjective-pile slot ONLY.
+    const { m: m2 } = mem();
+    await m2.observe("I like caves", "stream");
+    await m2.observe("I like caves at night", "stream");
+    ok("two different likes are still two facts",
+      m2.facts.filter(f => f.key === "i like").length === 2,
+      `rows=${m2.facts.filter(f => f.key === "i like").length}`);
+  }
+  {
+    // The rows that are ALREADY there. Seeded straight into the store, as if
+    // written by the sick generator, then read back through a fresh view.
+    const store = new MemoryPersonaStore();
+    const poison = [
+      "Lumen, a Pokemon streamer, dry and tired, one sentence about a film I watched recently",
+      "Lumen, dry and tired, one sentence about Dana, warm but not admitting warmth",
+    ];
+    for (const v of poison) {
+      store.ingest({ predicate: encodePredicate("i am", false, normValue(v)), value: v,
+                     validFrom: "2026-09-10", source: "lpp:stream" });
+    }
+    store.ingest({ predicate: encodePredicate("my name", true, "lumen"), value: "Lumen",
+                   validFrom: "2026-09-10", source: "lpp:stream" });
+    const { m } = mem("2026-09-20", store);
+    m.refresh(true);
+    ok("poisoned rows already in the fleet store are held back on read",
+      m.facts.length === 1 && m.facts[0].key === "my name" && m.stats().suppressed === poison.length,
+      `facts=${m.facts.length} suppressed=${m.stats().suppressed}`);
+    ok("nothing is deleted from the store to achieve it",
+      store.current().length === poison.length + 1, `rows=${store.current().length}`);
+    ok("and the recall block is clean",
+      m.recall() === "- my name: Lumen", m.recall());
+  }
+  {
+    // One accumulating slot must not eat the recall budget.
+    const store = new MemoryPersonaStore();
+    for (let i = 0; i < MAX_SET_MEMBERS + 4; i++) {
+      store.ingest({ predicate: encodePredicate("i like", false, `thing${i}`), value: `thing${i}`,
+                     validFrom: "2026-09-10", source: "lpp:stream" });
+    }
+    const { m } = mem("2026-09-20", store);
+    m.refresh(true);
+    ok("a set-valued slot is capped in the view",
+      m.facts.length === MAX_SET_MEMBERS && m.stats().suppressed === 4,
+      `facts=${m.facts.length} suppressed=${m.stats().suppressed}`);
+  }
+
+  // ---- 10. the extractor has the same reasoning bug, one layer down ----
+  //
+  // gatewayExtractor() parses its text for JSON claims, so falling back to
+  // `reasoning_content` did not merely waste a call: it fed a thinking model's
+  // monologue to the claim parser, which is how a monologue becomes something
+  // Lumen believes about himself.
+  {
+    process.env.LITELLM_MASTER_KEY = "sk-probe";        // never touch the real key file
+    const realFetch = globalThis.fetch;
+    const stub = (message: any) => {
+      globalThis.fetch = (async () =>
+        ({ ok: true, json: async () => ({ choices: [{ message }] }) }) as any) as any;
+    };
+    try {
+      stub({ content: "", reasoning_content: 'The user wants JSON: {"facts":[{"key":"my name","value":"Ash"}]}' });
+      const leaked = await gatewayExtractor()("My name is Lumen");
+      ok("a thinking-only extraction yields no claims, not the monologue", leaked.length === 0,
+        JSON.stringify(leaked));
+
+      stub({ content: '{"facts":[{"key":"my name","value":"Lumen","single":true}]}', reasoning_content: "internal" });
+      const real = await gatewayExtractor()("My name is Lumen");
+      ok("real content still extracts", real.length === 1 && real[0].value === "Lumen",
+        JSON.stringify(real.map(c => c.value)));
+    } finally { globalThis.fetch = realFetch; }
+  }
 
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   return fail ? 1 : 0;

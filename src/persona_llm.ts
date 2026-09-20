@@ -103,7 +103,11 @@ export function gatewayExtractor(): (text: string) => Promise<PersonaClaim[]> {
     if (!r.ok) throw new Error(`gateway ${r.status}`);
     const d: any = await r.json();
     const msg = d.choices?.[0]?.message ?? {};
-    return (msg.content && msg.content.trim()) ? msg.content : (msg.reasoning_content ?? "");
+    // Same rule as streamer.gatewayLLM, and the same bug lived here: this text
+    // is parsed for JSON claims, so handing it a thinking model's monologue
+    // writes the monologue into the persona store as things Lumen believes
+    // about himself. Empty is safe — no content, no claims (wq#1176).
+    return String(msg.content ?? "").trim();
   };
   return (text: string) => extractWithModel(text, complete);
 }

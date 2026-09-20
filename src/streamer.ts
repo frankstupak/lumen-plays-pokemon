@@ -24,6 +24,7 @@
 import { CFG } from "./config";
 import { StreamChat, ChatMessage, SayResult } from "./chat";
 import { apiKey } from "./brain";
+import { isMetaText } from "./meta_text";
 import { existsSync } from "fs";
 
 /** What the audience hears about. `game` is the floor; the rest are the life. */
@@ -137,6 +138,10 @@ export function screen(text: string, denyTerms: string[] = []): string | null {
   const t = String(text ?? "");
   if (!t.trim()) return "empty";
   for (const [re, why] of SECRET_PATTERNS) if (re.test(t)) return why;
+  // The model's homework is not a secret, but it is not chat either, and it
+  // reached the audience far more often than any secret ever did (meta_text.ts).
+  const meta = isMetaText(t);
+  if (meta) return `scaffolding: ${meta}`;
   const lower = t.toLowerCase();
   for (const term of denyTerms) {
     const term2 = term.trim().toLowerCase();
@@ -388,6 +393,7 @@ export class Streamer {
       return { line: null, topic, trigger, model, reason: `model: ${String(e?.message ?? e).slice(0, 120)}` };
     }
 
+    if (unterminated(raw)) { this.skipped++; return this.quiet(topic, trigger, model, "unterminated (truncated?)"); }
     const text = StreamChat.clean(firstSentence(raw));
     const bad = screen(text, CFG.streamer.denyTerms);
     if (bad) { this.skipped++; return this.quiet(topic, trigger, model, `screened: ${bad}`); }
@@ -462,19 +468,46 @@ export class Streamer {
  * substitutes it, which is what makes the cheap rung assertable.
  */
 export async function gatewayLLM(req: StreamerRequest): Promise<string> {
+  const body: Record<string, unknown> = {
+    model: req.model, messages: req.messages,
+    max_tokens: req.maxTokens, temperature: req.temperature,
+  };
+  // Same shape brain.ts sends (`thinking: {type}`), because it is the same
+  // gateway and the same DeepSeek switch.
+  if (CFG.streamer.thinking) body.thinking = { type: CFG.streamer.thinking };
   const r = await fetch(CFG.gateway, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey()}` },
-    body: JSON.stringify({
-      model: req.model, messages: req.messages,
-      max_tokens: req.maxTokens, temperature: req.temperature,
-    }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(req.timeoutMs),
   });
   if (!r.ok) throw new Error(`gateway ${r.status}`);
   const d: any = await r.json();
   const msg = d.choices?.[0]?.message ?? {};
-  return (msg.content && msg.content.trim()) ? msg.content : (msg.reasoning_content ?? "");
+  const content = String(msg.content ?? "").trim();
+  // NEVER `reasoning_content`. A thinking model that returns no content has
+  // not written a line; it has written notes about writing one, and this used
+  // to read them out on a live stream: after the 2026-09-10 switch to
+  // glm-5.3-flash-zai — whose reasoning is mandatory — the 160-token ceiling
+  // was spent entirely on thinking and the completion came back `content: ""`
+  // with finish_reason "length", so the monologue went out as Lumen's chat
+  // until 2026-09-13 (wq#1176; tools/scan_chat_meta.ts has the measurement).
+  // Silence for 60-120s is the correct outcome, and the reason lands on
+  // /streamer.json where an operator can see the rung misbehaving.
+  if (!content) throw new Error("empty content (thinking-only response)");
+  return content;
+}
+
+/**
+ * A completion with no sentence terminator anywhere ran out of budget partway
+ * through a thought: the live log has "Frank used to ping me at" sitting on the
+ * overlay with nothing after it. Half a sentence reads as a crash, so it is
+ * skipped rather than shipped. A short unpunctuated line is collateral, costs
+ * 60-120s of quiet, and shows up on /streamer.json as the skip reason.
+ */
+export function unterminated(raw: string): boolean {
+  const t = String(raw ?? "").trim();
+  return t.length > 0 && !/[.!?…]/.test(t);
 }
 
 /** Models narrate. Strip the lead-in and keep one sentence, because "Sure!

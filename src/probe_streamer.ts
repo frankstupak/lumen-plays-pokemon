@@ -11,8 +11,8 @@
 //      content rather than more game commentary.
 //   4. FAILURE IS DECOUPLED: a model error, a screened line and a repeat are
 //      all silence-and-reschedule, never a throw and never a stuck generator.
-import { Streamer, screen, similarity, isRepeat, firstSentence, OFF_TOPICS,
-         type StreamerRequest, type TopicKey } from "./streamer";
+import { Streamer, screen, similarity, isRepeat, firstSentence, unterminated,
+         gatewayLLM, OFF_TOPICS, type StreamerRequest, type TopicKey } from "./streamer";
 import { StreamChat } from "./chat";
 import { CFG } from "./config";
 import { SYSTEM_PREFIX, buildMessages, History } from "./prompt";
@@ -438,6 +438,104 @@ void (async () => {
     !agentSrc.includes("SAY:") && !agentSrc.includes("postSay"), "");
   ok("the gameplay agent holds no reference to the chat transport at all",
     !agentSrc.includes("StreamChat"), "");
+}
+
+// ── 14. the scaffolding regression (wq#1176) ────────────────────────────────
+//
+// THE REGRESSION THIS EXISTS FOR: 2261 of the 2775 lines in the first live
+// week's runtime/chat.jsonl were the model talking about its own homework, not
+// Lumen talking to anybody. Two bugs, both covered here: gatewayLLM read
+// `reasoning_content` when `content` came back empty (a thinking model's notes,
+// read out on a public stream), and nothing screened the line for the SHAPE of
+// scaffolding when the model restated its instructions in `content` anyway.
+//
+// The strings below are verbatim from that log. Fixtures from a real failure
+// beat fixtures from imagination: these are the sentences an audience actually
+// saw.
+{
+  const LIVE_SCAFFOLDING = [
+    "Let me think about the screen state: Cerulean City, at coordinates 0,19.",
+    "Let me look at the situation.",
+    "The user wants one sentence from Lumen about a film or show watched recently.",
+    "The topic is my ex-wife Dana.",
+    "The persona: Dana, ex-wife, left me a Coltrane record with a scratch on side two.",
+    "We need to produce one sentence, no preamble, no quotes, no emojis.",
+    "The task: something I've had on lately.",
+    "One sentence, dry, about Frank — affectionate and exasperated, ticket queue.",
+  ];
+  ok("every scaffolding line from the live log is refused",
+    LIVE_SCAFFOLDING.every(l => screen(l) !== null),
+    `${LIVE_SCAFFOLDING.filter(l => screen(l) !== null).length}/${LIVE_SCAFFOLDING.length}`);
+
+  // The other half of the measurement, and the one that decides whether the
+  // screen is tuned or just loud: real lines from the same log still speak.
+  const LIVE_CHAT = [
+    "The battle just ended on Route 24.",
+    "Watched Sorcerer again last night, and no, the bridge sequence is not too slow.",
+    "People down here say \"at least the weather's nice\" like that justifies the rent.",
+    "My ex-wife Renata used to leave the porch light on even when she was furious.",
+    "Frank used to ping me at 4:45 on a Friday with a quick little change.",
+    "I just walked into Route 24, north of Cerulean.",
+    "Eleven years I paid California rent for weather that is mostly fog in June.",
+  ];
+  const wrongly = LIVE_CHAT.filter(l => screen(l) !== null);
+  ok("real chat from the same log is untouched", wrongly.length === 0,
+    wrongly.length ? `${wrongly[0]} -> ${screen(wrongly[0])}` : "7/7 spoken");
+
+  ok("a line cut off mid-thought is not spoken", unterminated("Frank used to ping me at"), "");
+  ok("a finished sentence is not mistaken for a truncation",
+    !unterminated("Frank used to ping me at 4:45 on a Friday."), "");
+
+  const h = harness();
+  h.setReply(() => "Let me think about what to say about Mt Moon.");
+  h.clock.t += 130_000;
+  await h.s.tick();
+  ok("a scratchpad line never reaches the audience", h.chat.messages.length === 0,
+    `spoken=${h.chat.messages.length}`);
+  ok("and the reason is visible to an operator",
+    /scaffolding/.test(h.s.stats().lastReason ?? ""), `${h.s.stats().lastReason}`);
+}
+
+// ── 15. the gateway transport never speaks the model's notes ────────────────
+//
+// The live failure, exactly: after the 2026-09-10 switch to glm-5.3-flash-zai —
+// a rung whose reasoning is MANDATORY (config.ts, wq#1616) — a 160-token
+// ceiling was spent entirely on thinking, and the completion came back
+// `content: ""` with finish_reason "length". Three days of the model's
+// monologue went out as Lumen's chat until it was caught on 2026-09-13.
+{
+  process.env.LITELLM_MASTER_KEY = "sk-probe";          // never touch the real key file
+  const realFetch = globalThis.fetch;
+  let sent: any = null;
+  const stub = (message: any) => {
+    globalThis.fetch = (async (_u: any, init: any) => {
+      sent = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ choices: [{ message }] }) } as any;
+    }) as any;
+  };
+  const req = { model: CFG.streamer.model, messages: [{ role: "user", content: "hi" }],
+                maxTokens: 160, temperature: 0.9, timeoutMs: 1000 } as StreamerRequest;
+  try {
+    stub({ content: "", reasoning_content: "Let me think about the screen state." });
+    let threw = "";
+    try { await gatewayLLM(req); } catch (e: any) { threw = String(e.message); }
+    ok("a thinking-only response is a failure, not a line", /empty content/.test(threw), threw);
+
+    stub({ content: "Mt Moon is a maze.", reasoning_content: "Let me think." });
+    ok("content is what gets spoken", (await gatewayLLM(req)) === "Mt Moon is a maze.", "");
+    ok("the request asks the cheap rung to stop thinking",
+      sent?.thinking?.type === "disabled" && sent?.model === CFG.streamer.model,
+      `model=${sent?.model} thinking=${sent?.thinking?.type}`);
+  } finally { globalThis.fetch = realFetch; }
+
+  // The budget invariant the live failure turned on: `thinking: disabled` is
+  // best-effort (the rung may reason anyway, or the gateway may drop the
+  // field), so the ceiling has to leave room for reasoning BEFORE content or
+  // every completion is a truncation. A cap is not a charge.
+  ok("the chat budget has reasoning headroom", CFG.streamer.maxTokensOut >= 1200,
+    `max_tokens=${CFG.streamer.maxTokensOut}`);
+  ok("so does the extraction budget", CFG.profiles.persona.maxTokensOut >= 1200,
+    `max_tokens=${CFG.profiles.persona.maxTokensOut}`);
 }
 
 console.log(`\nprobe_streamer: ${pass} passed, ${fail} failed`);

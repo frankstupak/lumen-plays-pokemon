@@ -86,10 +86,26 @@ to back is the exact failure the 60/40 split exists to avoid.
 
 ### Before a line reaches the panel
 
-Three filters, in order:
+Five filters, in order:
 
+0. The transport takes `content` and **never** `reasoning_content`. After the
+   2026-09-10 switch to `glm-5.3-flash-zai` — a rung whose reasoning is
+   mandatory — a 160-token ceiling was spent entirely on thinking and the
+   completion came back `content: ""` with `finish_reason: "length"`, so
+   reading the notes instead put `Let me think about the screen state` on a
+   public stream for three days. An empty `content` is now a failure with a
+   reason on `/streamer.json`, not a line. Two settings support that rule
+   without being the rule: `thinking: disabled` (`LPP_STREAMER_THINKING`) where
+   the rung honours it, and a budget with **reasoning headroom**
+   (`LPP_STREAMER_MAX_TOKENS`, `LPP_BRAIN_PERSONA_MAXTOK`) — the line is still
+   one sentence, but a rung that reasons for 2-4k tokens before writing any
+   content needs room to reach it, and a cap is not a charge. The extractor
+   (`persona_llm.ts`) had the identical bug and the identical fix: it parses its
+   text for claims, so a monologue there becomes a *fact about Lumen*.
 1. `firstSentence()` strips model preamble (`Sure! Here's a line:`) and keeps
-   one sentence. A narrated answer on a stream overlay is worse than silence.
+   one sentence, and `unterminated()` drops a completion with no sentence
+   terminator anywhere — half a thought (`Frank used to ping me at`) reads as a
+   crash on the overlay.
 2. `screen()` refuses anything carrying an address, a key, a token, a
    filesystem path, a URL, a host:port, an internal hostname, or an
    infrastructure name. These are **structural patterns, not a word list**: the
@@ -98,7 +114,16 @@ Three filters, in order:
    survive a model swap in a way that a list of forbidden nouns does not.
    `LPP_STREAMER_DENY` adds terms, and is env-only — a deny list checked into
    the repo is itself a disclosure of the thing it protects.
-3. `isRepeat()` compares against the last ten spoken lines by content-word
+3. `isMetaText()` (`src/meta_text.ts`) refuses the model talking about its own
+   homework: a scratchpad opener (`Let me…`, `We need to…`), the machinery of
+   the request named out loud (`the user`, `the task`, `the persona`, `recent
+   lines`, `one sentence`), or a prompt section header read back verbatim. The
+   rules are about the **act of composing**, never about subject matter — Lumen
+   keeps every opinion he has. Measure any change to them with
+   `npx tsx tools/scan_chat_meta.ts <chat.jsonl> --pass 20`, which reports both
+   the hit rate and what still gets through; the screen was tuned against the
+   first live week, where **2261 of 2775 lines (82%) were scaffolding**.
+4. `isRepeat()` compares against the last ten spoken lines by content-word
    Jaccard. The model is also *shown* those lines and told not to repeat them,
    which mostly works; this catches the rest. A paraphrase of something said
    four lines ago reads worse than silence, because the viewer who noticed now
@@ -206,6 +231,31 @@ passing states (`I am at Viridian`, `I am heading to Mt Moon`), anything in the
 third person, and anything that is not a first-person self-statement — whether a
 regex or the model proposed it.
 
+Also rejected, and for the same reason a line is screened before it is spoken:
+**scaffolding** (`isMetaText`) and **run-on self-description**. When the
+generator was reading its own scratchpad aloud, extraction dutifully canonised
+it, and `lumen-persona` grew 36 `i_am__*` rows — among them
+`i am: Lumen, a Pokemon streamer, dry and tired, one sentence about a film or
+show I watched recently, not tied to the game`, which is the topic mixer's
+instructions wearing a fact's clothes. A character assembled out of his own
+prompt is this feature failing at its one job.
+
+The copular slot (`i am`) accumulates adjective piles rather than distinct
+claims, so it has two extra rules the other slots do not: a restatement that
+contains, or is contained by, a value already stored is the **same claim said
+again** (`a dry, tired streamer` ≡ `a dry, tired Pokemon streamer`) and
+reaffirms rather than adding a row; and anything with three commas or more than
+nine words is the system prompt being read back. Everywhere else the tighter
+word-set rule stands — `caves` and `caves at night` are two different things to
+like.
+
+Rows written before those guards existed are still in lumen_state, so
+`PersonaMemory.refresh()` holds them back on **read**: scaffolding values,
+run-on self-descriptions, and any set slot past `MAX_SET_MEMBERS` (6) never
+reach a prompt on any surface. Nothing is deleted — the rows stay queryable for
+an audit, `stats().suppressed` counts them, and reversing the judgement is a
+deploy rather than a restore.
+
 Slots fold spelling variants (`favourite`/`favorite`, `pokémon`/`pokemon`), or
 the same question would have two canonical answers and no contradiction between
 them would ever be detected.
@@ -258,13 +308,14 @@ serves the current view read-only.
 | `LPP_STREAMER_ENABLE` | `1` | `0` = the generator never runs |
 | `LPP_STREAMER_KILLFILE` | `runtime/chat.off` | touch to silence a live stream, delete to resume |
 | `LPP_STREAMER_MODEL` | `deepseek-v4-flash` | the cheap rung; nothing substitutes it |
+| `LPP_STREAMER_THINKING` | `disabled` | DeepSeek thinking switch; empty sends nothing |
 | `LPP_STREAMER_MIN_MS` / `LPP_STREAMER_MAX_MS` | `60000` / `120000` | jittered cadence window |
 | `LPP_STREAMER_EVENT_GAP_MS` | `25000` | floor between event-triggered lines |
 | `LPP_STREAMER_OFFTOPIC` | `0.4` | share of lines that are not about the game |
 | `LPP_STREAMER_RECENT` | `10` | lines shown back to the model, and checked for repeats |
 | `LPP_STREAMER_DENY` | (empty) | extra refused terms, on top of the structural patterns |
 | `LPP_STREAMER_TIMEOUT_MS` | `20000` | hard deadline on the one request |
-| `LPP_STREAMER_MAX_TOKENS` | `160` | it is one sentence |
+| `LPP_STREAMER_MAX_TOKENS` | `2400` | reasoning headroom, not sentence length — see below |
 | `LPP_STREAMER_TEMP` | `0.9` | he is supposed to have a voice |
 | `LPP_PERSONA_ENABLE` | `1` | `0` = nothing recorded, no `PERSONA` block |
 | `LPP_PERSONA_SUBJECT` | `lumen-persona` | lumen_state subject holding the facts |
@@ -273,14 +324,15 @@ serves the current view read-only.
 | `LPP_PERSONA_RECALL_BUDGET` | `900` | chars of persona per prompt |
 | `LPP_PERSONA_LLM_EXTRACT` | `1` | `0` = regex fast path only, no model call |
 | `LPP_BRAIN_PERSONA` | `deepseek-v4-flash` | extraction rung; keep it cheap |
+| `LPP_BRAIN_PERSONA_MAXTOK` | `2400` | reasoning headroom for extraction, same arithmetic |
 | `LPP_PERSONA_CACHE_TTL_MS` | `60000` | how long a turn may reuse the last store read |
 | `LPP_PERSONA_ADAPTER` | `tools/lumen_state_json.py` | the lumen_state door |
 | `LPP_LUMEN_STATE_DB` | *(unset)* | tests only: a throwaway sqlite file |
 
 ## Probes
 
-`src/probe_persona.ts` (60 checks), `src/probe_persona_state.ts` (12 checks),
-`src/probe_chat.ts` (21 checks) and `src/probe_streamer.ts` (71 checks) run in
+`src/probe_persona.ts` (71 checks), `src/probe_persona_state.ts` (12 checks),
+`src/probe_chat.ts` (27 checks) and `src/probe_streamer.ts` (83 checks) run in
 `scripts/probes-pure.sh`, so CI covers all four. `probe_persona`, `probe_chat`
 and `probe_streamer` are pure logic — no ROM, no emulator, no network.
 `probe_persona_state` drives the real `lumen_state.py` subprocess against a
