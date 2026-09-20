@@ -1,0 +1,187 @@
+### cerebras model blocks (lines 105-135)
+  105:   model_info: {mode: chat, id: local-worker-isis, max_input_token<REDACTED> 28672, max_output_token<REDACTED> 4096, description: "qwen3.6-35b-a3b on isis llama-server, 2 slots x 32768 served"}
+  106: - model_name: hathor-embed
+  107:   litellm_params:
+  108:     model: ollama/nomic-embed-text
+  109:     api_base: http://100.80.71.13:11434
+  110:   model_info:
+  111:     mode: embedding
+  112: - model_name: cerebras-oss-120b
+  113:   litellm_params:
+  114:     model: cerebras/gpt-oss-120b
+  115:     api_key: <REDACTED>
+  116:     timeout: 30
+  117:   model_info:
+  118:     mode: chat
+  119: - model_name: cerebras-llama
+  120:   litellm_params:
+  121:     model: cerebras/gpt-oss-120b
+  122:     api_key: <REDACTED>
+  123:     timeout: 30
+  124:   model_info:
+  125:     mode: chat
+  126: - model_name: cerebras-gptoss-pinned
+  127:   litellm_params:
+  128:     model: cerebras/gpt-oss-120b
+  129:     api_key: <REDACTED>
+  130:     timeout: 30
+  131:   model_info:
+  132:     mode: chat
+  133: - model_name: deepseek-v4-flash
+  134:   litellm_params:
+  135:     rpm: 60
+
+### routing / fallbacks tail (lines 360-409)
+  360:     max_token<REDACTED> 4096
+  361:     timeout: 120
+  362: router_settings:
+  363:   routing_strategy: least-busy   # wq#2127: only local-worker has >1 deployment; single-deployment groups unaffected
+  364:   num_retries: 3
+  365:   retry_after: 2
+  366:   allowed_fails: 2
+  367:   # wq#1588 (D2): fallback edges point ONE WAY, paid -> free, never free -> paid.
+  368:   # qwen36-local and qwen36-live are terminal by design: a free rung that can fall
+  369:   # back to Cerebras is a paid rung wearing a free rung's name, and with num_retries
+  370:   # 3 the old qwen36-local <-> cerebras-oss-120b pair could also bounce a Cerebras
+  371:   # failure straight back onto Cerebras. Do not re-add an edge out of a local rung.
+  372:   fallbacks:
+  373:   - lumen-lfm2-1b:
+  374:     - cerebras-llama
+  375:     - qwen36-local
+  376:   - lumen-lfm2-thinking:
+  377:     - qwen36-local
+  378:   - cerebras-oss-120b:
+  379:     - qwen36-local
+  380:   - cerebras-llama:
+  381:     - qwen36-local
+  382:   enable_pre_call_checks: true
+  383:   context_window_fallbacks:
+  384:   - lumen-lfm2-1b:
+  385:     - deepseek-v4-flash
+  386: litellm_settings:
+  387:   callbacks:
+  388:   - langfuse
+  389:   success_callback:
+  390:   - langfuse
+  391:   failure_callback:
+  392:   - langfuse
+  393:   request_timeout: 240
+  394:   drop_params: true
+  395:   set_verbose: false
+  396: environment_variables:
+  397:   MISTRAL_API_KEY: <REDACTED>
+  398:   CEREBRAS_API_KEY: <REDACTED>
+  399:   DEEPSEEK_API_KEY: <REDACTED>
+  400:   GEMINI_API_KEY: <REDACTED>
+  401:   OPENROUTER_API_KEY: <REDACTED>
+  402:   LANGFUSE_PUBLIC_KEY: <REDACTED post-hoc: the probe's mask keys on
+        "secret|token|api_key", and a langfuse *public* key matches none of
+        them. Non-secret by design, but it is still a fleet identifier and this
+        file goes in a git history.>
+  403:   LANGFUSE_SECRET<REDACTED> <REDACTED>
+  404:   LANGFUSE_HOST: http://langfuse-web:3000
+  405: general_settings:
+  406:   master_key: <REDACTED>
+  407:   custom_auth: master_key<REDACTED>
+  408:   custom_auth_settings:
+  409:     mode: auto
+
+### is /home/lumen/agent version controlled?
+REPO no
+--- mtime / backups next to it ---
+2026-09-20 19:44:52.784892859 +0000 /home/lumen/agent/litellm_config.yaml
+-rw-r--r-- 1 lumen lumen        0 2026-07-11 01:39 litellm.db
+-rw-r--r-- 1 lumen lumen    14053 2026-09-20 19:44 litellm_config.yaml
+-rw-rw-r-- 1 lumen lumen     3751 2026-03-29 04:11 litellm_config.yaml.backup.20260329_041143
+-rw-rw-r-- 1 lumen lumen     1303 2026-03-26 15:42 litellm_config.yaml.bak
+-rw-rw-r-- 1 lumen lumen     2929 2026-04-16 22:58 litellm_config.yaml.bak.20260416_225821
+-rw-r--r-- 1 lumen lumen     2720 2026-04-18 13:17 litellm_config.yaml.bak.20260418_131748
+-rw-r--r-- 1 lumen lumen     3758 2026-04-21 13:44 litellm_config.yaml.bak.20260421_134445
+-rw-r--r-- 1 lumen lumen     3789 2026-05-12 07:23 litellm_config.yaml.bak.20260512_072300
+-rw-r--r-- 1 lumen lumen     4580 2026-05-18 12:13 litellm_config.yaml.bak.20260518_121326
+-rw-r--r-- 1 lumen lumen     5924 2026-06-06 03:54 litellm_config.yaml.bak.20260606_035439
+-rw-r--r-- 1 lumen lumen     6233 2026-06-07 21:25 litellm_config.yaml.bak.20260607_212547
+-rw-r--r-- 1 lumen lumen     8533 2026-06-10 05:55 litellm_config.yaml.bak.20260610_055526
+-rw-r--r-- 1 lumen lumen     9457 2026-06-10 06:02 litellm_config.yaml.bak.20260610_060215
+-rw-r--r-- 1 lumen lumen     9986 2026-06-25 06:03 litellm_config.yaml.bak.20260625_060309_pre_local_brain
+-rw-r--r-- 1 lumen lumen    10496 2026-06-29 06:56 litellm_config.yaml.bak.20260629_065636
+-rw-rw-r-- 1 lumen lumen    11726 2026-07-01 22:17 litellm_config.yaml.bak.20260710_052759.pre_db
+-rw-r--r-- 1 root  root     11726 2026-07-10 22:46 litellm_config.yaml.bak.20260710_224627
+-rw-rw-r-- 1 lumen lumen    11004 2026-07-10 22:50 litellm_config.yaml.bak.20260711_154629.qwen36
+-rw-rw-r-- 1 lumen lumen    11560 2026-07-11 15:46 litellm_config.yaml.bak.20260713_055029_pre_lumen_vision
+-rw-r--r-- 1 lumen lumen    12370 2026-07-16 12:57 litellm_config.yaml.bak.20260716_125747
+-rw-r--r-- 1 lumen lumen    12370 2026-07-19 06:34 litellm_config.yaml.bak.20260719_063452_pre_e4b
+-rw-r--r-- 1 lumen lumen    12927 2026-07-19 15:01 litellm_config.yaml.bak.20260719_150147_pre_samba_retire
+-rw-r--r-- 1 lumen lumen    12680 2026-07-19 15:12 litellm_config.yaml.bak.20260719_151223_pre_llama33_rung
+-rw-r--r-- 1 lumen lumen    13221 2026-07-20 04:40 litellm_config.yaml.bak.20260720_044022_pre_llama33_teardown
+-rw-r--r-- 1 lumen lumen    12680 2026-07-22 02:47 litellm_config.yaml.bak.20260722_024743
+-rw-r--r-- 1 root  root     13083 2026-08-09 04:21 litellm_config.yaml.bak.20260809_042108
+-rw-rw-r-- 1 lumen lumen    13315 2026-08-09 04:23 litellm_config.yaml.bak.20260809_063050
+-rw-r--r-- 1 lumen lumen     5852 2026-08-09 06:30 litellm_config.yaml.bak.20260809_063244
+-rw-r--r-- 1 lumen lumen     5972 2026-08-09 06:32 litellm_config.yaml.bak.20260809_063359
+-rw-r--r-- 1 lumen lumen     6084 2026-08-09 06:33 litellm_config.yaml.bak.20260809_081756
+-rw-r--r-- 1 root  root      6193 2026-08-10 01:24 litellm_config.yaml.bak.20260810_012423
+-rw-r--r-- 1 lumen lumen     6441 2026-08-10 02:37 litellm_config.yaml.bak.20260810_023757
+-rw-r--r-- 1 lumen lumen     6441 2026-08-10 02:39 litellm_config.yaml.bak.20260810_023958_pre_kimi_v2
+-rw-r--r-- 1 lumen lumen     6828 2026-08-10 04:46 litellm_config.yaml.bak.20260810_044602
+-rw-r--r-- 1 lumen lumen     7423 2026-08-10 04:46 litellm_config.yaml.bak.20260811_113606
+-rw-r--r-- 1 lumen lumen     6844 2026-08-11 11:36 litellm_config.yaml.bak.20260812_202004_pre_qwen36_rehome
+-rw-r--r-- 1 lumen lumen     7138 2026-08-12 20:21 litellm_config.yaml.bak.20260812_233631
+-rw-r--r-- 1 lumen lumen     6984 2026-08-12 23:36 litellm_config.yaml.bak.20260814_032201_pre_alias_thinking_pin
+-rw-r--r-- 1 lumen lumen     7583 2026-08-14 03:23 litellm_config.yaml.bak.20260815_010610
+-rw-r--r-- 1 lumen lumen     7136 2026-08-15 01:59 litellm_config.yaml.bak.20260819_193813
+-rw-r--r-- 1 lumen lumen     7337 2026-08-19 19:38 litellm_config.yaml.bak.20260820_114203
+-rw-r--r-- 1 lumen lumen     7514 2026-08-22 04:44 litellm_config.yaml.bak.20260822_044428_pre_claude_shim
+-rw-r--r-- 1 root  root      8415 2026-08-23 03:29 litellm_config.yaml.bak.20260823_032955
+-rw-r--r-- 1 lumen lumen     8415 2026-08-23 14:54 litellm_config.yaml.bak.20260823_145403_pre_budget_fix
+-rw-r--r-- 1 lumen lumen    10446 2026-08-23 16:44 litellm_config.yaml.bak.20260823_164407_pre_wq914
+-rw-r--r-- 1 lumen lumen     8939 2026-08-23 14:54 litellm_config.yaml.bak.20260823_pre_wq907
+-rw-r--r-- 1 lumen lumen    11259 2026-08-23 16:44 litellm_config.yaml.bak.20260826_173737
+-rw-r--r-- 1 lumen lumen     8861 2026-08-26 17:37 litellm_config.yaml.bak.20260826_233920
+-rw-r--r-- 1 lumen lumen     9053 2026-08-27 14:15 litellm_config.yaml.bak.20260827_141512
+-rw-r--r-- 1 lumen lumen     9065 2026-08-27 14:15 litellm_config.yaml.bak.20260827_174151
+-rw-r--r-- 1 lumen lumen     9297 2026-08-28 14:07 litellm_config.yaml.bak.20260828_140757_pre_wq1048_rename
+-rw-r--r-- 1 lumen lumen     9298 2026-08-30 12:43 litellm_config.yaml.bak.20260830_124308_pre_mistral_drop
+-rw-r--r-- 1 lumen lumen     9007 2026-08-30 12:43 litellm_config.yaml.bak.20260903_174115_pre_lpp_fallback_fix
+-rw-r--r-- 1 lumen lumen     8930 2026-09-09 17:20 litellm_config.yaml.bak.20260909_172050_pre_glm53flash
+-rw-r--r-- 1 lumen lumen     9410 2026-09-10 02:51 litellm_config.yaml.bak.20260910_025133_pre_zai
+-rw-r--r-- 1 lumen lumen     9833 2026-09-10 05:30 litellm_config.yaml.bak.20260910_053018
+-rw-r--r-- 1 lumen lumen    10262 2026-09-10 05:30 litellm_config.yaml.bak.20260910_054846_pre_wq1588_cycle
+-rw-r--r-- 1 lumen lumen    10596 2026-09-18 05:23 litellm_config.yaml.bak.20260918_052310_hathor_down
+-rw-r--r-- 1 lumen lumen    10662 2026-09-19 08:07 litellm_config.yaml.bak.20260919_080723_add_mac_rungs
+-rw-r--r-- 1 lumen lumen    11145 2026-09-19 08:07 litellm_config.yaml.bak.20260920_152128_pre_wq2127
+-rw-r--r-- 1 lumen lumen    10596 2026-09-18 11:45 litellm_config.yaml.bak.PREAPPLY
+-rw-r--r-- 1 lumen lumen     7263 2026-08-15 01:59 litellm_config.yaml.bak.pre_fable_revert_20260815_015907
+-rw-rw-r-- 1 lumen lumen    11598 2026-06-29 06:56 litellm_config.yaml.bak.pre_ratecaps.20260701_221706
+-rw-r--r-- 1 lumen lumen     8638 2026-08-23 03:27 litellm_config.yaml.bak.pre_wq589_20260823_032745
+-rw-r--r-- 1 lumen lumen     8599 2026-08-23 03:14 litellm_config.yaml.bak.pre_wq721_20260823
+-rw-r--r-- 1 lumen lumen     8415 2026-08-23 12:23 litellm_config.yaml.bak.pre_wq863_20260823_122344
+-rw-rw-r-- 1 lumen lumen    14663 2026-08-01 05:14 litellm_config.yaml.staged.minimax-m3
+-rw-r--r-- 1 lumen lumen    10912 2026-07-16 12:57 litellm_config.yaml.staged.wq233
+-rw-r--r-- 1 lumen lumen    14204 2026-07-16 12:55 litellm_config.yaml.wq236_proposed
+-rwxr-xr-x 1 lumen lumen      842 2026-06-06 03:46 wait_for_litellm.sh
+
+### litellm container
+container=litellm
+--- reasoning_effort mentions in last 24h of logs ---
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b
+openai.BadRequestError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.llms.openai.common_utils.OpenAIError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'
+[92m19:03:43 - LiteLLM Proxy:ERROR[0m: common_request_processing.py:1573 - litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b
+openai.BadRequestError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.llms.openai.common_utils.OpenAIError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b
+openai.BadRequestError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.llms.openai.common_utils.OpenAIError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'
+[92m19:03:54 - LiteLLM Proxy:ERROR[0m: common_request_processing.py:1573 - litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b
+openai.BadRequestError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.llms.openai.common_utils.OpenAIError: Error code: 400 - {'message': "reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'", 'type': 'invalid_request_error', 'param': 'validation_error', 'code': 'wrong_api_format'}
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b
+--- count of the 2068 cascade lines in last 24h ---
+2786
+--- CerebrasException lines in last 24h ---
+213
+--- most recent CerebrasException (1 line) ---
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b

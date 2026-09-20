@@ -1,0 +1,97 @@
+### sha256 + size
+ae00682aad88d74e22e1db0ca8e39836f2057a0ff36c142a49f78e5e21c60168  /home/lumen/agent/litellm_config.yaml
+409 /home/lumen/agent/litellm_config.yaml
+
+### every reasoning_effort in the file (line-numbered)
+200:      reasoning_effort: high
+
+### lines 130-200
+1+129:     timeout: 30
+2+129:   model_info:
+3+129:     mode: chat
+4+129: - model_name: deepseek-v4-flash
+5+129:   litellm_params:
+6+129:     rpm: 60
+7+129:     tpm: 200000
+8+129:     model: deepseek/deepseek-v4-flash
+9+129:     api_key: <REDACTED>
+10+129:     timeout: 60
+11+129:     extra_body:
+12+129:       thinking:
+13+129:         type: disabled
+14+129:   model_info:
+15+129:     mode: chat
+16+129: - model_name: deepseek-v4-pro
+17+129:   litellm_params:
+18+129:     rpm: 20
+19+129:     tpm: 120000
+20+129:     model: deepseek/deepseek-v4-pro
+21+129:     api_key: <REDACTED>
+22+129:     timeout: 120
+23+129:   model_info:
+24+129:     mode: chat
+25+129: - model_name: gpt-3.5-turbo
+26+129:   litellm_params:
+27+129:     model: deepseek/deepseek-v4-flash
+28+129:     api_key: <REDACTED>
+29+129:     max_tokens: 8192
+30+129:     timeout: 60
+31+129:     extra_body:
+32+129:       thinking:
+33+129:         type: disabled
+34+129:   model_info:
+35+129:     mode: chat
+36+129: - model_name: deepseek-chat
+37+129:   litellm_params:
+38+129:     model: deepseek/deepseek-v4-flash
+39+129:     api_key: <REDACTED>
+40+129:     max_tokens: 8192
+41+129:     timeout: 60
+42+129:     extra_body:
+43+129:       thinking:
+44+129:         type: disabled
+45+129:   model_info:
+46+129:     mode: chat
+47+129: - model_name: messenger-chat
+48+129:   litellm_params:
+49+129:     rpm: 60
+50+129:     tpm: 200000
+51+129:     model: deepseek/deepseek-v4-flash
+52+129:     api_key: <REDACTED>
+53+129:     max_tokens: 8192
+54+129:     timeout: 120
+55+129:     extra_body:
+56+129:       thinking:
+57+129:         type: disabled
+58+129:   model_info:
+59+129:     mode: chat
+60+129: - model_name: messenger-re
+61+129:   litellm_params:
+62+129:     rpm: 20
+63+129:     tpm: 120000
+64+129:     model: deepseek/deepseek-v4-pro
+65+129:     api_key: <REDACTED>
+66+129:     max_tokens: 16384
+67+129:     timeout: 180
+68+129:     extra_body:
+69+129:       thinking:
+70+129:         type: enabled
+71+129:       reasoning_effort: high
+
+### every cerebras mention
+112:- model_name: cerebras-oss-120b
+114:    model: cerebras/gpt-oss-120b
+119:- model_name: cerebras-llama
+121:    model: cerebras/gpt-oss-120b
+126:- model_name: cerebras-gptoss-pinned
+128:    model: cerebras/gpt-oss-120b
+370:  # 3 the old qwen36-local <-> cerebras-oss-120b pair could also bounce a Cerebras
+374:    - cerebras-llama
+378:  - cerebras-oss-120b:
+380:  - cerebras-llama:
+
+### fallbacks blocks
+231:    description: "GLM-5.3-Flash via OpenRouter (fallback path, 5.5% markup). Priced at Z.ai list + OpenRouter fee: 0.15/0.03/0.50 per M * 1.055. Launch promo (0.075) ended 2026-09-09 24:00 UTC+8 — do not re-enter promo rates."
+367:  # wq#1588 (D2): fallback edges point ONE WAY, paid -> free, never free -> paid.
+372:  fallbacks:
+383:  context_window_fallbacks:

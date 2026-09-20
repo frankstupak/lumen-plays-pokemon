@@ -1,0 +1,32 @@
+### did the proxy load the config cleanly? (these strings mean it did NOT)
+0
+
+### distinct exception headlines in the window
+      8 openai.APIConnectionError: Connection error.
+      8 litellm.llms.openai.common_utils.OpenAIError: Connection error.
+      8 litellm.exceptions.InternalServerError: litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.No fa
+      8 litellm.exceptions.InternalServerError: litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.
+      8 httpx.ConnectError: Cannot connect to host 100.100.129.24:8095 ssl:<ssl.SSLContext object at 0x74b2da6be530> [
+      8 aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 100.100.129.24:8095 ssl:<ssl.SSLContext object at 0x74b2da6be530> [
+      8 ConnectionRefusedError: [Errno 111] Connect call failed ('100.100.129.24', 8095)
+      6 litellm.proxy.route_llm_request.ProxyModelNotFoundError: 400: {'error': '/chat/completions: Invalid model name passed in model=mistral-small. Call 
+      4 prisma.errors.MissingRequiredValueError: Unable to match input value to any allowed input type for the field. Parse errors: [`where
+
+### litellm startup banner lines after the restart
+2315:INFO:     Application startup complete.
+2316:INFO:     Uvicorn running on http://0.0.0.0:4000 (Press CTRL+C to quit)
+2334:[32mLiteLLM: Proxy initialized with Config, Set models:[0m
+
+### are the tracebacks all the qwen36-local connection failure?
+Connection error lines:   48
+qwen36-local dead-ends:   24
+CerebrasException lines:  0
+
+### who is still calling qwen36-local (model group of the ORIGINAL request)
+      8 Received Model Group=qwen36-local
+
+### a served (200) request since the reload, to prove the proxy still works
+INFO:     172.20.0.1:37288 - "POST /v1/chat/completions HTTP/1.1" 200 OK
+INFO:     172.20.0.1:37848 - "GET /v1/models?limit=1000 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:37852 - "GET /v1/models?limit=1000 HTTP/1.1" 200 OK
+200s since reload: 5

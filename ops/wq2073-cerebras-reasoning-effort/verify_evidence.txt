@@ -1,0 +1,20 @@
+### router_settings as the RUNNING proxy parsed them
+retry_policy      = {'BadRequestErrorRetries': 0, 'AuthenticationErrorRetries': 0}
+num_retries       = 3
+allowed_fails     = 2
+fallbacks         = [{'lumen-lfm2-1b': ['cerebras-llama', 'qwen36-local']}, {'lumen-lfm2-thinking': ['qwen36-local']}, {'cerebras-oss-120b': ['qwen36-local']}, {'cerebras-llama': ['qwen36-local']}]
+
+### the container is serving the patched file (in-container sha)
+46e8c739c241d41c1d2bb9aa75a6cdd7875ca421413bacc8017daa61aa2301bc  /app/config.yaml
+
+### proxy startup: config accepted?
+34
+
+### cascade counters since the reload
+CerebrasException:  0
+qwen36 dead-ends:   12
+
+### gateway + LPP state
+litellm liveliness: 200
+lumen-pokemon-live: masked / inactive
+unit file:          /dev/null

@@ -1,0 +1,23 @@
+### litellm version
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+AttributeError: module 'litellm' has no attribute '__version__'
+
+### RetryPolicy fields accepted by THIS build
+['AuthenticationErrorRetries', 'BadRequestErrorRetries', 'ContentPolicyViolationErrorRetries', 'InternalServerErrorRetries', 'RateLimitErrorRetries', 'TimeoutErrorRetries']
+
+### AllowedFailsPolicy fields
+['AuthenticationErrorAllowedFails', 'BadRequestErrorAllowedFails', 'ContentPolicyViolationErrorAllowedFails', 'InternalServerErrorAllowedFails', 'RateLimitErrorAllowedFails', 'TimeoutErrorAllowedFails']
+
+### does RouterConfig/router_settings accept retry_policy?
+['num_retries', 'content_policy_fallbacks', 'retry_after', 'retry_policy', 'model_group_retry_policy', 'allowed_fails', 'allowed_fails_policy']
+
+### how the proxy is launched
+/litellm restart=unless-stopped image=ghcr.io/berriai/litellm@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
+compose_project=docker working_dir=/home/lumen/docker service=litellm
+cmd=[--config /app/config.yaml --port 4000 --num_workers 1]
+
+### is the qwen36-local rung (isis:8095) reachable right now?
+isis_8095_health=000 t=0.000975
+
+### gateway health
+litellm_4000_health_liveliness=200

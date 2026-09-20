@@ -1,0 +1,62 @@
+### 45 lines of context around the LAST CerebrasException
+(log line 276212)
+        ^^^^^^^^
+    ...<4 lines>...
+        content_policy_fallbacks=content_policy_fallbacks,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/app/.venv/lib/python3.13/site-packages/litellm/router.py", line 5969, in should_retry_this_error
+    raise error
+  File "/app/.venv/lib/python3.13/site-packages/litellm/router.py", line 5716, in async_function_with_retries
+    response = await self.make_call(original_function, *args, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.13/site-packages/litellm/router.py", line 5884, in make_call
+    response = await response
+               ^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.13/site-packages/litellm/router.py", line 2241, in _acompletion
+    raise e
+  File "/app/.venv/lib/python3.13/site-packages/litellm/router.py", line 2187, in _acompletion
+    response = await _response
+               ^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.13/site-packages/litellm/utils.py", line 2097, in wrapper_async
+    raise e
+  File "/app/.venv/lib/python3.13/site-packages/litellm/utils.py", line 1896, in wrapper_async
+    result = await original_function(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/.venv/lib/python3.13/site-packages/litellm/main.py", line 641, in acompletion
+    raise exception_type(
+          ~~~~~~~~~~~~~~^
+        model=model,
+        ^^^^^^^^^^^^
+    ...<3 lines>...
+        extra_kwargs=kwargs,
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/app/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 2456, in exception_type
+    raise e
+  File "/app/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/exception_mapping_utils.py", line 478, in exception_type
+    raise BadRequestError(
+    ...<6 lines>...
+    )
+litellm.exceptions.BadRequestError: litellm.BadRequestError: CerebrasException - reasoning_effort: Input should be 'none', 'low', 'medium' or 'high'. Received Model Group=cerebras-oss-120b
+Available Model Group Fallbacks=['qwen36-local']
+Error doing the fallback: litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.No fallback model group found for original model_group=qwen36-local. Fallbacks=[{'lumen-lfm2-1b': ['cerebras-llama', 'qwen36-local']}, {'lumen-lfm2-thinking': ['qwen36-local']}, {'cerebras-oss-120b': ['qwen36-local']}, {'cerebras-llama': ['qwen36-local']}]. Received Model Group=qwen36-loc
+Available Model Group Fallbacks=None
+Error doing the fallback: litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.No fallback model group found for original model_group=qwen36-local. Fallbacks=[{'lumen-lfm2-1b': ['cerebras-llama', 'qwen36-local']}, {'lumen-lfm2-thinking': ['qwen36-local']}, {'cerebras-oss-120b': ['qwen36-local']}, {'cerebras-llama': ['qwen36-local']}] LiteLLM Retried: 3 times, LiteLL
+INFO:     172.20.0.1:45690 - "POST /v1/chat/completions HTTP/1.1" 400 Bad Request
+
+### any line naming the rejected value / optional_params
+
+### which api keys / users hit cerebras-oss-120b (hashed ids only)
+Received Model Group=cerebras-oss-120b
+Received Model Group=cerebras-oss-120b
+Received Model Group=cerebras-oss-120b
+
+### hourly distribution of CerebrasException (last 24h)
+
+### first and last CerebrasException timestamps in window
+22:54:20 - LiteLLM Proxy:ERROR[0m: common_request_processing.py:1573 - litellm.proxy.proxy_server._handle_llm_api_excep
+grep: write error: Broken pipe
+19:03:54 - LiteLLM Proxy:ERROR[0m: common_request_processing.py:1573 - litellm.proxy.proxy_server._handle_llm_api_excep
