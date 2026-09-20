@@ -180,6 +180,19 @@ One slot is one predicate (`my_favorite_pokemon`). A set-valued slot carries its
 value in the predicate (`i_like__caves`), because lumen_state keeps one open row
 per predicate and a second "i like" must not evict the first.
 
+Junk rows (wq#2237: scaffolding that persona extraction canonised as `i_am__*`)
+are closed, not deleted, so the incident stays on record:
+
+```
+python3 tools/lumen_state_json.py close lumen-persona --glob 'i_am__*' \
+  --reason 'wq#1176 chain-of-thought canonised' --source wq#2237 --dry-run
+```
+
+`close` sets `valid_to`/`invalidated_at`, leaves value and `source_ref`, writes a
+`memory_audit` row per closure, and refuses to run without a predicate or glob.
+Drop `--dry-run` to apply. Choose predicates with the read-side filter's verdict
+(`quarantine()`), not the glob alone — some `i_am__*` rows are legitimate.
+
 ### What becomes canonical
 
 The mechanism is a model; the narrowness is policy. After every line Lumen

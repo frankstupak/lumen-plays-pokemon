@@ -129,6 +129,37 @@ async function main(): Promise<number> {
      String(migrated.facts.find(f => f.key === "my name")?.validFrom));
   ok("the legacy file is renamed aside", !existsSync(legacy), "");
 
+  // ── wq#2237: junk rows can be CLOSED (valid_to), never deleted ──
+  const adapter = (...args: string[]) =>
+    spawnSync(CFG.persona.python, [CFG.persona.adapter, ...args, "--db", db], { encoding: "utf8" });
+  const junkSubject = subject;   // the registry gates predicates per subject, so seed the probe persona itself
+  const junkPreds = ["i_am__junk_one", "i_am__junk_two"];
+  const junkStore = store();
+  for (const p of junkPreds)
+    junkStore.ingest({ predicate: p, value: p, validFrom: "2026-09-01", source: "lpp:stream" });
+  const openPreds = () =>
+    (JSON.parse(adapter("current", junkSubject).stdout || '{"rows":[]}').rows as any[]).map(r => r.predicate);
+
+  const before = openPreds().length;
+  const noSelector = adapter("close", junkSubject, "--reason", "probe");
+  ok("close refuses to run without a predicate or glob",
+     noSelector.status === 1 && openPreds().length === before, `exit ${String(noSelector.status)}`);
+
+  const dry = JSON.parse(adapter("close", junkSubject, "--glob", "i_am__*", "--reason", "probe", "--dry-run").stdout || "{}");
+  ok("--dry-run reports the rows and changes nothing",
+     dry.closed?.length === 2 && openPreds().length === before, JSON.stringify(dry.closed));
+
+  const closed = JSON.parse(adapter("close", junkSubject, "--glob", "i_am__*", "--reason", "probe").stdout || "{}");
+  ok("close reports exactly the matching rows", closed.closed?.join() === junkPreds.join(), JSON.stringify(closed.closed));
+  ok("closed rows leave current(); other rows stay open",
+     openPreds().length === before - 2 && openPreds().includes("my_favorite_pokemon") && !openPreds().some(p => p.startsWith("i_am__")), openPreds().join(" | "));
+  const kept = (JSON.parse(adapter("history", junkSubject, junkPreds[0]).stdout || '{"rows":[]}').rows as any[])[0];
+  ok("a closed row is kept as evidence: value intact, valid_to set",
+     kept?.value === junkPreds[0] && typeof kept?.valid_to === "string" && kept.valid_to >= "2026-09-01",
+     JSON.stringify(kept && [kept.value, kept.valid_to]));
+  const again = JSON.parse(adapter("close", junkSubject, "--glob", "i_am__*", "--reason", "probe").stdout || "{}");
+  ok("closing twice is a no-op", again.closed?.length === 0, JSON.stringify(again.closed));
+
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   return fail ? 1 : 0;
 }

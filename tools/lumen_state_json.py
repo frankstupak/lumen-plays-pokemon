@@ -24,6 +24,8 @@ USAGE
   lumen_state_json.py ingest <subject> <predicate> <value>
                              [--valid-from YYYY-MM-DD] [--source REF] [--db FILE]
   lumen_state_json.py history <subject> <predicate> [--db FILE]
+  lumen_state_json.py close <subject> [<predicate>...] [--glob PATTERN]...
+                            --reason TEXT [--source REF] [--dry-run] [--db FILE]
   lumen_state_json.py cli [--db FILE] -- <lumen_state.py args...>
 
 ENV
@@ -34,6 +36,8 @@ EXIT
   0 ok (stdout is one JSON document)   2 lumen_state.py unavailable   1 usage
 """
 import argparse
+import datetime
+import fnmatch
 import importlib.util
 import json
 import os
@@ -93,6 +97,41 @@ def _ensure_v3_columns(mod):
         conn.close()
 
 
+def close_rows(mod, subject, predicates, globs, reason, source, dry_run):
+    """Close (valid_to) the OPEN rows of `subject` whose predicate matches.
+
+    wq#2237. lumen_state has no retract verb: a row only closes by being
+    superseded or by a lifecycle fact. Junk that was canonised into a
+    subject (the i_am__* chain-of-thought rows in lumen-persona) has nothing
+    to supersede it, and deleting would destroy the incident's evidence, so
+    this does what supersession does — sets valid_to/invalidated_at — and
+    leaves value and source_ref alone. Each closure writes a memory_audit row
+    carrying the reason. Matching is by rowid because id can be NULL (wq#2135).
+    """
+    conn = mod._conn()
+    try:
+        rows = conn.execute(
+            "SELECT rowid AS rid, id, predicate, valid_from FROM state_facts "
+            "WHERE subject=? AND valid_to IS NULL ORDER BY predicate", (subject,)).fetchall()
+        hit = [r for r in rows if r["predicate"] in predicates
+               or any(fnmatch.fnmatchcase(r["predicate"], g) for g in globs)]
+        if not dry_run:
+            today = datetime.date.today().isoformat()
+            now = mod._now()
+            for r in hit:
+                # Never before the row's own valid_from: valid_to < valid_from
+                # is an inverted interval the store's readers do not expect.
+                conn.execute("UPDATE state_facts SET valid_to=?, invalidated_at=? WHERE rowid=?",
+                             (max(today, r["valid_from"]), now, r["rid"]))
+                mod.minerva_audit.audit(conn, mod.minerva_audit.WRITE, "state_facts",
+                                        r["id"], source_ref=source,
+                                        detail="closed (valid_to) reason=%s" % reason)
+            conn.commit()
+        return {"subject": subject, "dry_run": dry_run, "closed": [r["predicate"] for r in hit]}
+    finally:
+        conn.close()
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="lumen_state_json.py", add_help=True,
                                  description=__doc__.split("\n")[0])
@@ -110,6 +149,15 @@ def main(argv):
     ph = sub.add_parser("history", parents=[db], help="every version of one fact, as JSON")
     ph.add_argument("subject")
     ph.add_argument("predicate")
+    px = sub.add_parser("close", parents=[db],
+                        help="close (valid_to) open rows of a subject; never deletes")
+    px.add_argument("subject")
+    px.add_argument("predicates", nargs="*", help="exact predicates to close")
+    px.add_argument("--glob", action="append", default=[],
+                    help="fnmatch pattern over predicates (repeatable)")
+    px.add_argument("--reason", required=True, help="why; lands in memory_audit")
+    px.add_argument("--source", default=None, help="source_ref for the audit row")
+    px.add_argument("--dry-run", action="store_true", help="report, change nothing")
     pl = sub.add_parser("cli", parents=[db],
                         help="run lumen_state.py's own CLI (human output) against --db")
     pl.add_argument("rest", nargs=argparse.REMAINDER)
@@ -128,6 +176,14 @@ def main(argv):
     if a.cmd == "history":
         rows = [dict(r) for r in m.history(a.subject, a.predicate)]
         print(json.dumps({"rows": rows}))
+        return 0
+    if a.cmd == "close":
+        if not a.predicates and not a.glob:
+            sys.stderr.write("close needs at least one predicate or --glob; "
+                             "closing a whole subject is not offered\n")
+            return 1
+        print(json.dumps(close_rows(m, a.subject, a.predicates, a.glob,
+                                    a.reason, a.source, a.dry_run)))
         return 0
     if a.cmd == "cli":
         # lumen_state.py's own argv-driven CLI, human formatting and all, so a
