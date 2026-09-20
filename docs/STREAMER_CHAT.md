@@ -102,6 +102,10 @@ Five filters, in order:
    content needs room to reach it, and a cap is not a charge. The extractor
    (`persona_llm.ts`) had the identical bug and the identical fix: it parses its
    text for claims, so a monologue there becomes a *fact about Lumen*.
+   A hand-written hotfix for the same leak (2026-09-13, never committed) was
+   discarded from the primary tree in wq#2236: this rule supersedes it, and
+   differs in one place — the hotfix returned `''` (a screened skip) on empty
+   content where `gatewayLLM` throws.
 1. `firstSentence()` strips model preamble (`Sure! Here's a line:`) and keeps
    one sentence, and `unterminated()` drops a completion with no sentence
    terminator anywhere — half a thought (`Frank used to ping me at`) reads as a
