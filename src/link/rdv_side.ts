@@ -23,8 +23,9 @@ import { Screen } from "../screen";
 import { Sync } from "../sync";
 import { Dialog } from "../dialog";
 import { SerialBridge } from "./bridge";
-import { Rendezvous, CoreView, RoomName } from "./rendezvous";
-import { offsetsFromSymbols, verifyTradeBlock, viewBlock } from "./invariants";
+import { Rendezvous, CoreView, RoomName, ROOM_MAP, ROOM as ROOM_ID } from "./rendezvous";
+import { setSlice, clearSlice, transferSliceDivisor } from "./lockstep";
+import { offsetsFromSymbols, verifyTradeBlock, viewBlock, readPartyBlock, diffBlocks } from "./invariants";
 import { readLinkState } from "./linkstate";
 import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 
@@ -37,6 +38,12 @@ const LINGER_MAX = Number(process.env.RDV_LINGER_MS ?? 90000);
 const LINGER_IDLE = Number(process.env.RDV_LINGER_IDLE_MS ?? 25000);
 const TAG = process.env.RDV_TAG ?? MODE;
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** wLinkState values CONFIRMED in vivo by the M3 in-process trade (trade.ts):
+ *  the ROM leaves the idle link state when the table sequence starts, and lands
+ *  on 50 once the 415-byte block is in and the trade menu is up. */
+const LS_ENGAGED = 2;
+const LS_TRADE_MENU = 50;
 
 (async () => {
   const emu = new Emulator(romPath("pokeblue.gb"));
@@ -51,8 +58,31 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   emu.frames(6);
   await nav.goto(11, 3);                      // tile below the attendant
 
-  const bridge = new SerialBridge(emu.core as any);
-  const CYC = ((emu.core as any).CPUCyclesTotalBase | 0) >> 1;
+  // wq#511: the bridge needs to see the ROM take a byte out of the serial ISR's
+  // one-deep slot before it hands over the next one. Symbol, not a remembered
+  // address — a rename fails here instead of corrupting a block 400 bytes later.
+  const bridge = new SerialBridge(emu.core as any, { takenSignal: sym.addr("hSerialReceiveData") });
+  // BGB timestamps are 2 MiHz ticks; the core counts at 4 MiHz. Read the budget
+  // EVERY step, never once at startup: under fine slicing a step is ~524 cycles,
+  // not a frame, and a bridge told otherwise both skews the link clock (spec
+  // rule 5) and burns the gate's patience 60x too fast.
+  const linkTicks = () => ((emu.core as any).CPUCyclesTotalBase | 0) >> 1;
+
+  // wq#511 PACING. Every executed step ends in setImmediate — the CHECK phase,
+  // which runs AFTER poll, so any packet that arrived during the frame has been
+  // read before the next one starts. Installed on the Emulator (not just our own
+  // loop) because nav and dialog step the core themselves: the walk to the trade
+  // table is precisely where the ROM clocks the partner's position every frame,
+  // and a link that goes deaf there strands the peer.
+  let linkStalled = "";
+  const yieldToPoll = () => new Promise<void>(r => setImmediate(r));
+  emu.framePacer = async () => {
+    bridge.advance(linkTicks());               // advance the link clock, hand over at most one byte
+    await yieldToPoll();
+    if (bridge.pending && !bridge.closed) {
+      try { await bridge.settled(15000); } catch (e: any) { linkStalled = String(e?.message ?? e); }
+    }
+  };
 
   const core: CoreView = {
     map: () => emu.mem()[0xD35E] & 0xFF,
@@ -64,12 +94,9 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     step: async (n: number, key?: number) => {
       for (let i = 0; i < n; i++) {
         if (bridge.closed) break;
-        if (bridge.pending) { try { await bridge.settled(15000); } catch { break; } }
         if (key !== undefined) (emu as any).gb.pressKey(key);
-        (emu as any).gb.doFrame();
-        bridge.advance(CYC);
+        await emu.framesAsync(1);              // framePacer paces, advances and pumps
       }
-      await sleep(0);
     },
   };
 
@@ -100,34 +127,94 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   const res = await rdv.run();
   console.log("RESULT " + JSON.stringify({ tag: TAG, ...res, telemetry: bridge.telemetry }));
 
-  // ---- CONTINUATION: party-block exchange, then M5b invariants ------------
+  // ---- CONTINUATION: drive the 415-byte party exchange, then M5b invariants -
+  //
+  // wq#483 reached the room and stopped; this is the driving it was missing.
+  // The sequence is the M3 in-process one (trade.ts), re-expressed ONE-SIDED:
+  // take a seat, face across the table, and press A until OUR OWN wLinkState
+  // says the ROM finished the exchange and put the trade menu up. We never read
+  // the peer — the ROM's own state is the completion signal.
+  //
+  // COARSE for the walk and the wait (cheap, and the peer may still be walking),
+  // FINE around the block itself: a full frame freezes us for ~70k cycles, so a
+  // block clocked at one byte per frame is 400 frames of a partner sitting in a
+  // serial wait loop. One slice ~= one transfer window (lockstep.ts).
   if (res.ok && process.env.RDV_CONTINUE === "block") {
     const master = core.role() === 2;
     const seat = master ? { x: 3, y: 4, face: KEYS.RIGHT } : { x: 6, y: 4, face: KEYS.LEFT };
+    // The room we actually resolved to, not the one we asked for: room select
+    // can yield to the peer's choice, and a seat checked against the wrong map
+    // would pass in the one case worth catching.
+    const seatMap = ROOM_MAP[res.room ?? ROOM_ID[ROOM]];
     console.log(`[${TAG}] continuation: ${master ? "MASTER->left" : "SLAVE->right"} seat (${seat.x},${seat.y})`);
+    const FINE = transferSliceDivisor(emu.core);
+    let reached = 0;
+    let seated: { map: number; x: number; y: number } | null = null;
+    // Forces before the block are expected and harmless: they land while the ROM
+    // is rendering text or copying BG rows (measured PCs: $390A
+    // PrintLetterDelay, $1DD7 TransferBgRows), where the only traffic is
+    // position sync. A force DURING the block is a lost byte, so count that
+    // separately instead of pretending the two are the same event.
+    let forcedBefore = 0;
+    // wq#511 deliverable (2): seat navigation inside $EF is VERIFIED, not
+    // assumed. The exchange completing is strong evidence we sat down, but it
+    // is indirect — record where the walk actually left us so a probe can fail
+    // on the seat itself, and so a future map change names the seat as the
+    // culprit instead of surfacing as a mysterious dead handshake.
     try {
       await nav.goto(seat.x, seat.y);
-      await core.step(20, seat.face);
-      await core.step(20);
-      for (let r = 0; r < 60 && !bridge.closed; r++) {
+      await core.step(16, seat.face);
+      await core.step(16);
+      seated = nav.pos();
+      // engage: A at the table until the ROM leaves the idle link state
+      for (let r = 0; r < 60 && !bridge.closed && core.linkState() < LS_ENGAGED; r++) {
         await core.step(6, KEYS.A);
         await core.step(24);
       }
+      reached = core.linkState();
+      // the block itself
+      forcedBefore = bridge.telemetry.forced;
+      setSlice(emu.core, FINE);
+      try {
+        for (let r = 0; r < 40 && !bridge.closed && core.linkState() !== LS_TRADE_MENU; r++) {
+          await core.step(8 * FINE, KEYS.A);
+          await core.step(24 * FINE);
+        }
+      } finally { clearSlice(emu.core); }
     } catch (e: any) {
       console.log(`[${TAG}] continuation error: ${String(e?.message ?? e).slice(0, 120)}`);
     }
+
     const mem = emu.mem();
-    const rd = (a: number, n: number) => Array.from({ length: n }, (_, i) => mem[a + i] & 0xFF);
-    const received = [...rd(0xD887, 11), ...rd(0xD893, 404)];
     const O = offsetsFromSymbols(sym);
+    const received = readPartyBlock(mem, sym, "enemy");
     const v = verifyTradeBlock(received, O);
     const view = viewBlock(received, O);
+    // Both sides boot the same snapshot, so the peer's party IS ours: the block
+    // that arrived must equal the block we would have sent, byte for byte. This
+    // is the check that sees a single lost byte — structural validation cannot,
+    // because a shifted tail is still structurally plausible.
+    const own = readPartyBlock(mem, sym, "own");
+    const mirror = diffBlocks(own, received, O, view.count);   // the slots the block claims
+    const mirrorAll = diffBlocks(own, received, O);            // including never-filled slots
+    const t = bridge.telemetry;
     console.log("BLOCKCHECK " + JSON.stringify({
       tag: TAG, ok: v.ok, checks: v.checked, failures: v.failures,
+      linkState: core.linkState(), engagedAt: reached,
+      seat: { want: { map: seatMap, x: seat.x, y: seat.y }, at: seated,
+        ok: !!seated && seated.map === seatMap && seated.x === seat.x && seated.y === seat.y },
+      exchangeDone: core.linkState() === LS_TRADE_MENU,
+      mirror: { ok: mirror.ok, diffs: mirror.diffs, first: mirror.first, where: mirror.where },
+      mirrorAll: { ok: mirrorAll.ok, diffs: mirrorAll.diffs, where: mirrorAll.where },
       peerCount: view.count,
       peerSlot0: { species: view.mons[0].species, level: view.mons[0].level,
         hp: view.mons[0].hp, maxHp: view.mons[0].maxHp, moves: view.mons[0].moves },
-      exchanges: bridge.telemetry.sent + bridge.telemetry.slaveServed,
+      exchanges: t.sent + t.slaveServed,
+      pacing: { queuedIn: t.queuedIn, served: t.slaveServed, blocked: t.blocked,
+        forced: t.forced, forcedDuringBlock: t.forced - forcedBefore,
+        collisions: t.collisions, stillQueued: bridge.queued, gate: t.gate,
+        forcedAt: t.forcedAt.map(pc => `$${pc.toString(16)}`) },
+      stalled: linkStalled || undefined,
     }));
   }
 
