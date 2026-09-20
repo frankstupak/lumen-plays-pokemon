@@ -43,6 +43,13 @@ export interface PersonaStore {
   current(): PersonaRow[];
   /** Supersede or insert. Same value as the open row = evidence refresh. */
   ingest(w: PersonaWrite): void;
+  /**
+   * Close the open row at a predicate the character has moved off — never a
+   * delete, just a valid_to, so `history`/`asof` still answer for the days it
+   * was true. Optional: a store that cannot close is still a usable store
+   * (persona.ts only tidies with it, it never depends on it).
+   */
+  close?(predicate: string, reason: string): void;
   /** Human label for stats/logs. */
   readonly kind: string;
 }
@@ -149,6 +156,11 @@ export class LumenStateStore implements PersonaStore {
     this.regen();
   }
 
+  close(predicate: string, reason: string): void {
+    this.run(["close", this.subject, predicate, "--reason", reason.slice(0, 200), "--source", encodeSource("persona")]);
+    this.regen();
+  }
+
   /**
    * Rebuild the rendered fleet-state docs other agents read. Detached and
    * debounced on purpose: this is a turn-loop caller, and a persona fact is not
@@ -190,6 +202,11 @@ export class MemoryPersonaStore implements PersonaStore {
     if (open && open.value === w.value) return;          // evidence refresh, no new row
     if (open) open.validTo = w.validFrom;
     this.rows.push({ predicate: w.predicate, value: w.value, validFrom: w.validFrom, validTo: null, source: w.source });
+  }
+
+  close(predicate: string, _reason: string): void {
+    const open = this.rows.find(r => r.predicate === predicate && r.validTo === null);
+    if (open) open.validTo = today();
   }
 
   history(predicate: string) {

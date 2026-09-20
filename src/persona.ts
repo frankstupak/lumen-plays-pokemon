@@ -114,11 +114,38 @@ const PAST_STATES = "born|created|built|made|trained|written|designed|named";
 // between them — which is precisely the bug this file exists to prevent.
 // Explicit list rather than a general -our/-or rule, which would eat "hour",
 // "four" and "your".
+//
+// Spelling was the only drift this table was built for, and it was the wrong
+// half of the problem. Live lumen-persona (wq#1176, 100 open rows) answered
+// "where is he from?" at SIX predicates — my city, my former city, my old city,
+// my previous city, my hometown, my old home — every one of them "San
+// Francisco", because the extractor names the slot in whatever words the
+// sentence used. Six slots is not six facts; it is one fact that can never be
+// reaffirmed, never be revised, and never contradict itself, so the conflict
+// rule below it never fires. The fold is deliberately narrow:
+//
+//   - "former"/"previous"/"prior" -> "old": these three mean exactly "the one
+//     before this one", so they are interchangeable WITH EACH OTHER. "old" is
+//     kept in the key rather than stripped, because "my old job" and "my job"
+//     are genuinely different questions and merging them would invent a
+//     contradiction ("poured concrete" vs "streams Pokemon") out of two true
+//     answers.
+//   - "work"/"workplace" -> "job", "town" -> "city": one question, different
+//     noun (live: my job "poured concrete", my previous job "concrete work",
+//     my old job "concrete worker" — one man, one trade, three rows).
+//
+// Not folded: "hometown" into "city" (where you are FROM is not where you
+// LIVE), "ex"/"last" into "old" ("my ex-wife" is a person, "my last name" is a
+// name). A wrong fold costs a refused fact; a missing fold costs a duplicate
+// slot, which quarantine() can still survive. Prefer the cheaper mistake.
 const KEY_SYNONYMS: Record<string, string> = {
   favourite: "favorite", favourites: "favorite", favorites: "favorite",
   colour: "color", colours: "color", colors: "color",
   behaviour: "behavior", humour: "humor", honour: "honor",
   pokemon: "pokemon", pokémon: "pokemon",
+  former: "old", previous: "old", prior: "old",
+  work: "job", workplace: "job",
+  town: "city",
 };
 
 /** Slot form: one question gets one slot, whatever the spelling. */
@@ -432,6 +459,9 @@ export class PersonaMemory {
    * Also the per-slot ceiling: a set-valued slot is allowed to accumulate, but
    * not to eat the recall budget. Shortest values first (a clean descriptor is
    * what a persona slot is for), then the ones he has held longest.
+   *
+   * And the slot fold: one question renders once, whichever spelling of the
+   * question the store happens to hold it under (see KEY_SYNONYMS).
    */
   private quarantine(facts: PersonaFact[]): PersonaFact[] {
     const kept: PersonaFact[] = [];
@@ -442,12 +472,32 @@ export class PersonaMemory {
     }
     this.suppressed = dropped;
 
+    // Single-valued slots first. After the KEY_SYNONYMS fold, several stored
+    // predicates legitimately land on one slot — "my former city" and "my
+    // previous city" are both "my old city" now — and a slot that renders
+    // twice in the recall block is exactly the duplication this pass exists to
+    // end. Newest valid-from wins, because that IS the bi-temporal answer to
+    // "what does he believe today"; the superseded rows are suppressed from
+    // the view, not from lumen_state, so history/asof still answer.
+    const singles = new Map<string, PersonaFact[]>();
     const sets = new Map<string, PersonaFact[]>();
-    const out: PersonaFact[] = [];
+    const order: string[] = [];
     for (const f of kept) {
-      if (f.single) { out.push(f); continue; }
-      const arr = sets.get(f.key);
-      if (arr) arr.push(f); else sets.set(f.key, [f]);
+      const bucket = f.single ? singles : sets;
+      const arr = bucket.get(f.key);
+      if (arr) { arr.push(f); continue; }
+      bucket.set(f.key, [f]);
+      if (f.single) order.push(f.key);
+    }
+    const out: PersonaFact[] = [];
+    for (const key of order) {
+      const arr = singles.get(key)!;
+      if (arr.length > 1) {
+        arr.sort((a, b) => (a.validFrom < b.validFrom ? 1 : a.validFrom > b.validFrom ? -1 : 0) ||
+          a.value.length - b.value.length);
+        this.suppressed += arr.length - 1;
+      }
+      out.push(arr[0]);
     }
     for (const arr of sets.values()) {
       arr.sort((a, b) => a.value.length - b.value.length ||
@@ -540,6 +590,15 @@ export class PersonaMemory {
     try {
       this.store.ingest({ predicate, value: c.value, validFrom: day, source: encodeSource(platform) });
     } catch { this.storeErrors++; return null; }
+    // The answer reached the canonical slot. If the previous one lived at a
+    // pre-fold spelling of the same slot ("my former city"), close it there:
+    // otherwise every refresh reloads it and the slot is duplicated again
+    // tomorrow. A valid_to, never a delete, and a store with no close verb
+    // just keeps the old row — quarantine() still renders one of them.
+    if (prior && prior.predicate !== predicate && this.store.close) {
+      try { this.store.close(prior.predicate, `superseded by ${predicate}: persona slot fold`); }
+      catch { this.storeErrors++; }
+    }
     const fact: PersonaFact = {
       key: c.key, predicate, value: c.value, norm: c.norm,
       raw: source ? `${c.raw} [${source}]` : c.raw,

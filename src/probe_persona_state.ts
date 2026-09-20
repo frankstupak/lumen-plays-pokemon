@@ -160,6 +160,31 @@ async function main(): Promise<number> {
   const again = JSON.parse(adapter("close", junkSubject, "--glob", "i_am__*", "--reason", "probe").stdout || "{}");
   ok("closing twice is a no-op", again.closed?.length === 0, JSON.stringify(again.closed));
 
+  // ── wq#1176: one question is one slot, end to end through real lumen_state ──
+  //
+  // Live lumen-persona held "San Francisco" at six predicates because the
+  // extractor named each slot after the sentence that produced it. Here the
+  // pre-fold spelling is seeded the way the live store got it, and the check is
+  // that a later statement REVISES that slot instead of opening a parallel one.
+  const foldStore = store();
+  foldStore.ingest({ predicate: "my_former_city", value: "San Francisco", validFrom: "2026-09-01", source: "lpp:stream" });
+  const folded = new PersonaMemory();
+  folded.now = () => new Date("2026-09-08T12:00:00.000Z");
+  folded.useStore(foldStore);
+  const e4 = await folded.observe("My old city is Oakland", "stream");
+  ok("a differently-worded slot is an update, not a new row", e4[0]?.outcome === "updated",
+     `${e4[0]?.outcome ?? "none"} key=${e4[0]?.key ?? ""}`);
+  const cityRows = () => openPreds().filter(p => p.endsWith("_city"));
+  ok("lumen_state ends with ONE open city row", cityRows().length === 1 && cityRows()[0] === "my_old_city",
+     cityRows().join(" | "));
+  const supersededCity = (JSON.parse(adapter("history", subject, "my_former_city").stdout || '{"rows":[]}').rows as any[])[0];
+  ok("the pre-fold spelling is closed, with its value kept for the audit",
+     supersededCity?.value === "San Francisco" && typeof supersededCity?.valid_to === "string",
+     JSON.stringify(supersededCity && [supersededCity.value, supersededCity.valid_to]));
+  folded.refresh(true);
+  ok("and recall answers the question once", folded.recall().split("\n").filter(s => s.includes("city")).length === 1,
+     folded.recall().split("\n").filter(s => s.includes("city")).join(" / "));
+
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   return fail ? 1 : 0;
 }
