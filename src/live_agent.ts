@@ -1,6 +1,6 @@
 // Live agent: the real brain playing on stream, resuming from the latest
 // checkpoint, with budget-exhaustion recovery and stuck-restart.
-import { readdirSync, statSync, existsSync } from "fs";
+import { readdirSync, statSync, existsSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { Emulator, loadSnapshotFile, saveSnapshotFile } from "./emulator";
 import { SymbolTable } from "./symbols";
 import { Rom } from "./rom";
@@ -13,7 +13,7 @@ import { Dialog } from "./dialog";
 import { Actions } from "./actions";
 import { Battle } from "./battle";
 import { StateReader } from "./state";
-import { Brain } from "./brain";
+import { Brain, BrainUnreachableError, preflightGateway } from "./brain";
 import { Agent } from "./agent";
 import { StreamServer } from "./stream";
 import { pickResume } from "./resume";
@@ -44,6 +44,24 @@ const ROM = "/home/lumen/pokemon/roms/pokeblue.gb";
 const SAVES = "/home/lumen/pokemon/saves";
 const CKPTS = "/home/lumen/pokemon/checkpoints";
 const RUNTIME = "/home/lumen/pokemon/runtime";   // wq#486: persisted notepad lives here
+
+// wq#1660: the brain-unreachable signal the stuck supervisor reads. Heartbeat
+// (updatedAt) refreshed on every hold iteration, deleted on the first
+// successful turn — freshness IS the liveness of the outage.
+const BRAIN_SIGNAL = `${RUNTIME}/brain_unreachable.json`;
+let brainDownSince: number | null = null;
+function writeBrainSignal(since: number, now: number, lastError: string, rungs: { model: string; error: string }[]) {
+  try {
+    const tmp = `${BRAIN_SIGNAL}.tmp`;
+    writeFileSync(tmp, JSON.stringify({
+      since: new Date(since).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      lastError: lastError.slice(0, 400),
+      rungs,
+    }, null, 1));
+    renameSync(tmp, BRAIN_SIGNAL);
+  } catch {}
+}
 
 // S2: resume selection lives in resume.ts (viability-gated, sidecar-first).
 
@@ -512,6 +530,25 @@ function ceruleanApproachPack(map: number): string {
 }
 
 (async () => {
+  // wq#1660 boot pre-flight: verify the whole rung ladder against /v1/models
+  // BEFORE any checkpoint work, so a model the key cannot call costs one
+  // readable FATAL line instead of a day of 4xx turns (E4: 1837x "Invalid
+  // model"). exit 2, same contract as the wq#1664 guard above: a restart
+  // cannot fix a gateway that does not serve the configured model. A gateway
+  // that is merely DOWN only warns — the rung ladder survives that.
+  if (CFG.brain.preflight) {
+    const pf = await preflightGateway();
+    for (const w of pf.warn) console.error(`[preflight] WARN ${w}`);
+    if (pf.budget)
+      console.error(`[preflight] key budget: spend=${pf.budget.spend ?? "?"} max=${pf.budget.maxBudget ?? "?"}`);
+    bus.emit("tool_call", { tool: "brain_preflight", fatal: pf.fatal.length,
+      warn: pf.warn.length, budget: pf.budget ?? null });
+    if (pf.fatal.length) {
+      for (const f of pf.fatal) console.error(`[preflight] FATAL ${f}`);
+      metrics.flush("preflight_fatal");
+      process.exit(2);
+    }
+  }
   // wq#477: one tracker for the whole process (survives in-process agent
   // reboots), seeded from sidecars so restarts onto older checkpoints are
   // still detected as regressions.
@@ -667,8 +704,32 @@ function ceruleanApproachPack(map: number): string {
         refreshCorridorGuidance();   // wq#514: phase can change mid-run
         await agent.runTurn();
         failStreak = 0;
+        if (brainDownSince !== null) {
+          bus.emit("turn_summary", { line: `brain recovered after ${((Date.now() - brainDownSince) / 3.6e6).toFixed(1)}h unreachable` });
+          brainDownSince = null;
+          try { unlinkSync(BRAIN_SIGNAL); } catch {}
+        }
         await sleep(1500);   // stream readability: let viewers read the THINK line
       } catch (e: any) {
+        // wq#1660: every rung answered a terminal 4xx — budget, key, or model.
+        // This is NOT the failStreak path. A reboot rolls back to a checkpoint,
+        // and a dead brain has written no new checkpoint since the last one, so
+        // rebooting can only replay the same 4xx from an older save (E6: every
+        // ~57s for six days). Hold in place instead; Brain's dead-rung recheck
+        // window is what turns a recovered gateway back into turns.
+        if (e instanceof BrainUnreachableError || e?.name === "BrainUnreachableError") {
+          const now = Date.now();
+          if (brainDownSince === null) {
+            brainDownSince = now;
+            bus.emit("tool_call", { tool: "brain_unreachable",
+              rungs: (e as BrainUnreachableError).rungs ?? [],
+              error: String(e?.message ?? e).slice(0, 300) });
+          }
+          bus.emit("turn_summary", { line: `brain unreachable ${((now - brainDownSince) / 3.6e6).toFixed(1)}h — holding, no reboot without a new checkpoint` });
+          writeBrainSignal(brainDownSince, now, String(e?.message ?? e), (e as BrainUnreachableError).rungs ?? []);
+          await sleep(60_000);
+          continue;
+        }
         failStreak++;
         bus.emit("turn_summary", { line: `brain error (${failStreak}): ${String(e?.message ?? e).slice(0, 100)}` });
         saveSnapshotFile(emu, `${CKPTS}/error-recovery.state.gz`);

@@ -134,6 +134,18 @@ RESUME_HISTORY = f"{BASE}/runtime/resume_history.json"
 # place in the run that knows a gym fight was WON, which is the fact that makes
 # a FIGHT_LOSS_LOOP verdict on that gym impossible.
 FIGHT_LEDGER = f"{BASE}/runtime/fight_ledger.json"
+# wq#1660: src/live_agent.ts writes this while every brain rung is terminal
+# (gateway 4xx that is not 429/408) and heartbeats updatedAt each hold
+# iteration (~60s). Freshness IS the outage: a stale file is a run that either
+# recovered without deleting it (crash mid-hold) or stopped — neither is
+# "brain unreachable right now", so a stale file classifies as nothing.
+BRAIN_SIGNAL = f"{BASE}/runtime/brain_unreachable.json"
+BRAIN_SIGNAL_FRESH_MS = 10 * 60 * 1000
+# wq#1660 -> wq#965: source='probe' + priority='high' is EXACTLY the predicate
+# aq_escalate.py escalates (count>=3, no ack => one P0 ticket + one page), so
+# an unrecovered brain pages Frank through the machinery that already exists.
+AQ_DB_DEFAULT = "/home/lumen/agents/alert-queue/alerts.db"
+AQ_KEY = "lpp-brain-unreachable"
 # wq#1179: the composite-progress axis. src/novelty.ts samples P once per turn
 # into runtime/progress.json; the constants below are PARSED from that file for
 # the same reason resume_repeat_limit() parses src/resume.ts — a threshold this
@@ -158,8 +170,13 @@ WARP_OSC_WINDOW = 16      # wq#697: recent warp window for oscillation detection
 NOISE_STORM_K = 5          # wq#697: consecutive noise turns to flag NOISE_STORM
 NOISE_RE = re.compile(r"unknown tool|parse_error|tool error|no tool call", re.I)
 
-MODES = ("FIGHT_LOSS_LOOP", "OBJECTIVE_DRIFT", "WARP_OSC", "NOISE_STORM", "NAV_LOOP",
-         "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
+# wq#1660: BRAIN_UNREACHABLE first. Every other mode is read off history
+# (warp_history, resume picks, turn summaries) that a dead brain stopped
+# writing, so while the signal file is fresh they are all classifications of a
+# corpse's last footprints — E6 held FIGHT_LOSS_LOOP for six brain-dead days
+# (9200 directive loads) off exactly that stale window.
+MODES = ("BRAIN_UNREACHABLE", "FIGHT_LOSS_LOOP", "OBJECTIVE_DRIFT", "WARP_OSC", "NOISE_STORM",
+         "NAV_LOOP", "OBJECTIVE_UNREACHABLE", "RESUME_DEADEND", "IDLE")
 
 # wq#1867: reach.ts's verdict when the A* cannot leave the region the agent is
 # standing in. Matched as a phrase because that is all it is — src/reach.ts
@@ -449,6 +466,89 @@ def load_json(path, default=None):
         return json.load(open(path))
     except Exception:
         return default
+
+
+# ---------------------------------------------------------------- wq#1660 brain signal
+def _iso_ms(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp() * 1000
+    except Exception:
+        return None
+
+
+def brain_unreachable(now_ms, path=BRAIN_SIGNAL, fresh_ms=BRAIN_SIGNAL_FRESH_MS):
+    """The live signal file, or None when absent/stale/unparseable."""
+    sig = load_json(path)
+    if not isinstance(sig, dict):
+        return None
+    upd = _iso_ms(sig.get("updatedAt"))
+    if upd is None or now_ms - upd > fresh_ms:
+        return None
+    return sig
+
+
+def open_aq_row(st, db=None):
+    """Upsert the brain-unreachable aq row (mirrors /home/lumen/bin/aq ingest:
+    an open row with the same source+key is bumped, else inserted). Each
+    supervisor tick while the outage persists bumps count, and at count>=3 the
+    wq#965 responder files one P0 ticket and pages once. Never raises — an
+    unreachable alerts.db must not take the classifier down with it."""
+    import sqlite3
+    db = db or os.environ.get("AQ_DB", AQ_DB_DEFAULT)
+    title = "LPP brain unreachable — every rung terminal (4xx)"
+    message = str(st.get("modeEvidence") or "")[:2000]
+    try:
+        c = sqlite3.connect(db, timeout=10)
+        c.executescript("""
+CREATE TABLE IF NOT EXISTS alerts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  first_ts TEXT NOT NULL, last_ts TEXT NOT NULL,
+  source TEXT NOT NULL, key TEXT NOT NULL,
+  title TEXT, message TEXT, priority TEXT DEFAULT 'default',
+  count INTEGER DEFAULT 1, status TEXT DEFAULT 'open',
+  owner TEXT DEFAULT 'unassigned', note TEXT, resolved_ts TEXT);
+CREATE INDEX IF NOT EXISTS idx_status ON alerts(status);
+""")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cur = c.cursor()
+        cur.execute("SELECT id,count FROM alerts WHERE source='probe' AND key=? AND status='open'", (AQ_KEY,))
+        r = cur.fetchone()
+        if r:
+            cur.execute("UPDATE alerts SET count=?, last_ts=?, message=? WHERE id=?",
+                        (r[1] + 1, ts, message, r[0]))
+            rid = r[0]
+        else:
+            cur.execute("INSERT INTO alerts(first_ts,last_ts,source,key,title,message,priority,owner) "
+                        "VALUES(?,?,'probe',?,?,?,'high','lpp-stuck-supervisor')",
+                        (ts, ts, AQ_KEY, title, message))
+            rid = cur.lastrowid
+        c.commit(); c.close()
+        return rid
+    except Exception:
+        return None
+
+
+def resolve_aq_row(db=None):
+    """Edge-clear on recovery (the wq#548 sentinel PASS shape): the signal file
+    is gone/stale, so the open row resolves. A later outage inserts a NEW row —
+    and a new outage deserves a new page. Returns the resolved id or None."""
+    import sqlite3
+    db = db or os.environ.get("AQ_DB", AQ_DB_DEFAULT)
+    try:
+        c = sqlite3.connect(db, timeout=10)
+        cur = c.cursor()
+        cur.execute("SELECT id FROM alerts WHERE source='probe' AND key=? AND status='open'", (AQ_KEY,))
+        r = cur.fetchone()
+        if not r:
+            c.close()
+            return None
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cur.execute("UPDATE alerts SET status='resolved', resolved_ts=?, note='brain signal cleared' WHERE id=?",
+                    (ts, r[0]))
+        c.commit(); c.close()
+        return r[0]
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- story_score axis
@@ -925,6 +1025,24 @@ def compute(base=BASE, window_h=DEFAULT_WINDOW_H, now_ms=None, warps=None,
         stalled = True
         st["stalled"] = True
         st["stallAxis"] = "dP"
+
+    # wq#1660: brain-unreachable pre-empts EVERYTHING, including "not stalled
+    # yet". A fresh signal means live_agent is holding with zero working rungs
+    # right now; waiting out the 2h freeze window before saying so is 2h of
+    # silence, and classifying the frozen warp history underneath it is how E6
+    # prescribed FIGHT_LOSS_LOOP 9200x to a brain that could not read a pin.
+    bu = brain_unreachable(now_ms, path=f"{base}/runtime/brain_unreachable.json")
+    if bu is not None:
+        st["stalled"] = True
+        st["stallAxis"] = "brain"
+        st["mode"] = "BRAIN_UNREACHABLE"
+        rungs = bu.get("rungs") or []
+        st["modeEvidence"] = (
+            f"every brain rung terminal since {bu.get('since')} "
+            f"(heartbeat {bu.get('updatedAt')}): {bu.get('lastError')}"
+            + (f" | rungs: {', '.join(str(r.get('model')) for r in rungs if isinstance(r, dict))}" if rungs else ""))
+        st["modeLocation"] = latest.get("map")
+        return st
 
     if stalled:
         if warps is None:

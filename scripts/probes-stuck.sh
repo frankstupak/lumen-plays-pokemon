@@ -31,7 +31,8 @@ for a in "$@"; do
 done
 
 PROBES=(test_stuck697 test_stuck1118 test_stuck1563
-        test_stuck1826 test_stuck1845 test_stuck1846 test_stuck1867)
+        test_stuck1826 test_stuck1845 test_stuck1846 test_stuck1867
+        test_stuck1660)
 [ "${#selected[@]}" -gt 0 ] && PROBES=("${selected[@]}")
 
 failed=()

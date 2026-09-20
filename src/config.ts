@@ -271,6 +271,16 @@ export const CFG = {
     // cooldown window". Cheapest-first resumes by itself when it expires.
     breakerFails: envN("LPP_BRAIN_BREAKER_FAILS", 2),
     breakerCooldownMs: envN("LPP_BRAIN_BREAKER_COOLDOWN_MS", 600_000),
+    // DEAD RUNG (wq#1660): a gateway 4xx that is not 429/408 is deterministic —
+    // budget exceeded, invalid model, key not allowed — and re-asking cannot
+    // change the answer. The rung is marked dead (skipped outright, terminal
+    // included) for this window, unlike the breaker above, whose whole contract
+    // is that the terminal rung ignores it. Long on purpose: this is "wait for
+    // an operator or a budget reset", not "wait out a busy decode slot".
+    deadRungRecheckMs: envN("LPP_BRAIN_DEAD_RUNG_RECHECK_MS", 900_000),
+    // wq#1660 boot pre-flight (GET /v1/models + /key/info). 0 skips it —
+    // probes and stub-gateway runs have no /v1/models to answer.
+    preflight: envN0("LPP_BRAIN_PREFLIGHT", 1) > 0,
   },
   // wq#1176 STREAMER CHAT (one-way: Lumen -> audience; there is no inbound
   // path, see chat.ts). This block is the TRANSPORT only — the ring the overlay

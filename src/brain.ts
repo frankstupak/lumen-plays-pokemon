@@ -36,6 +36,30 @@ const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 export interface TurnUsage { prompt: number; completion: number; model: string }
 
+/** wq#1660: a non-2xx gateway response, with the status kept machine-readable
+ *  so the ladder can tell a deterministic 4xx from a transient failure. */
+export class GatewayError extends Error {
+  constructor(msg: string, readonly status: number) { super(msg); this.name = "GatewayError"; }
+}
+
+/** wq#1660: every rung is dead (terminal 4xx) — the run has no brain at all.
+ *  live_agent.ts catches this BY NAME and holds in place instead of walking
+ *  the failStreak -> teardown -> resume path: a reboot exists to roll back to
+ *  a better checkpoint, and a dead brain writes no checkpoints to roll to. */
+export class BrainUnreachableError extends Error {
+  constructor(msg: string, readonly rungs: { model: string; error: string }[]) {
+    super(msg); this.name = "BrainUnreachableError";
+  }
+}
+
+/** True for the 4xx family that re-asking cannot fix: budget exceeded (400),
+ *  bad/disallowed key (401/403), invalid model (400/404)... 429 is a rate
+ *  limit and 408 a gateway-side timeout — both transient, both left to the
+ *  ordinary breaker. */
+export function isTerminal4xx(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 429 && status !== 408;
+}
+
 /** One attempt target. `terminal` rungs are never skipped by the breaker, so a
  *  turn always makes at least one real request. */
 interface Rung { model: string; timeoutMs: number; attempts: number; terminal: boolean }
@@ -49,6 +73,11 @@ export class Brain {
    *  until which the rung is presumed saturated and skipped. */
   private rungFails = new Map<string, number>();
   private rungOpenUntil = new Map<string, number>();
+  /** wq#1660 dead rungs: epoch ms until which a rung that answered a terminal
+   *  4xx is skipped outright (terminal rung included — see isTerminal4xx), and
+   *  the error text that killed it, kept for BrainUnreachableError. */
+  private rungDeadUntil = new Map<string, number>();
+  private rungDeadErr = new Map<string, string>();
   totalPrompt = 0; totalCompletion = 0;
   constructor(private bus: EventBus) {}
 
@@ -114,6 +143,25 @@ export class Brain {
   private noteRungOk(model: string) {
     this.rungFails.delete(model);
     this.rungOpenUntil.delete(model);
+    this.rungDeadUntil.delete(model);
+    this.rungDeadErr.delete(model);
+  }
+
+  /** wq#1660: `model` answered a terminal 4xx. Unlike the breaker this skips
+   *  the terminal rung too — the wq#907 "always make one real request"
+   *  invariant is replaced by the explicit BrainUnreachableError below, never
+   *  by a silent zero-request turn. */
+  private noteRungDead(model: string, now: number, profileName: string, err: string) {
+    this.rungDeadUntil.set(model, now + CFG.brain.deadRungRecheckMs);
+    this.rungDeadErr.set(model, err.slice(0, 200));
+    this.bus.emit("tool_call", { tool: "brain_rung_dead", model,
+      recheckMs: CFG.brain.deadRungRecheckMs, error: err.slice(0, 200) });
+    logFallback({ ts: new Date(now).toISOString(), profile: profileName, model,
+      reason: `rung_dead_${Math.round(CFG.brain.deadRungRecheckMs / 1000)}s`, error: err.slice(0, 200) });
+  }
+
+  private rungDead(model: string, now: number): boolean {
+    return (this.rungDeadUntil.get(model) ?? 0) > now;
   }
 
   private noteRungFail(model: string, now: number, profileName: string) {
@@ -150,7 +198,7 @@ export class Brain {
         throw new Error(`deadline ${rung.timeoutMs}ms exceeded on ${rung.model}`);
       throw e;
     }
-    if (!r.ok) throw new Error(`gateway ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    if (!r.ok) throw new GatewayError(`gateway ${r.status}: ${(await r.text()).slice(0, 200)}`, r.status);
     const d: any = await r.json();
     const msg = d.choices?.[0]?.message ?? {};
     const text = (msg.content && msg.content.trim()) ? msg.content : (msg.reasoning_content ?? "");
@@ -182,6 +230,15 @@ export class Brain {
     let lastErr: any = new Error(`no brain rung configured for profile ${profileName}`);
     for (const rung of rungs) {
       const now = Date.now();
+      // wq#1660: dead beats the breaker's terminal exemption. A rung the
+      // gateway just answered with a deterministic 4xx cannot rescue anything;
+      // re-asking it every turn IS the ~57s reboot loop of Sep 3-9 (M2).
+      if (this.rungDead(rung.model, now)) {
+        logFallback({ ts: new Date(now).toISOString(), profile: profileName, model: rung.model,
+          reason: "rung_skipped_dead", primaryModel: model,
+          error: this.rungDeadErr.get(rung.model) });
+        continue;
+      }
       if (!rung.terminal && this.breakerOpen(rung.model, now)) {
         logFallback({ ts: new Date(now).toISOString(), profile: profileName, model: rung.model,
           reason: "rung_skipped_breaker_open", primaryModel: model });
@@ -207,6 +264,13 @@ export class Brain {
           lastErr = e;
           const ms = Date.now() - started;
           if (isPrimary && rung.model === model) this.trackPrimaryFail(String(e));
+          // wq#1660: a terminal 4xx kills the rung outright — no breaker
+          // bookkeeping (the slot is not busy, the request is impossible) and
+          // no terminal-rung retries (the retry would get the same 4xx).
+          if (e instanceof GatewayError && isTerminal4xx(e.status)) {
+            this.noteRungDead(rung.model, Date.now(), profileName, String(e.message));
+            break;
+          }
           this.noteRungFail(rung.model, Date.now(), profileName);
           logFallback({ ts: new Date().toISOString(), profile: profileName, model: rung.model,
             reason: "rung_failed", primaryModel: model, ms,
@@ -214,6 +278,15 @@ export class Brain {
           if (a + 1 < rung.attempts) await sleep(1500 * (a + 1));
         }
       }
+    }
+    // wq#1660: every rung is dead — say so by name. Distinct from an ordinary
+    // all-rungs-failed throw (timeouts, 5xx), which stays retryable-by-reboot.
+    const endNow = Date.now();
+    if (rungs.every(r => this.rungDead(r.model, endNow))) {
+      const dead = rungs.map(r => ({ model: r.model, error: this.rungDeadErr.get(r.model) ?? "?" }));
+      throw new BrainUnreachableError(
+        `brain unreachable: every rung terminal — ${dead.map(d => `${d.model}: ${d.error}`).join(" | ").slice(0, 400)}`,
+        dead);
     }
     throw lastErr;
   }
@@ -225,4 +298,62 @@ export class Brain {
     ], CFG.profiles.summarize);
     return text;
   }
+}
+
+/** wq#1660 boot pre-flight. GET /v1/models with the service key and check every
+ *  model on the TURN path (primary, escalate, actRetry, summarize + each
+ *  fallback rung) is actually served to this key; GET /key/info and report the
+ *  key's budget so a nearly-spent key is visible in the boot log.
+ *
+ *  `fatal` is only ever a DEFINITIVE negative — a 200 whose model list is
+ *  missing a ladder model, or a 401/403 on the key itself. A refused
+ *  connection or a 5xx is a `warn`: the gateway being down at boot is the
+ *  transient the rung ladder already survives, and refusing to start on it
+ *  would turn an outage into a crash loop. Off-turn-path models (vision,
+ *  persona) also only warn — they degrade a feature, not the game. */
+export async function preflightGateway(cfg = CFG): Promise<{ fatal: string[]; warn: string[]; budget?: { spend: number | null; maxBudget: number | null } }> {
+  const fatal: string[] = [], warn: string[] = [];
+  const base = cfg.gateway.replace(/\/chat\/completions\/?$/, "");   // .../v1
+  const root = base.replace(/\/v1\/?$/, "");
+  const headers = { Authorization: `Bearer ${apiKey()}` };
+  let budget: { spend: number | null; maxBudget: number | null } | undefined;
+  try {
+    const r = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(15_000) });
+    if (r.status === 401 || r.status === 403) {
+      fatal.push(`/v1/models answered ${r.status}: the service key itself is refused — no rung can work.`);
+    } else if (!r.ok) {
+      warn.push(`/v1/models answered ${r.status} — cannot verify the ladder; booting on the rung ladder's own judgement.`);
+    } else {
+      const d: any = await r.json();
+      const served = new Set<string>((d.data ?? []).map((m: any) => m.id));
+      const turnPath: [string, string][] = [
+        ["primary", cfg.profiles.primary.model],
+        ["escalate", cfg.profiles.escalate.model],
+        ["actRetry", cfg.profiles.actRetry.model],
+        ["summarize", cfg.profiles.summarize.model],
+        ...cfg.brain.fallbackModels.map((m, i) => [`fallback[${i}]`, m] as [string, string]),
+      ];
+      for (const [role, m] of turnPath)
+        if (m && !served.has(m))
+          fatal.push(`${role} model "${m}" is not in /v1/models for this key — every turn on it would be a 4xx (the E4 "Invalid model" shape, 1837x).`);
+      for (const [role, m] of [["vision", cfg.profiles.vision.model], ["persona", cfg.profiles.persona.model]] as const)
+        if (m && !served.has(m))
+          warn.push(`${role} model "${m}" is not in /v1/models — that feature will fail until fixed.`);
+    }
+  } catch (e: any) {
+    warn.push(`/v1/models unreachable (${String(e?.message ?? e).slice(0, 120)}) — cannot verify the ladder at boot.`);
+  }
+  try {
+    const r = await fetch(`${root}/key/info`, { headers, signal: AbortSignal.timeout(15_000) });
+    if (r.ok) {
+      const d: any = await r.json();
+      const info = d.info ?? d;
+      budget = { spend: info.spend ?? null, maxBudget: info.max_budget ?? null };
+    } else {
+      warn.push(`/key/info answered ${r.status} — key budget unknown.`);
+    }
+  } catch (e: any) {
+    warn.push(`/key/info unreachable (${String(e?.message ?? e).slice(0, 120)}) — key budget unknown.`);
+  }
+  return { fatal, warn, budget };
 }
