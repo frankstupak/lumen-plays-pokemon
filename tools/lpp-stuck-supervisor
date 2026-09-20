@@ -55,6 +55,19 @@ def main(argv=None):
     out = {"stuckMode": {k: state.get(k) for k in
                           ("ok", "stalled", "mode", "modeLocation", "frozenHours", "storyScore")}}
 
+    # wq#1660: BRAIN_UNREACHABLE's remedy is a HUMAN, not a pin — decide() has
+    # no prescription for it on purpose (a directive cannot reach a dead
+    # brain). Open/bump the aq row instead; three unrecovered ticks trip the
+    # wq#965 responder (one P0 ticket + one page). On any other verdict,
+    # edge-clear a row a recovered outage left open.
+    if not args.dry_run and state.get("ok"):
+        if state.get("mode") == "BRAIN_UNREACHABLE":
+            out["brainAq"] = {"opened": M.open_aq_row(state)}
+        else:
+            resolved = M.resolve_aq_row()
+            if resolved is not None:
+                out["brainAq"] = {"resolved": resolved}
+
     if not state.get("ok"):
         out["intervention"] = None
         out["feedback"] = None
@@ -84,6 +97,8 @@ def main(argv=None):
         or (out.get("feedback") or {}).get("filed")
         or (out.get("feedback") or {}).get("ntfy")
         or (out.get("feedback") or {}).get("resolved")
+        or (out.get("brainAq") or {}).get("opened") is not None
+        or (out.get("brainAq") or {}).get("resolved") is not None
     )
     if args.json:
         print(json.dumps(out, indent=1))
