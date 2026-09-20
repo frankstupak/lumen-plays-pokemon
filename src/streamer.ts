@@ -487,9 +487,13 @@ export async function gatewayLLM(req: StreamerRequest): Promise<string> {
   const content = String(msg.content ?? "").trim();
   // NEVER `reasoning_content`. A thinking model that returns no content has
   // not written a line; it has written notes about writing one, and this used
-  // to read them out on a live stream (wq#1176 — see meta_text.ts for the
-  // measurement). Silence for 60-120s is the correct outcome, and the reason
-  // lands on /streamer.json where an operator can see the rung misbehaving.
+  // to read them out on a live stream: after the 2026-09-10 switch to
+  // glm-5.3-flash-zai — whose reasoning is mandatory — the 160-token ceiling
+  // was spent entirely on thinking and the completion came back `content: ""`
+  // with finish_reason "length", so the monologue went out as Lumen's chat
+  // until 2026-09-13 (wq#1176; tools/scan_chat_meta.ts has the measurement).
+  // Silence for 60-120s is the correct outcome, and the reason lands on
+  // /streamer.json where an operator can see the rung misbehaving.
   if (!content) throw new Error("empty content (thinking-only response)");
   return content;
 }
