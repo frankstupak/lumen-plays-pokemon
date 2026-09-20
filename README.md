@@ -33,6 +33,10 @@ Watch it think:
 npx tsx src/stream.ts  # kiosk on :8871 — live THINK/ACT, not a post-hoc summary
 ```
 
+The unattended round-the-clock runner, `src/live_agent.ts`, is switched off and
+refuses to boot — see [DECOMMISSIONED.md](DECOMMISSIONED.md). Nothing above is
+affected; that file gates the hosted service, not the project.
+
 Playing needs a LiteLLM-compatible gateway on `localhost:4000` serving the
 models named in `src/config.ts`. Every model choice is overridable through
 `LPP_BRAIN_*` environment variables, so it runs against a local llama.cpp

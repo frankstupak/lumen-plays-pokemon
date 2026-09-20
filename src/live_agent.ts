@@ -28,6 +28,7 @@ import { RecoveryTracker, seedMaxFromSidecars } from "./recovery";
 import { Metrics } from "./metrics";
 import { RetryCounter } from "./retry";
 import { CFG, brainConfigErrors } from "./config";   // wq#476: mapStepBudgets
+import { decommissionNotice } from "./decommission";   // wq#2073
 import { GameNames, BADGE_NAMES, STATUS_BITS } from "./names";   // wq#503
 import { MilestoneLog, StuckWatch, RatesCache, sentinelAlerts, objectiveFrom, LOOP_SPAN, LOOP_WINDOW } from "./trainer_panel";
 import { STORY_FLAGS } from "./state";
@@ -64,6 +65,22 @@ function writeBrainSignal(since: number, now: number, lastError: string, rungs: 
 }
 
 // S2: resume selection lives in resume.ts (viability-gated, sidecar-first).
+
+// wq#2073: refuse to boot at all while the tree carries a decommission
+// tombstone. FIRST, ahead of the wq#1664 config gate and everything below it,
+// because this is the only gate that holds no matter who did the starting — a
+// systemd unit that was unmasked by a deploy, lpp-restart, the watchdog, or a
+// bare `npx tsx src/live_agent.ts`. The 2026-09-18 resurrection went through
+// the unit; the 19h of brain calls that starved isis did not care which.
+// exit 4: distinct from 2 (unfixable config) and 3 (designed continue), so a
+// caller can tell "policy says no" from "this build is broken".
+const tombstone = decommissionNotice();
+if (tombstone) {
+  console.error(`[decommission] FATAL ${tombstone.path} exists — LPP is decommissioned, refusing to boot.`);
+  for (const l of tombstone.head) console.error(`[decommission] ${l}`);
+  console.error("[decommission] revive by deleting that file in a PR, not on the host.");
+  process.exit(4);
+}
 
 // wq#1664: refuse to boot a brain whose rescue roles point at the primary model.
 // Before the port bind and before any checkpoint work, so a bad drop-in costs a

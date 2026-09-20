@@ -14,8 +14,13 @@ let pass = 0, fail = 0;
 const chk = (n: string, ok: boolean, d = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${n}${d ? " :: " + d : ""}`); ok ? pass++ : fail++; };
 
 const GLM = "glm-5.3-flash-zai";
+// wq#2073 put a decommission tombstone AHEAD of the config gate, so while LPP
+// is decommissioned this entrypoint exits 4 before it ever reads the brain
+// config. Point the tombstone at a path that does not exist so this probe keeps
+// testing the gate it is named for; probe_decommission2073 owns the other side.
 const r = spawnSync("npx", ["tsx", join(__dirname, "live_agent.ts")], {
   env: { ...process.env,
+    LPP_DECOMMISSION_FILE: join(__dirname, "..", "DECOMMISSIONED.absent"),
     LPP_BRAIN_PRIMARY: GLM, LPP_BRAIN_ESCALATE: GLM, LPP_BRAIN_ACTRETRY: GLM,
     LPP_BRAIN_FALLBACK_MODELS: "cerebras-oss-120b,qwen36-local" },
   encoding: "utf8", timeout: 30_000,
