@@ -60,8 +60,10 @@ console.log("-- A: same STATE under a fresh filename must still count as a repea
   const logs: string[] = [];
   const log = (l: string) => logs.push(l);
 
-  // fileA1: state X, oldest.
-  mk(dir, "auto-r1-fileA1", { stateKey: KEY_X }, 1_000_000);
+  // fileA1: state X, oldest. Mtimes are wall-clock-anchored because the repeat
+  // guard (wq#1578) compares candidate mtimes against the history's pick
+  // timestamps, which pickResume records at real time.
+  mk(dir, "auto-r1-fileA1", { stateKey: KEY_X }, Date.now() - 3_600_000);
   const p1 = pickResume([dir], sym, ROM, { log, historyFile });
   chk("boot 1 picks the only candidate (fileA1)", p1.endsWith("auto-r1-fileA1.state.gz"), p1);
 
@@ -81,8 +83,8 @@ console.log("-- A: same STATE under a fresh filename must still count as a repea
   // -- the measured RESUME_DEADEND shape -- plus a genuinely different,
   // lower-ranked-but-newer state Y that only the repeat guard's alt search
   // can reach (it never wins on raw score).
-  mk(dir, "auto-r1-fileA2", { stateKey: KEY_X }, 2_000_000);       // same state, new name
-  mk(dir, "auto-r1-fileB", { stateKey: KEY_Y, badges: 0, storyScore: 3 }, 3_000_000); // distinct, newest
+  mk(dir, "auto-r1-fileA2", { stateKey: KEY_X }, Date.now() + 1_000);       // same state, new name, postdates boot 2's pick
+  mk(dir, "auto-r1-fileB", { stateKey: KEY_Y, badges: 0, storyScore: 3 }, Date.now() + 2_000); // distinct, newest
 
   logs.length = 0;
   const p3 = pickResume([dir], sym, ROM, { log, historyFile });
