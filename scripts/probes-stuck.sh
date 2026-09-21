@@ -12,6 +12,9 @@
 # Read-only: each probe imports lpp_stuck_mode/lpp_stuck_intervene and asserts
 # against synthetic state, or reads runtime/*.json. None of them writes to
 # runtime/ (lpp_stuck_intervene only persists via main(), which no probe calls).
+# wq#2389's test_isis2389 is the same shape one layer over: it drives
+# lpp_isis_audit against a scratch events dir with the publisher injected, so it
+# reaches neither events/ nor ntfy.
 #
 # Usage: npm run test:stuck [-- --verbose] [-- <probe> ...]
 #   --verbose  stream each probe's full output instead of only its last line.
@@ -32,7 +35,7 @@ done
 
 PROBES=(test_stuck697 test_stuck1118 test_stuck1563
         test_stuck1826 test_stuck1845 test_stuck1846 test_stuck1867
-        test_stuck1660)
+        test_stuck1660 test_isis2389)
 [ "${#selected[@]}" -gt 0 ] && PROBES=("${selected[@]}")
 
 failed=()
