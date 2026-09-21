@@ -194,16 +194,26 @@ function fixture(files: Record<string, Fix>): string {
       events: f.events ?? 24, storyScore: f.story ?? 6,
       hpPct: f.hp ?? 1, ppOk: f.pp ?? true, money: 71, ts: 0,
     }));
-    const t = 1_700_000_000 + f.age;   // age is a plain ordering knob, larger = newer
+    const t = 1_700_000_000 + f.age;   // FIX_EPOCH + age; larger age = newer
     utimesSync(`${dir}/${stem}.state.gz`, t, t);
   }
   return dir;
 }
 const newHist = () => `${mkdtempSync(`${tmpdir()}/wq518h-`)}/history.json`;
-const seed = (file: string, picks: string[]) =>
-  writeFileSync(file, JSON.stringify({ v: 1, picks: picks.map(f => ({ file: f, at: "2026-08-13T00:00:00Z" })) }));
-const pick = (dir: string, historyFile: string) =>
-  pickResume([dir], sym, ROM, { historyFile, ...quiet }).split("/").pop();
+// wq#1578: the fixture clock and the history clock have to be the SAME clock.
+// The guard's escape hatch now asks whether the alternative was written SINCE
+// the last pick, so a seeded pick dated 2026 against fixture files stamped at
+// FIX_EPOCH (2023) meant "nothing has been produced since" and the hatch could
+// never fire — which is correct behaviour read against an incoherent fixture.
+// Seeded picks therefore sit AT the fixture epoch (before every file, all of
+// which carry age >= 10), and selections run on a pinned clock just after it.
+const FIX_EPOCH = 1_700_000_000;
+const SEED_AT = new Date(FIX_EPOCH * 1000).toISOString();
+const seed = (file: string, picks: string[], at = SEED_AT) =>
+  writeFileSync(file, JSON.stringify({ v: 1, picks: picks.map(f => ({ file: f, at })) }));
+const pick = (dir: string, historyFile: string, nowSec = FIX_EPOCH + 5) =>
+  pickResume([dir], sym, ROM, { ...quiet, historyFile, now: () => new Date(nowSec * 1000) })
+    .split("/").pop();
 
 // pick() APPENDS to the history file, so every case calls it exactly once and
 // asserts on the stored result. Calling it a second time to build the failure
@@ -304,8 +314,9 @@ const pick = (dir: string, historyFile: string) =>
     d === "stuck-pick.state.gz", String(d));
   rmSync(d4, { recursive: true, force: true });
 
-  // D4f — the whole point, stated as a sequence: over many boots the guard must
-  // keep offering the alternative WITHOUT ever locking onto either state.
+  // D4f — the whole point, stated as a sequence: while the alternative really
+  // is newer than every pick so far (a run that is still writing checkpoints),
+  // the guard must keep offering it WITHOUT ever locking onto either state.
   const d5 = mk(), h5 = newHist();
   const seq: string[] = [];
   for (let i = 0; i < 9; i++) seq.push(String(pick(d5, h5)));
@@ -314,6 +325,19 @@ const pick = (dir: string, historyFile: string) =>
     alts >= 2 && alts <= 4 && seq.length - alts >= 4,
     seq.map(s => s.replace(".state.gz", "")).join(" -> "));
   rmSync(d5, { recursive: true, force: true });
+
+  // D4i (wq#1578) — the same nine boots against a corpus that STOPPED MOVING.
+  // The clock now runs past every file, so no candidate was produced since the
+  // last pick and there is nothing to step aside to. Alternating here is the
+  // 14h zero-turn loop: 1186 boots ping-ponging two checkpoints written the
+  // previous day, no turns between them. Selection must settle instead.
+  const d6 = mk(), h6 = newHist();
+  const settled: string[] = [];
+  for (let i = 0; i < 9; i++) settled.push(String(pick(d6, h6, FIX_EPOCH + 1000 + i)));
+  chk("D4i a corpus with nothing newly written settles on the best state, no ping-pong",
+    settled.every(s => s === "stuck-pick.state.gz"),
+    settled.map(s => s.replace(".state.gz", "")).join(" -> "));
+  rmSync(d6, { recursive: true, force: true });
 }
 
 {
