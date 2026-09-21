@@ -22,8 +22,6 @@ export function apiKey(): string {
 // wq#907: overridable so a probe's rung failures do not land in the production
 // stats file that incident review reads.
 const FALLBACK_LOG = process.env.LPP_FALLBACK_LOG ?? "/home/lumen/pokemon/fallback_stats.jsonl";
-const PRIMARY_FAIL_WINDOW_MS = 10 * 60 * 1000;
-const PRIMARY_FAIL_THRESHOLD = 3;
 
 function logFallback(entry: {
   ts: string; profile: string; model: string; reason: string;
@@ -64,11 +62,26 @@ export function isTerminal4xx(status: number): boolean {
  *  turn always makes at least one real request. */
 interface Rung { model: string; timeoutMs: number; attempts: number; terminal: boolean }
 
+/** wq#1584: primary-fail history is MODULE state keyed by MODEL, not instance
+ *  state. live_agent.ts builds a fresh Brain for every agent reboot cycle
+ *  (live_agent.ts:667) — during an outage that is one every ~57s — so an
+ *  instance counter was always wiped before "3 fails in 10min" could trip.
+ *  The evidence that it never tripped: zero isis_alert rows across every
+ *  events/*.jsonl on disk, and one primary_fail_threshold row in the whole of
+ *  fallback_stats.jsonl, over a run that includes wq#1578's 14h of 401s.
+ *  Keyed by model so swapping the primary starts a clean history instead of
+ *  inheriting the retired model's. Process-scoped on purpose: a restart of the
+ *  service is live_agent's dead-cycle alert to report, not this one's. */
+interface PrimaryFailState { times: number[]; alerted: boolean }
+const primaryFails = new Map<string, PrimaryFailState>();
+
+/** Probes and tools build many Brains in one process, and the history above now
+ *  outlives the instance — without this they would inherit each other's. */
+export function resetPrimaryFailTracking() { primaryFails.clear(); }
+
 export class Brain {
   private stallTurns = 0;
   private escalatedLeft = 0;
-  private primaryFailTimes: number[] = [];
-  private isisAlerted = false;
   /** wq#907 breaker state, per model: consecutive failures, and the epoch ms
    *  until which the rung is presumed saturated and skipped. */
   private rungFails = new Map<string, number>();
@@ -81,21 +94,35 @@ export class Brain {
   totalPrompt = 0; totalCompletion = 0;
   constructor(private bus: EventBus) {}
 
-  private trackPrimaryFail(err: string) {
+  /** One TURN the primary model did not serve — it failed, or it was skipped
+   *  because the rung is dead or breaker-open. Counting the skips is the other
+   *  half of wq#1584: deadRungRecheckMs (15min) and breakerCooldownMs (10min)
+   *  are both >= the alert window, so while either holds the primary out of the
+   *  ladder, a counter that only sees real requests cannot reach the threshold
+   *  by arithmetic. A turn the fallback rescued is still a turn the primary
+   *  lost, which is the silent-fallback-spend case wq#722 wanted paged. */
+  private trackPrimaryFail(model: string, reason: string) {
     const now = Date.now();
-    this.primaryFailTimes.push(now);
-    this.primaryFailTimes = this.primaryFailTimes.filter(t => now - t < PRIMARY_FAIL_WINDOW_MS);
-    if (this.primaryFailTimes.length >= PRIMARY_FAIL_THRESHOLD && !this.isisAlerted) {
-      this.isisAlerted = true;
-      const msg = `LPP primary brain (${CFG.profiles.primary.model}) failed ${this.primaryFailTimes.length}x in 10min`;
-      this.bus.emit("tool_call", { tool: "isis_alert", level: "critical", source: "brain", msg });
-      console.error(`[brain] CRITICAL: ${msg}`);
-      logFallback({ ts: new Date().toISOString(), profile: "isis_health",
-        model: CFG.profiles.primary.model, reason: "primary_fail_threshold", error: err });
-    }
+    const st = primaryFails.get(model) ?? { times: [], alerted: false };
+    primaryFails.set(model, st);
+    st.times = st.times.filter(t => now - t < CFG.brain.primaryFailWindowMs);
+    st.times.push(now);
+    if (st.times.length < CFG.brain.primaryFailThreshold || st.alerted) return;
+    // Latched until the primary serves again: one page per outage per process.
+    // Duration reporting belongs to live_agent's brain_unreachable/dead-cycle
+    // lines, which already run every 60s while the hold is in force.
+    st.alerted = true;
+    const mins = Math.round(CFG.brain.primaryFailWindowMs / 60_000);
+    const msg = `LPP primary brain (${model}) failed ${st.times.length} turns in ${mins}min — last: ${reason}`;
+    this.bus.emit("tool_call", { tool: "isis_alert", level: "critical", source: "brain", msg });
+    console.error(`[brain] CRITICAL: ${msg}`);
+    logFallback({ ts: new Date(now).toISOString(), profile: "isis_health",
+      model, reason: "primary_fail_threshold", error: reason });
   }
 
-  private trackPrimaryOk() { this.primaryFailTimes = []; this.isisAlerted = false; }
+  /** The primary served the turn: history and the alert latch both clear, so a
+   *  second outage later in the same process pages again. */
+  private trackPrimaryOk(model: string) { primaryFails.delete(model); }
 
   reportProgress(progressed: boolean) {
     if (progressed) { this.stallTurns = 0; return; }
@@ -256,14 +283,17 @@ export class Brain {
             logFallback({ ts: new Date().toISOString(), profile: profileName, model: rung.model,
               reason: "rung_rescued_turn", primaryModel: model,
               error: String(lastErr?.message ?? lastErr).slice(0, 200) });
+            if (isPrimary) this.trackPrimaryFail(model, `rescued by ${rung.model}`);
           } else if (isPrimary) {
-            this.trackPrimaryOk();
+            this.trackPrimaryOk(model);
           }
           return out;
         } catch (e: any) {
           lastErr = e;
           const ms = Date.now() - started;
-          if (isPrimary && rung.model === model) this.trackPrimaryFail(String(e));
+          // wq#1584: the primary's outcome is booked once per TURN below, not
+          // once per failed attempt — a single-model ladder retries the same
+          // terminal rung twice and used to count that as two outages.
           // wq#1660: a terminal 4xx kills the rung outright — no breaker
           // bookkeeping (the slot is not busy, the request is impossible) and
           // no terminal-rung retries (the retry would get the same 4xx).
@@ -282,6 +312,15 @@ export class Brain {
     // wq#1660: every rung is dead — say so by name. Distinct from an ordinary
     // all-rungs-failed throw (timeouts, 5xx), which stays retryable-by-reboot.
     const endNow = Date.now();
+    // wq#1584: no rung served, so the primary did not either — including the
+    // all-dead turn below, which makes zero requests and is exactly the shape
+    // the 14h 401 outage took once wq#1660's dead-rung skip was in place. That
+    // turn never touched `lastErr`, so report what killed the primary rung.
+    if (isPrimary) {
+      this.trackPrimaryFail(model, this.rungDead(model, endNow)
+        ? `rung dead: ${this.rungDeadErr.get(model) ?? "?"}`
+        : String(lastErr?.message ?? lastErr).slice(0, 120));
+    }
     if (rungs.every(r => this.rungDead(r.model, endNow))) {
       const dead = rungs.map(r => ({ model: r.model, error: this.rungDeadErr.get(r.model) ?? "?" }));
       throw new BrainUnreachableError(

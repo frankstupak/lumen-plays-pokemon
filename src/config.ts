@@ -283,6 +283,15 @@ export const CFG = {
     // is that the terminal rung ignores it. Long on purpose: this is "wait for
     // an operator or a budget reset", not "wait out a busy decode slot".
     deadRungRecheckMs: envN("LPP_BRAIN_DEAD_RUNG_RECHECK_MS", 900_000),
+    // ISIS HEALTH ALERT (wq#722, made able to fire by wq#1584): page when the
+    // primary model stops SERVING TURNS — failed, dead-skipped or breaker-held
+    // all count, because to the run they are one outage. The history behind
+    // this lives at module scope in brain.ts, not on the Brain instance: a new
+    // Brain is built every agent reboot cycle (~57s during an outage), which is
+    // why an instance counter never reached 3 in the window. Both knobs exist
+    // so probes can drive the threshold without faking a 10-minute clock.
+    primaryFailWindowMs: envN("LPP_PRIMARY_FAIL_WINDOW_MS", 600_000),
+    primaryFailThreshold: envN("LPP_PRIMARY_FAIL_THRESHOLD", 3),
     // wq#1660 boot pre-flight (GET /v1/models + /key/info). 0 skips it —
     // probes and stub-gateway runs have no /v1/models to answer.
     preflight: envN0("LPP_BRAIN_PREFLIGHT", 1) > 0,
