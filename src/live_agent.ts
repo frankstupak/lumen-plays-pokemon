@@ -7,6 +7,7 @@ import { Rom } from "./rom";
 import { MapModel } from "./map";
 import { Navigator } from "./nav";
 import { EventBus, retainEventLogs } from "./events";
+import { attachIsisPager, startUnpagedSweep } from "./isis_page";   // wq#2389
 import { Screen } from "./screen";
 import { Sync } from "./sync";
 import { Dialog } from "./dialog";
@@ -121,6 +122,11 @@ const linkRetention = existsSync(`${EVENTS_DIR}/link`)
   ? retainEventLogs(`${EVENTS_DIR}/link`)
   : { dir: `${EVENTS_DIR}/link`, keep: 0, scanned: 0, kept: 0, deleted: [] as string[], failed: [] as string[] };
 const bus = new EventBus(EVENTS_DIR, RUN_TAG);
+// wq#2389: the isis_alert reader. Attached HERE — before the first emit, on the
+// one bus every per-cycle Brain is handed (line ~667) — because both producers
+// of the critical page publish on this instance and, until this call existed,
+// nothing anywhere read them. Explicit attachment is what keeps probes silent.
+attachIsisPager(bus);
 bus.emit("retention", {
   keep: retention.keep, scanned: retention.scanned, kept: retention.kept,
   deletedCount: retention.deleted.length, deleted: retention.deleted,
@@ -137,6 +143,7 @@ bus.on(e => retry.observe(e));
 stream.retryStats = () => retry.stats();
 // periodic + exit flush so a run-summary always exists even on hard kill
 setInterval(() => metrics.flush("periodic"), 60000);
+startUnpagedSweep();   // wq#2389: republish any critical page nothing delivered
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig as NodeJS.Signals, () => { metrics.flush("signal"); process.exit(0); });
 // wq#423 terminal soft-lock: flush and exit NON-zero so Restart=on-failure
 // relaunches onto the latest checkpoint (designed CONTINUES path).

@@ -68,6 +68,10 @@ back to a better checkpoint, and a dead brain writes no new checkpoints.
    crash loop; the rung ladder already survives a down gateway.
    `LPP_BRAIN_PREFLIGHT=0` skips it (probes, stub gateways).
 
+The other page for the same outage — `brain.ts`'s own `isis_alert` when the
+primary stops serving turns — reaches Frank by a different route, and only since
+wq#2389 reached him at all: see `docs/ISIS_ALERT.md`.
+
 ## Probes
 
 - `src/probe_brain1660.ts` (pure, stub gateway; in `scripts/probes-pure.sh`):
