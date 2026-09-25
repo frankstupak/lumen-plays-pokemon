@@ -11,6 +11,7 @@ import {
   normValue, normKey, MAX_FACTS, MAX_SET_MEMBERS, PersonaClaim,
 } from "./persona";
 import { MemoryPersonaStore, decodePredicate, encodePredicate } from "./persona_store";
+import { planCompaction } from "./persona_compact";
 import { extractWithModel, gatewayExtractor } from "./persona_llm";
 import { mkdtempSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
@@ -392,6 +393,60 @@ async function main(): Promise<number> {
       l.m.stats().suppressed === 2, `suppressed=${l.m.stats().suppressed}`);
     ok("nothing is deleted from the store by a read",
       legacy.current().length === 4, `open=${legacy.current().length}`);
+  }
+
+  // ---- 7. compaction: the same judgement, applied to the rows already stored ----
+  //
+  // quarantine() fixes LPP's own prompt. It does not fix what the FLEET reads out
+  // of lumen_state, which is the cross-platform contract this feature exists for,
+  // so the rows below are the shapes the live subject actually held on 09-12.
+  {
+    const rows = ([
+      ["i_am__lumen_a_pokemon_streamer_dry_and_tired_one_sentence_about_a_film_i_watched",
+       "Lumen, a Pokemon streamer, dry and tired, one sentence about a film I watched recently, not tied to the game", "2026-09-10"],
+      ["i_am__dry", "dry", "2026-09-10"],
+      ["i_am__dry_and_tired", "dry and tired", "2026-09-10"],
+      ["i_am__dry_tired_pokemon_streamer", "a dry, tired Pokemon streamer", "2026-09-10"],
+      ["i_like__caves", "caves", "2026-09-10"],
+      ["i_like__caves_at_night", "caves at night", "2026-09-11"],
+      ["my_former_city", "San Francisco", "2026-09-10"],
+      ["my_old_city", "San Francisco", "2026-09-12"],
+      ["my_hometown", "San Francisco", "2026-09-10"],
+      ["my_name", "Lumen", "2026-09-10"],
+    ] as [string, string, string][])
+      .map(([predicate, value, validFrom]) => ({ predicate, value, validFrom, source: "lpp:stream" }));
+    const plan = planCompaction(rows);
+    const closing = new Set(plan.closes.map(c => c.predicate));
+    const reason = (p: string) => plan.closes.find(c => c.predicate === p)?.reason ?? "";
+
+    ok("the topic mixer's instructions are closed, not kept as a self-fact",
+      closing.has("i_am__lumen_a_pokemon_streamer_dry_and_tired_one_sentence_about_a_film_i_watched"),
+      reason("i_am__lumen_a_pokemon_streamer_dry_and_tired_one_sentence_about_a_film_i_watched"));
+    ok("paraphrases of one self-description fold into the shortest",
+      closing.has("i_am__dry_and_tired") && closing.has("i_am__dry_tired_pokemon_streamer") && !closing.has("i_am__dry"),
+      [...closing].filter(p => p.startsWith("i_am__")).join(" | "));
+    ok("a set slot still accumulates genuinely different members",
+      !closing.has("i_like__caves") && !closing.has("i_like__caves_at_night"), "");
+    ok("a pre-fold spelling of one slot is closed in favour of today's answer",
+      closing.has("my_former_city") && !closing.has("my_old_city"), reason("my_former_city"));
+    ok("the close reason names the row that won, so the audit reads",
+      reason("my_former_city").includes("my_old_city"), reason("my_former_city"));
+    ok("a slot that is NOT a synonym survives", !closing.has("my_hometown") && !closing.has("my_name"), "");
+    ok("the plan accounts for every row", plan.scanned === rows.length && plan.kept === rows.length - plan.closes.length,
+      `scanned=${plan.scanned} close=${plan.closes.length} kept=${plan.kept}`);
+    ok("planning is pure: no row is mutated", rows.every(r => r.predicate && r.value && !("validTo" in r)), "");
+    ok("compaction is idempotent — re-planning the survivors closes nothing",
+      planCompaction(rows.filter(r => !closing.has(r.predicate))).closes.length === 0,
+      JSON.stringify(planCompaction(rows.filter(r => !closing.has(r.predicate))).closes.map(c => c.predicate)));
+
+    // The render budget is not a truth judgement: quarantine() shows six set
+    // members because a prompt is 900 chars, which is no reason to close the
+    // seventh in the store.
+    const many = Array.from({ length: MAX_SET_MEMBERS + 3 }, (_, i) => ({
+      predicate: `i_like__thing_${i}`, value: `thing ${i}`, validFrom: "2026-09-10", source: "lpp:stream",
+    }));
+    ok("the recall ceiling never closes a row", planCompaction(many).closes.length === 0,
+      `closes=${planCompaction(many).closes.length}`);
   }
 
   console.log(`\n${pass} PASS / ${fail} FAIL`);

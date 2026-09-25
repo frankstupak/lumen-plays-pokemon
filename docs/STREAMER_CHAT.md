@@ -323,9 +323,29 @@ Nothing is deleted by a read. When Lumen himself revises a slot whose previous
 answer sat at a pre-fold spelling, that row is `close`d (a `valid_to`, never a
 delete) so it stops resurfacing on the next refresh.
 
-Rows written before the fold stay open until he next revises that slot. To
-retire a batch of known junk deliberately, the adapter takes a glob and reports
-first:
+Rows written before the fold stay open until he next revises that slot, and the
+read-side filter only cleans up LPP's own prompt — the rest of the fleet reads
+the rows. `compact` applies the same judgement to the store itself, so one pass
+fixes every surface at once. Dry run unless you pass `--apply`:
+
+```bash
+npx tsx src/persona_cli.ts compact             # what it would close, and why
+npx tsx src/persona_cli.ts compact --apply     # close it
+```
+
+It closes three things and nothing else: scaffolding (a value `buildClaim` would
+refuse today, e.g. the topic mixer's instructions stored as a self-fact), slots
+that fold onto one question (`my_former_city` → `my_old_city`, newest
+`valid-from` wins), and set members that are the same claim said twice
+(`i_am__dry_tired_streamer` → `i_am__dry`). It never closes a row for being over
+the recall budget — that is a rendering limit, not a claim that the fact is
+untrue. Every close is a `valid_to`, so `history`/`asof` still answer and a wrong
+call is undone by re-stating the fact, not by a restore. First real run
+(2026-09-25) took live `lumen-persona` from 100 open rows to 64, `i_am__*` from
+36 to 6.
+
+To retire a batch of known junk by hand instead, the adapter takes a glob and
+reports first:
 
 ```bash
 python3 tools/lumen_state_json.py close lumen-persona --glob 'i_am__*' \
@@ -341,6 +361,7 @@ npx tsx src/persona_cli.ts state "My name is Lumen" --platform messenger
 npx tsx src/persona_cli.ts ask "favourite pokemon" --json
 npx tsx src/persona_cli.ts recall          # the block to paste into a prompt
 npx tsx src/persona_cli.ts list
+npx tsx src/persona_cli.ts compact         # see above; dry run without --apply
 ```
 
 `state` exits `3` when the sentence contradicted a fact stated the same day, so

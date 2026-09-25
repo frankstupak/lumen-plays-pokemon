@@ -12,6 +12,7 @@
 // lumen-persona` shows exactly what this prints, and there is no second copy
 // and no sync step to forget to run.
 import { PersonaMemory } from "./persona";
+import { planCompaction } from "./persona_compact";
 import { gatewayExtractor } from "./persona_llm";
 import { CFG } from "./config";
 
@@ -26,11 +27,15 @@ COMMANDS
   list                   every stored fact, ranked (identity first)
   state "<sentence>"     record something Lumen just said, as HIM, on --platform
   stats                  counts only
+  compact                close stored rows today's rules would refuse (DRY RUN
+                         unless --apply): scaffolding, folded slots, duplicate
+                         set members. Closing is a valid_to — history survives.
 
 OPTIONS
   --platform <name>   platform for 'state' (default: ${CFG.persona.platform})
   --budget <chars>    cap for 'recall' (default: ${CFG.persona.recallBudget})
   --no-llm            'state' uses the regex fast path only, no model call
+  --apply             'compact' actually writes; without it nothing changes
   --json              machine-readable output
   -h, --help
 
@@ -44,7 +49,9 @@ EXIT CODES
 EXAMPLES
   npx tsx src/persona_cli.ts state "My name is Lumen" --platform messenger
   npx tsx src/persona_cli.ts ask "name" --json
-  npx tsx src/persona_cli.ts recall`;
+  npx tsx src/persona_cli.ts recall
+  npx tsx src/persona_cli.ts compact            # what it would close
+  npx tsx src/persona_cli.ts compact --apply    # close it`;
 
 // Only these flags take a value, so a positional can never be eaten by a
 // boolean flag standing next to it (`--json "my sentence"` still works).
@@ -111,6 +118,31 @@ async function main(argv: string[]): Promise<number> {
       else if (!events.length) console.log("no self-fact found in that sentence (nothing stored)");
       else for (const e of events) console.log(`${e.outcome}: ${e.key} = ${e.outcome === "conflict" ? `${e.fact.value} (canonical; "${e.value}" rejected)` : e.value}`);
       return conflicted ? 3 : 0;
+    }
+    case "compact": {
+      // Reads the STORE, not mem.facts: the view is already filtered, and what
+      // needs fixing is exactly the difference between the two.
+      let rows;
+      try { rows = mem.store.current(); }
+      catch (e) { console.error(`compact: cannot read the store: ${(e as Error).message}`); return 1; }
+      const plan = planCompaction(rows);
+      const apply = argv.includes("--apply");
+      let closed = 0;
+      const failed: string[] = [];
+      if (apply && plan.closes.length) {
+        if (!mem.store.close) { console.error(`compact: store '${mem.store.kind}' has no close verb`); return 1; }
+        for (const c of plan.closes) {
+          try { mem.store.close(c.predicate, c.reason); closed++; }
+          catch (e) { failed.push(`${c.predicate}: ${(e as Error).message}`); }
+        }
+      }
+      if (json) console.log(JSON.stringify({ ...plan, applied: apply, closed, failed }));
+      else {
+        for (const c of plan.closes) console.log(`${apply ? "closed" : "would close"} ${c.predicate} = ${c.value}  (${c.reason})`);
+        console.log(`${plan.scanned} open rows, ${plan.closes.length} to close, ${plan.kept} kept${apply ? ` — ${closed} closed` : " (dry run; --apply to write)"}`);
+        for (const f of failed) console.error(`! ${f}`);
+      }
+      return failed.length ? 1 : 0;
     }
     case "stats": {
       console.log(json ? JSON.stringify(mem.stats()) : Object.entries(mem.stats()).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(",") : v}`).join("\n"));

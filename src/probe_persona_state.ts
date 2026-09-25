@@ -15,6 +15,7 @@
 // store by bumping a counter nobody reads, so this probe is the only one shouting.
 import { PersonaMemory } from "./persona";
 import { LumenStateStore } from "./persona_store";
+import { planCompaction } from "./persona_compact";
 import { CFG } from "./config";
 import { spawnSync } from "child_process";
 import { mkdtempSync, existsSync, writeFileSync } from "fs";
@@ -184,6 +185,39 @@ async function main(): Promise<number> {
   folded.refresh(true);
   ok("and recall answers the question once", folded.recall().split("\n").filter(s => s.includes("city")).length === 1,
      folded.recall().split("\n").filter(s => s.includes("city")).join(" / "));
+
+  // ── wq#1191 compaction: the rules applied to rows lumen_state ALREADY holds ──
+  //
+  // The guards only ever ran on the way IN, so the live subject still carries a
+  // week of pre-guard rows and every fleet consumer reads them. This is that
+  // backlog, closed through the real adapter: the plan is computed from the
+  // store's own rows, and the closes have to survive as history.
+  const compactStore = store();
+  for (const [p, v] of [
+    ["i_am__dry", "dry"],
+    ["i_am__dry_tired_streamer", "a dry, tired streamer"],
+    ["i_am__lumen_dry_and_tired_one_sentence_about_dana_not_about_the_game", "Lumen, dry and tired, one sentence about Dana, not about the game, not repeating recent lines"],
+  ] as [string, string][]) compactStore.ingest({ predicate: p, value: v, validFrom: "2026-09-10", source: "lpp:stream" });
+
+  const beforeCompact = openPreds();
+  const plan = planCompaction(compactStore.current());
+  ok("the plan closes exactly the pre-guard rows, and nothing he actually believes",
+     plan.closes.map(c => c.predicate).sort().join(",") ===
+       "i_am__dry_tired_streamer,i_am__lumen_dry_and_tired_one_sentence_about_dana_not_about_the_game",
+     plan.closes.map(c => c.predicate).join(" | "));
+  for (const c of plan.closes) compactStore.close(c.predicate, c.reason);
+  const afterCompact = openPreds();
+  ok("lumen_state itself is compacted, so every surface sees one self-description",
+     afterCompact.length === beforeCompact.length - plan.closes.length &&
+     afterCompact.filter(p => p.startsWith("i_am__")).join() === "i_am__dry",
+     afterCompact.filter(p => p.startsWith("i_am__")).join(" | "));
+  const compacted = (JSON.parse(adapter("history", subject, "i_am__dry_tired_streamer").stdout || '{"rows":[]}').rows as any[])[0];
+  ok("a compacted row keeps its value and its days: closed, never deleted",
+     compacted?.value === "a dry, tired streamer" && typeof compacted?.valid_to === "string",
+     JSON.stringify(compacted && [compacted.value, compacted.valid_to]));
+  ok("re-running compaction against the compacted store is a no-op",
+     planCompaction(compactStore.current()).closes.length === 0,
+     planCompaction(compactStore.current()).closes.map(c => c.predicate).join(" | "));
 
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   return fail ? 1 : 0;
