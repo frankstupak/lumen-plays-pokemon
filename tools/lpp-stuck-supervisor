@@ -81,6 +81,14 @@ def main(argv=None):
             # I.persist_directive for the 246h this predicate cost.
             if decision.get("directive"):
                 I.persist_directive(decision["directive"])
+            # wq#1562: past K, one aq row per incident (bumped each tick);
+            # recovered -> edge-clear it.
+            if decision.get("exhausted"):
+                out["stuckAq"] = {"opened": M.open_stuck_aq_row(state)}
+            elif not state.get("stalled"):
+                cleared = M.resolve_stuck_aq_rows()
+                if cleared:
+                    out["stuckAq"] = {"resolved": cleared}
         # wq#1563: `rung` names which post-K rung answered (breakout/handoff/None),
         # so a tick past K is legible without reading the intervention log.
         out["intervention"] = {k: decision.get(k) for k in
@@ -99,6 +107,7 @@ def main(argv=None):
         or (out.get("feedback") or {}).get("resolved")
         or (out.get("brainAq") or {}).get("opened") is not None
         or (out.get("brainAq") or {}).get("resolved") is not None
+        or bool((out.get("stuckAq") or {}).get("resolved"))
     )
     if args.json:
         print(json.dumps(out, indent=1))

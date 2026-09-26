@@ -551,6 +551,78 @@ def resolve_aq_row(db=None):
         return None
 
 
+# wq#1562: past K the supervisor used to tick-loop forever with only the one
+# feedback ticket + one ntfy (FIGHT_LOSS_LOOP@3 sat 167.9h that way). Keep one
+# aq row per incident, source='lpp' key='stuck:<mode>@<loc>', bumped each tick
+# while exhausted so it stays in the queue Frank triages. source='lpp' is on
+# purpose: the wq#965 responder only escalates source='probe', and the feedback
+# module already pages once at 3h, so this row never double-pages.
+STUCK_AQ_SOURCE = "lpp"
+
+
+def stuck_aq_key(st):
+    return f"stuck:{st.get('mode')}@{st.get('modeLocation')}"
+
+
+def resolve_stuck_aq_rows(db=None, keep=None, note="stuck incident cleared"):
+    """Resolve every open lpp stuck:* row except `keep`. Returns the ids."""
+    import sqlite3
+    db = db or os.environ.get("AQ_DB", AQ_DB_DEFAULT)
+    try:
+        c = sqlite3.connect(db, timeout=10)
+        cur = c.cursor()
+        cur.execute("SELECT id,key FROM alerts WHERE source=? AND key LIKE 'stuck:%' AND status='open'",
+                    (STUCK_AQ_SOURCE,))
+        ids = [i for i, k in cur.fetchall() if k != keep]
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for i in ids:
+            cur.execute("UPDATE alerts SET status='resolved', resolved_ts=?, note=? WHERE id=?", (ts, note, i))
+        c.commit(); c.close()
+        return ids
+    except Exception:
+        return []
+
+
+def open_stuck_aq_row(st, db=None):
+    """Upsert the K-exhausted row for this incident (same source+key open ->
+    bump count/last_ts, else insert). A row for a different mode/location is
+    a finished incident and is resolved. Never raises; returns id or None."""
+    import sqlite3
+    db = db or os.environ.get("AQ_DB", AQ_DB_DEFAULT)
+    key = stuck_aq_key(st)
+    title = f"LPP stuck past K: {st.get('mode')}@{st.get('modeLocation')}"
+    message = (f"frozen {st.get('frozenHours') or 0:.1f}h, storyScore={st.get('storyScore')}; "
+               f"{str(st.get('modeEvidence') or '')}")[:2000]
+    try:
+        c = sqlite3.connect(db, timeout=10)
+        c.execute("""CREATE TABLE IF NOT EXISTS alerts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  first_ts TEXT NOT NULL, last_ts TEXT NOT NULL,
+  source TEXT NOT NULL, key TEXT NOT NULL,
+  title TEXT, message TEXT, priority TEXT DEFAULT 'default',
+  count INTEGER DEFAULT 1, status TEXT DEFAULT 'open',
+  owner TEXT DEFAULT 'unassigned', note TEXT, resolved_ts TEXT)""")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cur = c.cursor()
+        cur.execute("SELECT id,count FROM alerts WHERE source=? AND key=? AND status='open'",
+                    (STUCK_AQ_SOURCE, key))
+        r = cur.fetchone()
+        if r:
+            cur.execute("UPDATE alerts SET count=?, last_ts=?, message=? WHERE id=?",
+                        (r[1] + 1, ts, message, r[0]))
+            rid = r[0]
+        else:
+            cur.execute("INSERT INTO alerts(first_ts,last_ts,source,key,title,message,priority,owner) "
+                        "VALUES(?,?,?,?,?,?,'default','lpp-stuck-supervisor')",
+                        (ts, ts, STUCK_AQ_SOURCE, key, title, message))
+            rid = cur.lastrowid
+        c.commit(); c.close()
+    except Exception:
+        return None
+    resolve_stuck_aq_rows(db=db, keep=key, note="incident moved to a new mode/location")
+    return rid
+
+
 # ---------------------------------------------------------------- story_score axis
 def advances(sidecars):
     """Every sidecar instant where storyScore, badges or events rose.
