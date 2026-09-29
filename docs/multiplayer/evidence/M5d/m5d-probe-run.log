@@ -1,0 +1,95 @@
+=== M5d: 3 consecutive two-process sessions ===
+transport: peer=local bind=100.117.66.102 host=100.117.66.102 localNode=lumen peerNode=lumen
+NOTE: peer=local — both sides on THIS host. Real sockets on a real
+      address, but ONE kernel and ONE clock. This is the M5d baseline,
+      not the cross-node measurement.
+--- session 1 side A exit=0
+PASS s1/A: rendezvoused :: IN_ROOM
+PASS s1/A: seated at its own chair :: {"map":239,"x":3,"y":4}
+PASS s1/A: ROM finished the 415-byte exchange :: linkState=50
+PASS s1/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s1/A: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s1/A: the block really crossed the wire :: exchanges=702
+PASS s1/A: captured its own latency series (master/rtt) :: role=2 rtt=702 serve=0
+    rtt s1/A: n=702 min=82.4us p50=292.0us p90=427.9us p99=106483.3us max=238321.5us mean=2851.1us total=2001.4ms
+    pacing A: {"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+--- session 1 side B exit=0
+PASS s1/B: rendezvoused :: IN_ROOM
+PASS s1/B: seated at its own chair :: {"map":239,"x":6,"y":4}
+PASS s1/B: ROM finished the 415-byte exchange :: linkState=50
+PASS s1/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s1/B: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s1/B: the block really crossed the wire :: exchanges=702
+PASS s1/B: captured its own latency series (slave/serve) :: role=1 rtt=0 serve=661
+    rtt s1/B: n=0 min=n/aus p50=n/aus p90=n/aus p99=n/aus max=n/aus mean=n/aus total=0.0ms
+    pacing B: {"queuedIn":702,"served":702,"blocked":4531,"forced":11,"forcedDuringBlock":1,"collisions":0,"stillQueued":0,"gate":{"tooSoon":1385,"notArmed":49,"internal":0,"irq":0,"staged":0,"taken":3097},"forcedAt":["$20b4","$20b4","$4b99","$20b4","$5131","$223d","$15f","$223c"]}
+PASS s1: exactly one side was master :: roles=2/1
+--- session 2 side A exit=0
+PASS s2/A: rendezvoused :: IN_ROOM
+PASS s2/A: seated at its own chair :: {"map":239,"x":6,"y":4}
+PASS s2/A: ROM finished the 415-byte exchange :: linkState=50
+PASS s2/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s2/A: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s2/A: the block really crossed the wire :: exchanges=703
+PASS s2/A: captured its own latency series (slave/serve) :: role=1 rtt=0 serve=640
+    rtt s2/A: n=0 min=n/aus p50=n/aus p90=n/aus p99=n/aus max=n/aus mean=n/aus total=0.0ms
+    pacing A: {"queuedIn":703,"served":703,"blocked":7821,"forced":8,"forcedDuringBlock":2,"collisions":0,"stillQueued":0,"gate":{"tooSoon":1925,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":5896},"forcedAt":["$20b4","$20b4","$20b4","$400a","$2238","$2238","$20b4","$21b0"]}
+--- session 2 side B exit=0
+PASS s2/B: rendezvoused :: IN_ROOM
+PASS s2/B: seated at its own chair :: {"map":239,"x":3,"y":4}
+PASS s2/B: ROM finished the 415-byte exchange :: linkState=50
+PASS s2/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s2/B: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s2/B: the block really crossed the wire :: exchanges=703
+PASS s2/B: captured its own latency series (master/rtt) :: role=2 rtt=703 serve=0
+    rtt s2/B: n=703 min=106.0us p50=361.8us p90=1035.9us p99=114211.2us max=193690.8us mean=2653.7us total=1865.5ms
+    pacing B: {"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+PASS s2: exactly one side was master :: roles=1/2
+--- session 3 side A exit=0
+PASS s3/A: rendezvoused :: IN_ROOM
+PASS s3/A: seated at its own chair :: {"map":239,"x":6,"y":4}
+PASS s3/A: ROM finished the 415-byte exchange :: linkState=50
+PASS s3/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s3/A: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s3/A: the block really crossed the wire :: exchanges=703
+PASS s3/A: captured its own latency series (slave/serve) :: role=1 rtt=1 serve=608
+    rtt s3/A: n=1 min=2198.5us p50=2198.5us p90=2198.5us p99=2198.5us max=2198.5us mean=2198.5us total=2.2ms
+    pacing A: {"queuedIn":702,"served":702,"blocked":3586,"forced":6,"forcedDuringBlock":1,"collisions":1,"stillQueued":0,"gate":{"tooSoon":1355,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":2231},"forcedAt":["$20b4","$20b4","$400d","$4025","$21ae","$2237"]}
+--- session 3 side B exit=0
+PASS s3/B: rendezvoused :: IN_ROOM
+PASS s3/B: seated at its own chair :: {"map":239,"x":3,"y":4}
+PASS s3/B: ROM finished the 415-byte exchange :: linkState=50
+PASS s3/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s3/B: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s3/B: the block really crossed the wire :: exchanges=703
+PASS s3/B: captured its own latency series (master/rtt) :: role=2 rtt=702 serve=0
+    rtt s3/B: n=702 min=109.5us p50=260.8us p90=543.7us p99=15059.2us max=182893.1us mean=1656.5us total=1162.8ms
+    pacing B: {"queuedIn":1,"served":1,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":1,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+PASS s3: exactly one side was master :: roles=1/2
+
+M5d per-transfer latency — 3 sessions, 2108 master round trips
+transport: peer=local bind=100.117.66.102 host=100.117.66.102 localNode=lumen peerNode=lumen
+BASELINE: both sides on this host — one kernel, one clock. NOT a cross-node measurement.
+
+rtt  (sync1 written -> peer answer parsed, wall clock): n=2108 min=82.4us p50=292.6us p90=777.5us p99=104677.2us max=238321.5us mean=2387.1us total=5032.0ms
+serve (peer sync1 -> our answer written, OUR cost): n=1909 min=108.6us p50=282.9us p90=874.7us p99=121098.1us max=11966469.0us mean=13023.5us total=24862.0ms
+      < 50us               0    0.0%  
+    50..100us              2    0.1%  
+   100..200us            540   25.6%  #########################
+   200..400us           1027   48.7%  ################################################
+   400..800us            349   16.6%  ################
+   800..1600us            70    3.3%  ###
+  1600..3200us            44    2.1%  ##
+  3200..6400us            38    1.8%  ##
+  6400..12800us            4    0.2%  
+ 12800..25600us            5    0.2%  
+ 25600..51200us            0    0.0%  
+ 51200..102400us           6    0.3%  
+102400..204800us          22    1.0%  #
+>= 204800us                1    0.0%  
+
+PASS zero desyncs across all 3 sessions :: desyncs=0
+PASS at least 3 consecutive sessions were run :: sessions=3
+FAIL cross-node: the peer ran on another machine :: peer=local — baseline only, the M5d gate is NOT met
+
+47 PASS / 1 FAIL   (evidence: /home/lumen/worktrees/wq484-a3/docs/multiplayer/evidence/M5d)

@@ -14,10 +14,8 @@
 // duplicated byte anywhere in the block shifts the tail and fails `mirror` —
 // which is exactly how the wq#511 one-byte loss was caught, invisible as it was
 // in the wire tape. Structural M5b validation alone would have passed it.
-import { spawn } from "child_process";
-import { resolve } from "path";
+import { spawnSide, Side } from "./side_runner";
 
-const ROOT = resolve(__dirname, "..", "..");   // spawn the sides from THIS tree
 const PORT = process.env.M5C3_PORT ?? "9391";
 const TIMEOUT_MS = Number(process.env.M5C3_TIMEOUT_MS ?? 600000);
 
@@ -26,26 +24,7 @@ const ok = (n: string, c: boolean, note = "") => {
   c ? (pass++, console.log(`PASS ${n} :: ${note}`)) : (fail++, console.log(`FAIL ${n} :: ${note}`));
 };
 
-interface Side { code: number | null; out: string; res?: any; block?: any }
-
-function line(out: string, tag: string): any {
-  const m = out.match(new RegExp(`${tag} (\\{.*\\})`));
-  try { return m ? JSON.parse(m[1]) : undefined; } catch { return undefined; }
-}
-
-function side(env: Record<string, string>): Promise<Side> {
-  return new Promise(res => {
-    const p = spawn("npx", ["tsx", "src/link/rdv_side.ts"], { cwd: ROOT, env: { ...process.env, ...env } });
-    let out = "";
-    p.stdout.on("data", d => { out += d.toString(); });
-    p.stderr.on("data", d => { out += d.toString(); });
-    const t = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, TIMEOUT_MS);
-    p.on("close", code => {
-      clearTimeout(t);
-      res({ code, out, res: line(out, "RESULT"), block: line(out, "BLOCKCHECK") });
-    });
-  });
-}
+const side = (env: Record<string, string>) => spawnSide(env, TIMEOUT_MS);
 
 const MAX_RETRIES = Number(process.env.M5C3_MAX_RETRIES ?? 3);
 
