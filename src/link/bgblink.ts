@@ -85,6 +85,43 @@ export const versionMatches = (p: BgbPacket): boolean =>
 /** onMasterByte sentinel: "I will send the reply myself, later" (wq#481). */
 export const DEFER_REPLY = -2;
 
+/**
+ * wq#484 — one master transfer's WALL-CLOCK round trip: sync1 written to the
+ * socket, answer (sync2 or a sync3 ack) parsed out of the stream.
+ *
+ * This has to be wall clock, and the reason is the whole point of M5a: the
+ * protocol's own `i1` timestamps count EMULATED cycles and deliberately do NOT
+ * advance while a byte is pending (spec rule 5), which is exactly what lets a
+ * remote peer wait for us correctly. A link running across a continent and one
+ * running on loopback therefore produce the SAME timestamp deltas. `linkTs` is
+ * recorded beside each sample anyway, so a distribution can be read against
+ * emulated time as well — but the network only shows up in `rttUs`.
+ */
+export interface LatencySample {
+  seq: number;
+  rttUs: number;
+  kind: "sync2" | "sync3";
+  /** our link timestamp when the sync1 went out (2 MiHz ticks, emulated). */
+  linkTs: number;
+  /** the peer's link timestamp as of its answer. */
+  peerTs: number;
+}
+
+/**
+ * Slave side: sync1 arrived -> our answer written. This is OUR OWN service
+ * cost, not the network's, and it is kept in a separate series precisely so a
+ * slow core can never be read as a slow link.
+ *
+ * `deferred` distinguishes the two shapes, because they measure different
+ * things and averaging them together is meaningless. An inline reply is pure
+ * handler cost (microseconds). A DEFERRED one (wq#481/wq#511: hold the peer's
+ * transfer open until our core has actually consumed the byte) includes every
+ * step the ROM needed to take it — which is exactly how long WE made the remote
+ * master wait, and therefore the number to look at when a peer complains about
+ * us rather than about the network.
+ */
+export interface ServeSample { seq: number; serveUs: number; deferred: boolean; }
+
 export interface BgbHandlers {
   /** Peer is master: return OUR staged byte, which is sent back as sync2.
    *  Return DEFER_REPLY to take over the reply yourself (send sync2Packet /
@@ -119,7 +156,24 @@ export class BgbLink {
   packetsIn = 0;
   packetsOut = 0;
 
+  // wq#484 latency instrumentation. Bounded on purpose: a long session clocks
+  // hundreds of transfers per party block and this must never be the reason a
+  // side runs out of memory. Oldest samples are dropped, not newest — a tail
+  // stall is the interesting event.
+  latency: LatencySample[] = [];
+  serve: ServeSample[] = [];
+  latencyCap = 200000;
+  private sync1At: bigint | null = null;
+  private sync1Seq = 0;
+  private sync1Ts = 0;
+  private servedAt: bigint | null = null;
+
   constructor(private h: BgbHandlers = {}) {}
+
+  private pushCapped<T>(arr: T[], s: T): void {
+    arr.push(s);
+    if (arr.length > this.latencyCap) arr.shift();
+  }
 
   /** 31-bit, wrapping — the spec forbids the top bit. */
   advance(cycles: number): void { this.timestamp = (this.timestamp + cycles) & 0x7FFFFFFF; }
@@ -179,16 +233,36 @@ export class BgbLink {
         return;
       case CMD.sync1: {
         this.peerTimestamp = p.i1;
+        const t0 = process.hrtime.bigint();
         const reply = this.h.onMasterByte?.(p.b2, p.b3, p.i1);
-        if (reply === DEFER_REPLY) return;         // handler sends its own reply (wq#481)
+        if (reply === DEFER_REPLY) {
+          // The handler owns the reply (wq#481), so the clock keeps running until
+          // it writes one — see servedAt in send(). This is the case that matters:
+          // SerialBridge defers every passive transfer (wq#511 pacing rule 3,
+          // hold the peer's transfer open until our core consumed the byte), so a
+          // slave that only sampled inline replies would produce an empty series
+          // and a cross-node evidence pack with nothing in it from that side.
+          this.servedAt = t0;
+          return;
+        }
         // No passive transfer staged -> sync3 ack rather than a bogus byte.
         this.send(reply === undefined || reply === null ? sync3Ack() : sync2Packet(reply));
+        this.pushCapped(this.serve, {
+          seq: this.serve.length,
+          serveUs: Number(process.hrtime.bigint() - t0) / 1000,
+          deferred: false,
+        });
         return;
       }
       case CMD.sync2:
+        this.sampleRtt("sync2", p.i1);
         this.h.onSlaveByte?.(p.b2);
         return;
       case CMD.sync3:
+        // b2=1 is the ack of an active transfer, i.e. an ANSWER to our sync1 and
+        // a completed round trip. b2=0 is an unsolicited timestamp-only sync and
+        // closes nothing, so counting it would fabricate short samples.
+        if (p.b2 === 1) this.sampleRtt("sync3", p.i1);
         if (p.b2 === 0) { this.peerTimestamp = p.i1; this.send(sync3Time(this.timestamp)); }
         this.h.onSync3?.(p);
         return;
@@ -207,10 +281,43 @@ export class BgbLink {
 
   get ready(): boolean { return this.handshakeDone; }
 
+  /** Close the open master transfer's round trip, if there is one. An answer
+   *  with no outstanding sync1 is ignored rather than timed against a stale
+   *  start — a fabricated sample is worse than a missing one. */
+  private sampleRtt(kind: "sync2" | "sync3", peerTs: number): void {
+    if (this.sync1At === null) return;
+    this.pushCapped(this.latency, {
+      seq: this.sync1Seq,
+      rttUs: Number(process.hrtime.bigint() - this.sync1At) / 1000,
+      kind, linkTs: this.sync1Ts, peerTs,
+    });
+    this.sync1At = null;
+  }
+
   send(p: BgbPacket): void {
     if (!this.sock) return;
     this.packetsOut++;
+    // Stamp the start AFTER the write, so the sample measures the peer's turn
+    // around and the wire, not our own serialisation.
     this.sock.write(encodePacket(p));
+    if (p.b1 === CMD.sync1) {
+      this.sync1At = process.hrtime.bigint();
+      this.sync1Seq++;
+      this.sync1Ts = p.i1;
+      return;
+    }
+    // Close a DEFERRED passive transfer. Only a real answer counts: a sync2, or a
+    // sync3 ACK (b2=1). A sync3 with b2=0 is the timestamp-only sync we send in
+    // reply to the peer's own, unrelated to any transfer, and closing on it would
+    // report a serve time for a transfer still open.
+    if (this.servedAt !== null && (p.b1 === CMD.sync2 || (p.b1 === CMD.sync3 && p.b2 === 1))) {
+      this.pushCapped(this.serve, {
+        seq: this.serve.length,
+        serveUs: Number(process.hrtime.bigint() - this.servedAt) / 1000,
+        deferred: true,
+      });
+      this.servedAt = null;
+    }
   }
 
   /** Our core is master for this byte. */

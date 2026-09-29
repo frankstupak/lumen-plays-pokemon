@@ -1,0 +1,166 @@
+{
+  "ticket": "wq#484",
+  "generated": "2026-09-29T22:48:54.751Z",
+  "transport": {
+    "peer": "local",
+    "bind": "100.117.66.102",
+    "host": "100.117.66.102",
+    "localNode": "lumen",
+    "peerNode": "lumen"
+  },
+  "crossNode": false,
+  "sessions": [
+    {
+      "session": 1,
+      "retries": 0,
+      "sides": [
+        {
+          "tag": "A",
+          "exit": 0,
+          "invariants": true,
+          "mirror": true,
+          "exchanges": 702,
+          "exchangeDone": true
+        },
+        {
+          "tag": "B",
+          "exit": 0,
+          "invariants": true,
+          "mirror": true,
+          "exchanges": 702,
+          "exchangeDone": true
+        }
+      ],
+      "rtt": {
+        "n": 702,
+        "minUs": 82.423,
+        "p50Us": 291.982,
+        "p90Us": 427.891,
+        "p99Us": 106483.345,
+        "maxUs": 238321.503,
+        "meanUs": 2851.0578062678064,
+        "sumUs": 2001442.58
+      }
+    },
+    {
+      "session": 2,
+      "retries": 0,
+      "sides": [
+        {
+          "tag": "A",
+          "exit": 0,
+          "invariants": true,
+          "mirror": true,
+          "exchanges": 703,
+          "exchangeDone": true
+        },
+        {
+          "tag": "B",
+          "exit": 0,
+          "invariants": true,
+          "mirror": true,
+          "exchanges": 703,
+          "exchangeDone": true
+        }
+      ],
+      "rtt": {
+        "n": 703,
+        "minUs": 105.958,
+        "p50Us": 361.835,
+        "p90Us": 1035.862,
+        "p99Us": 114211.18,
+        "maxUs": 193690.83,
+        "meanUs": 2653.674233285918,
+        "sumUs": 1865532.9860000005
+      }
+    },
+    {
+      "session": 3,
+      "retries": 0,
+      "sides": [
+        {
+          "tag": "A",
+          "exit": 0,
+          "invariants": true,
+          "mirror": true,
+          "exchanges": 703,
+          "exchangeDone": true
+        },
+        {
+          "tag": "B",
+          "exit": 0,
+          "invariants": true,
+          "mirror": true,
+          "exchanges": 703,
+          "exchangeDone": true
+        }
+      ],
+      "rtt": {
+        "n": 703,
+        "minUs": 109.538,
+        "p50Us": 261.022,
+        "p90Us": 550.849,
+        "p99Us": 15059.188,
+        "maxUs": 182893.067,
+        "meanUs": 1657.2403399715502,
+        "sumUs": 1165039.9589999998
+      }
+    }
+  ],
+  "desyncs": 0,
+  "rtt": {
+    "n": 2108,
+    "minUs": 82.423,
+    "p50Us": 292.573,
+    "p90Us": 777.493,
+    "p99Us": 104677.168,
+    "maxUs": 238321.503,
+    "meanUs": 2387.104138994307,
+    "sumUs": 5032015.524999999
+  },
+  "serve": {
+    "n": 1909,
+    "minUs": 108.557,
+    "p50Us": 282.937,
+    "p90Us": 874.73,
+    "p99Us": 121098.071,
+    "maxUs": 11966469.047,
+    "meanUs": 13023.546737035098,
+    "sumUs": 24861950.721
+  },
+  "histogram": {
+    "edgesUs": [
+      50,
+      100,
+      200,
+      400,
+      800,
+      1600,
+      3200,
+      6400,
+      12800,
+      25600,
+      51200,
+      102400,
+      204800
+    ],
+    "counts": [
+      0,
+      2,
+      540,
+      1027,
+      349,
+      70,
+      44,
+      38,
+      4,
+      5,
+      0,
+      6,
+      22,
+      1
+    ]
+  },
+  "pass": 47,
+  "fail": 1
+}

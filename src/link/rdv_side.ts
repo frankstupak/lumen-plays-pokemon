@@ -2,6 +2,8 @@
 // its OWN core: no shared memory with the peer, exactly like a remote partner.
 // Driven by env: RDV_ROLE=listen|connect RDV_PORT=.. RDV_ROOM=TRADE_CENTER|COLOSSEUM
 //               RDV_DELAY_MS=.. (late join)  RDV_DROP_AFTER=<n bytes> (disconnect test)
+//               RDV_BIND=<listen addr> RDV_HOST=<dial addr> (wq#484, cross-node)
+//               RDV_LAT_OUT=<path> (wq#484, per-transfer latency samples)
 // Prints one JSON line ("RESULT ...") so the orchestrator can assert on it.
 //
 // wq#510: exit codes are now semantic:
@@ -28,6 +30,9 @@ import { setSlice, clearSlice, transferSliceDivisor } from "./lockstep";
 import { offsetsFromSymbols, verifyTradeBlock, viewBlock, readPartyBlock, diffBlocks } from "./invariants";
 import { readLinkState } from "./linkstate";
 import { ckptPath, linkEventsDir, romPath } from "../fixtures";
+import { summarise, LatencyDump } from "./latency";
+import { mkdirSync, writeFileSync } from "fs";
+import { dirname } from "path";
 
 const PORT = Number(process.env.RDV_PORT ?? 9351);
 const MODE = process.env.RDV_ROLE ?? "listen";
@@ -37,6 +42,18 @@ const DROP_AFTER = Number(process.env.RDV_DROP_AFTER ?? 0);
 const LINGER_MAX = Number(process.env.RDV_LINGER_MS ?? 90000);
 const LINGER_IDLE = Number(process.env.RDV_LINGER_IDLE_MS ?? 25000);
 const TAG = process.env.RDV_TAG ?? MODE;
+// wq#484 (M5d): the addresses were hardcoded to 127.0.0.1, which is the one
+// thing that made this side un-runnable across the tailnet. Defaults are
+// unchanged so every M5c caller behaves exactly as before.
+//   RDV_BIND  — listen address. 127.0.0.1 keeps a local pair off the network;
+//               a tailnet address (or 0.0.0.0) exposes the side to a peer node.
+//   RDV_HOST  — the address a connecting side dials.
+// Kept as two variables rather than one: a side that listens on a tailnet
+// address and a side that dials one are different decisions, and collapsing
+// them is how you end up binding 0.0.0.0 by accident.
+const BIND = process.env.RDV_BIND ?? "127.0.0.1";
+const HOST = process.env.RDV_HOST ?? "127.0.0.1";
+const LAT_OUT = process.env.RDV_LAT_OUT ?? "";
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** wLinkState values CONFIRMED in vivo by the M3 in-process trade (trade.ts):
@@ -106,8 +123,13 @@ const LS_TRADE_MENU = 50;
 
   if (DELAY > 0) { console.log(`[${TAG}] late join: sleeping ${DELAY}ms before touching the socket`); await sleep(DELAY); }
 
-  if (MODE === "listen") await bridge.link.listen(PORT, "127.0.0.1");
-  else await bridge.link.connect(PORT, "127.0.0.1");
+  if (MODE === "listen") {
+    console.log(`[${TAG}] listen ${BIND}:${PORT}`);
+    await bridge.link.listen(PORT, BIND);
+  } else {
+    console.log(`[${TAG}] connect ${HOST}:${PORT}`);
+    await bridge.link.connect(PORT, HOST);
+  }
 
   // disconnect scenario: kill the socket mid-handshake after N transfers
   if (DROP_AFTER > 0) {
@@ -233,6 +255,28 @@ const LS_TRADE_MENU = 50;
         break;
       }
     }
+  }
+
+  // ---- wq#484: per-transfer latency, dumped before the socket goes away -----
+  //
+  // Emitted on EVERY exit path, success or not: a side that stranded is the one
+  // whose tail you most want to see, so a dump gated on res.ok would withhold
+  // the interesting case. The `LATENCY` line is the summary; the file (if asked
+  // for) carries every sample so a histogram can be rebuilt without re-running.
+  const lat: LatencyDump = {
+    tag: TAG, role: core.role(),
+    bind: MODE === "listen" ? `${BIND}:${PORT}` : undefined,
+    peerHost: MODE === "connect" ? `${HOST}:${PORT}` : undefined,
+    rtt: bridge.link.latency, serve: bridge.link.serve,
+  };
+  const sum = summarise(lat);
+  console.log("LATENCY " + JSON.stringify({
+    tag: TAG, rtt: sum.rtt, serve: sum.serve, buckets: sum.hist.counts,
+  }));
+  if (LAT_OUT) {
+    mkdirSync(dirname(LAT_OUT), { recursive: true });
+    writeFileSync(LAT_OUT, JSON.stringify(lat));
+    console.log(`[${TAG}] latency samples -> ${LAT_OUT} (${lat.rtt.length} rtt, ${lat.serve.length} serve)`);
   }
 
   // Clean exit with semantic exit code:
