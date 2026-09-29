@@ -88,32 +88,46 @@ function sendPage(text: string): Promise<SendResult> {
   });
 }
 
+/** How long a delivered page suppresses an identical alert. The live service is long-lived (outages of
+ *  14h are on record), so a process-lifetime "already paged" set meant a second outage with the same
+ *  text was never paged (wq#2413). 0 restores the old never-repage behaviour. */
+function repageMs(): number {
+  const v = Number(process.env.LPP_ISIS_REPAGE_MS ?? 60 * 60_000);
+  return Number.isFinite(v) && v >= 0 ? v : 60 * 60_000;
+}
+
 export interface IsisPager {
-  /** Keys whose page this run has DELIVERED. A failed send is not in here. */
+  /** Keys whose page was DELIVERED inside the re-page window. A failed send is not in here. */
   readonly delivered: ReadonlySet<string>;
   /** Settles when every in-flight send has finished. For probes — the live
    *  service never waits on a page. */
   drain(): Promise<void>;
 }
 
-export function attachIsisPager(bus: EventBus): IsisPager {
-  const delivered = new Set<string>();
+export function attachIsisPager(bus: EventBus, now: () => number = Date.now): IsisPager {
+  const deliveredAt = new Map<string, number>();
+  const inWindow = (key: string): boolean => {
+    const at = deliveredAt.get(key);
+    if (at === undefined) return false;
+    const w = repageMs();
+    return w === 0 || now() - at < w;
+  };
   const inflight = new Set<Promise<void>>();
 
   bus.on(e => {
     const alert = readCriticalAlert(e);
     if (!alert) return;
     const key = pageKey(alert.source, alert.msg);
-    if (delivered.has(key)) return;
+    if (inWindow(key)) return;
     // Claimed BEFORE the send so a second alert arriving while curl is still
     // running cannot double-page; released below if the send fails.
-    delivered.add(key);
+    deliveredAt.set(key, now());
     const p = sendPage(`[${alert.source}] ${alert.msg}`).then(r => {
       // A page that did not leave the box is not a page. Releasing the key lets
       // the next identical alert retry instead of the run going quiet on the
       // strength of a delivery that never happened.
       if (!r.ok) {
-        delivered.delete(key);
+        deliveredAt.delete(key);
         console.error(`[isis] PAGE DELIVERY FAILED (rc=${r.rc}) ${r.detail} :: ${alert.msg}`);
       }
       // On the bus too, so tools/lpp_isis_audit.py can pair an alert with its
@@ -130,7 +144,7 @@ export function attachIsisPager(bus: EventBus): IsisPager {
         ok: r.ok, rc: r.rc, key, alert: alert.msg,
       });
     }).catch((err: unknown) => {
-      delivered.delete(key);
+      deliveredAt.delete(key);
       console.error(`[isis] pager threw: ${String(err)}`);
     });
     inflight.add(p);
@@ -138,7 +152,7 @@ export function attachIsisPager(bus: EventBus): IsisPager {
   });
 
   return {
-    delivered,
+    get delivered(): ReadonlySet<string> { return new Set([...deliveredAt.keys()].filter(inWindow)); },
     async drain() { while (inflight.size) await Promise.all([...inflight]); },
   };
 }

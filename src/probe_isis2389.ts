@@ -175,6 +175,35 @@ const sent = () => (existsSync(RECORD) ? readFileSync(RECORD, "utf8").trim().spl
     chk("LPP_ISIS_SWEEP_MS=0 turns it off", offSweep() === null);
   }
 
+  // --- 8. wq#2413: a SECOND outage with the same text pages again ----------
+  {
+    process.env.LPP_NTFY_BIN = FAKE_NTFY;
+    process.env.LPP_ISIS_REPAGE_MS = String(60 * 60_000);
+    const { attachIsisPager: attachClock } = await import(`./isis_page.js?clock=${Date.now()}`);
+    const bus3 = new EventBus(DIR, "probe-isis2389-clock");
+    let t = 1_000_000;
+    const pager3 = attachClock(bus3, () => t);
+    const before = sent().length;
+    const alert = { tool: "isis_alert", level: "critical", source: "brain", msg: "LPP primary brain (isis-local) failed 3 turns in 10min - clock probe" };
+    bus3.emit("tool_call", alert); await pager3.drain();
+    t += 10 * 60_000;
+    bus3.emit("tool_call", alert); await pager3.drain();
+    chk("a repeat inside the re-page window is still one page", sent().length === before + 1, String(sent().length - before));
+    t += 61 * 60_000;
+    bus3.emit("tool_call", alert); await pager3.drain();
+    chk("the same alert after the window pages again (second outage, same process)", sent().length === before + 2, String(sent().length - before));
+    chk("delivered reports only keys inside the window", pager3.delivered.size === 1, String(pager3.delivered.size));
+    process.env.LPP_ISIS_REPAGE_MS = "0";
+    const { attachIsisPager: attachOld } = await import(`./isis_page.js?never=${Date.now()}`);
+    const bus4 = new EventBus(DIR, "probe-isis2389-never");
+    let t4 = 5_000_000; const pager4 = attachOld(bus4, () => t4);
+    const b4 = sent().length;
+    bus4.emit("tool_call", alert); await pager4.drain(); t4 += 48 * 3600_000;
+    bus4.emit("tool_call", alert); await pager4.drain();
+    chk("LPP_ISIS_REPAGE_MS=0 keeps the old never-repage behaviour", sent().length === b4 + 1, String(sent().length - b4));
+    delete process.env.LPP_ISIS_REPAGE_MS;
+  }
+
   console.log(`\n${pass} PASS / ${fail} FAIL`);
   process.exit(fail ? 1 : 0);
 })();
