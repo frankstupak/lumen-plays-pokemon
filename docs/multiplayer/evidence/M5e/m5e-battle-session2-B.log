@@ -1,0 +1,19 @@
+[B] late join: sleeping 4000ms before touching the socket
+[B] connect 127.0.0.1:19671
+[B] AWAIT_PARTNER waiting up to 120000ms for the peer socket
+[B] HANDSHAKE driving attendant dialog
+[B] ROOM_SELECT selecting $d1 (role=2)
+[B] IN_ROOM map $f0
+RESULT {"tag":"B","ok":true,"phase":"IN_ROOM","room":209,"yielded":false,"retryable":false,"role":2,"map":240,"linkState":0,"elapsedMs":6987,"telemetry":{"sent":45,"received":45,"resends":0,"slaveServed":0,"forcedSbWrites":1,"suppressedDupIrq":45,"queuedIn":0,"blocked":0,"collisions":0,"forced":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}}
+[B] continuation: MASTER->left seat (3,4)
+BLOCKCHECK {"tag":"B","ok":true,"checks":["length","no_FE","party_count","species_terminator","mon_fields"],"failures":[],"linkState":4,"engagedAt":3,"seat":{"want":{"map":240,"x":3,"y":4},"at":{"map":240,"x":3,"y":4},"ok":true},"exchangeDone":true,"mirror":{"ok":true,"diffs":0},"mirrorAll":{"ok":true,"diffs":0},"peerCount":1,"peerSlot0":{"species":178,"level":20,"hp":57,"maxHp":57,"moves":[10,45,52,43]},"exchanges":716,"pacing":{"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}}
+[B] battle: slot 2 (move 52), peer advertises [10,45,52,43]
+[B]  TURN 1: picked 52 / peer 10 (index 0, 30 bytes this turn) hp 48 foe 46
+[B]  TURN 2: picked 52 / peer 10 (index 0, 23 bytes this turn) hp 39 foe 40
+[B]  TURN 3: picked 52 / peer 10 (index 0, 23 bytes this turn) hp 31 foe 34
+[B]  TURN 4: picked 52 / peer 10 (index 0, 23 bytes this turn) hp 23 foe 28
+[B]  TURN 5: picked 52 / peer 10 (index 0, 23 bytes this turn) hp 7 foe 22
+BATTLECHECK {"tag":"B","role":2,"slot":2,"started":true,"ended":true,"knockout":"us","hp":0,"foeHp":22,"note":"battle ended, the peer won by knockout","rng":[146,131,117,105,95,87,81,77,75],"ownMoves":[10,45,52,43],"enemyMoves":[10,45,52,43],"ledger":{"ok":true,"checks":["has_settled_turns","moves_valid","hp_ledger"],"failures":[]},"turns":[{"r":166,"pm":52,"em":10,"ei":0,"hp":48,"foe":46,"wire":30,"hits":4,"bytes":"0000fefefefefefe6060606000fefefefefefefefefefefefefefefefefe"},{"r":242,"pm":52,"em":10,"ei":0,"hp":39,"foe":40,"wire":23,"hits":13,"bytes":"fe6060606060606060606060606000fefefefefefefefe"},{"r":317,"pm":52,"em":10,"ei":0,"hp":31,"foe":34,"wire":23,"hits":12,"bytes":"fe60606060606060606060606000fefefefefefefefefe"},{"r":393,"pm":52,"em":10,"ei":0,"hp":23,"foe":28,"wire":23,"hits":13,"bytes":"fe60606060fe60606060606060606000fefefefefefefe"},{"r":482,"pm":52,"em":10,"ei":0,"hp":7,"foe":22,"wire":23,"hits":12,"bytes":"fe60606060606060606060606000fefefefefefefefefe"}],"battleMs":39983,"rounds":597,"nudges":0,"commits":11,"misfires":5,"phases":{"text":563,"battleMenu":6,"moveMenu":29},"battleBytes":145,"exchanges":861,"forced":0}
+[B] peer closed; linger ends
+LATENCY {"tag":"B","rtt":{"n":861,"minUs":80.276,"p50Us":459.039,"p90Us":26363.562,"p99Us":166985.635,"maxUs":252368.939,"meanUs":11247.98843089431,"sumUs":9684518.039},"serve":{"n":0,"minUs":null,"p50Us":null,"p90Us":null,"p99Us":null,"maxUs":null,"meanUs":null,"sumUs":0},"buckets":[0,13,115,201,338,63,30,10,4,0,6,42,36,3]}
+[B] latency samples -> /home/lumen/worktrees/wq3201-a3/docs/multiplayer/evidence/M5d/m5e-battle-latency-s2-B.json (861 rtt, 0 serve)

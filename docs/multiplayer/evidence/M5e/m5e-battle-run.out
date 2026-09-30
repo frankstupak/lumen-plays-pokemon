@@ -1,0 +1,125 @@
+=== M5d: 3 consecutive two-process sessions ===
+transport: peer=local bind=127.0.0.1 host=127.0.0.1 localNode=lumen peerNode=lumen
+NOTE: peer=local — both sides on THIS host. Real sockets on a real
+      address, but ONE kernel and ONE clock. This is the M5d baseline,
+      not the cross-node measurement.
+--- session 1 side A exit=0
+PASS s1/A: rendezvoused :: IN_ROOM
+PASS s1/A: seated at its own chair :: {"map":240,"x":6,"y":4}
+PASS s1/A: ROM finished the 415-byte exchange :: linkState=4
+PASS s1/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s1/A: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s1/A: the block really crossed the wire :: exchanges=729
+PASS s1/A: the link battle opened :: note=battle ended, we won by knockout
+PASS s1/A: THE BATTLE REACHED A KNOCKOUT :: battle ended, we won by knockout hp=15 foe=0 rounds=974 nudges=0
+PASS s1/A: verifyBattleLedger GREEN over 6 settled turns :: []
+PASS s1/A: every enemy move backed by its tagged index ($60|i) arriving that turn :: turns=6 unbacked=[]
+PASS s1/A: captured its own latency series (slave/serve) :: role=1 rtt=0 serve=853
+    rtt s1/A: n=0 min=n/aus p50=n/aus p90=n/aus p99=n/aus max=n/aus mean=n/aus total=0.0ms
+    pacing A: {"queuedIn":729,"served":729,"blocked":5014,"forced":17,"forcedDuringBlock":1,"collisions":0,"stillQueued":0,"gate":{"tooSoon":2420,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":2594},"forcedAt":["$20b4","$20b4","$20b4","$20b4","$20b4","$2238","$2237","$21ce"]}
+--- session 1 side B exit=0
+PASS s1/B: rendezvoused :: IN_ROOM
+PASS s1/B: seated at its own chair :: {"map":240,"x":3,"y":4}
+PASS s1/B: ROM finished the 415-byte exchange :: linkState=4
+PASS s1/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s1/B: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s1/B: the block really crossed the wire :: exchanges=729
+PASS s1/B: the link battle opened :: note=battle ended, the peer won by knockout
+PASS s1/B: THE BATTLE REACHED A KNOCKOUT :: battle ended, the peer won by knockout hp=0 foe=15 rounds=685 nudges=0
+PASS s1/B: verifyBattleLedger GREEN over 6 settled turns :: []
+PASS s1/B: every enemy move backed by its tagged index ($60|i) arriving that turn :: turns=6 unbacked=[]
+PASS s1/B: captured its own latency series (master/rtt) :: role=2 rtt=896 serve=0
+    rtt s1/B: n=896 min=87.4us p50=419.6us p90=57754.5us p99=153284.1us max=293717.9us mean=11528.8us total=10329.8ms
+    pacing B: {"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+PASS s1: exactly one side was master :: roles=1/2
+PASS s1: ZERO DESYNC — the two sides' reports mirror (rng, final HP, knockout, moves) :: A hp=15/foe=0 ko=foe | B hp=0/foe=15 ko=us rngEq=true
+--- session 2 side A exit=0
+PASS s2/A: rendezvoused :: IN_ROOM
+PASS s2/A: seated at its own chair :: {"map":240,"x":6,"y":4}
+PASS s2/A: ROM finished the 415-byte exchange :: linkState=4
+PASS s2/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s2/A: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s2/A: the block really crossed the wire :: exchanges=716
+PASS s2/A: the link battle opened :: note=battle ended, we won by knockout
+PASS s2/A: THE BATTLE REACHED A KNOCKOUT :: battle ended, we won by knockout hp=22 foe=0 rounds=919 nudges=0
+PASS s2/A: verifyBattleLedger GREEN over 5 settled turns :: []
+PASS s2/A: every enemy move backed by its tagged index ($60|i) arriving that turn :: turns=5 unbacked=[]
+PASS s2/A: captured its own latency series (slave/serve) :: role=1 rtt=0 serve=808
+    rtt s2/A: n=0 min=n/aus p50=n/aus p90=n/aus p99=n/aus max=n/aus mean=n/aus total=0.0ms
+    pacing A: {"queuedIn":716,"served":716,"blocked":6747,"forced":10,"forcedDuringBlock":1,"collisions":0,"stillQueued":0,"gate":{"tooSoon":2251,"notArmed":76,"internal":0,"irq":0,"staged":0,"taken":4420},"forcedAt":["$20b4","$20b4","$20b4","$20b4","$21d0","$21ae","$21ce","$21b5"]}
+--- session 2 side B exit=0
+PASS s2/B: rendezvoused :: IN_ROOM
+PASS s2/B: seated at its own chair :: {"map":240,"x":3,"y":4}
+PASS s2/B: ROM finished the 415-byte exchange :: linkState=4
+PASS s2/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s2/B: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s2/B: the block really crossed the wire :: exchanges=716
+PASS s2/B: the link battle opened :: note=battle ended, the peer won by knockout
+PASS s2/B: THE BATTLE REACHED A KNOCKOUT :: battle ended, the peer won by knockout hp=0 foe=22 rounds=597 nudges=0
+PASS s2/B: verifyBattleLedger GREEN over 5 settled turns :: []
+PASS s2/B: every enemy move backed by its tagged index ($60|i) arriving that turn :: turns=5 unbacked=[]
+PASS s2/B: captured its own latency series (master/rtt) :: role=2 rtt=861 serve=0
+    rtt s2/B: n=861 min=80.3us p50=459.0us p90=26363.6us p99=166985.6us max=252368.9us mean=11248.0us total=9684.5ms
+    pacing B: {"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+PASS s2: exactly one side was master :: roles=1/2
+PASS s2: ZERO DESYNC — the two sides' reports mirror (rng, final HP, knockout, moves) :: A hp=22/foe=0 ko=foe | B hp=0/foe=22 ko=us rngEq=true
+--- session 3: STRANDED (exits 4/0); relaunching both sides on a fresh port, attempt 2
+--- session 3 took 1 retry
+--- session 3 side A exit=0
+PASS s3/A: rendezvoused :: IN_ROOM
+PASS s3/A: seated at its own chair :: {"map":240,"x":3,"y":4}
+PASS s3/A: ROM finished the 415-byte exchange :: linkState=4
+PASS s3/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s3/A: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s3/A: the block really crossed the wire :: exchanges=723
+PASS s3/A: the link battle opened :: note=battle ended, we won by knockout
+PASS s3/A: THE BATTLE REACHED A KNOCKOUT :: battle ended, we won by knockout hp=12 foe=0 rounds=700 nudges=0
+PASS s3/A: verifyBattleLedger GREEN over 5 settled turns :: []
+PASS s3/A: every enemy move backed by its tagged index ($60|i) arriving that turn :: turns=5 unbacked=[]
+PASS s3/A: captured its own latency series (master/rtt) :: role=2 rtt=865 serve=0
+    rtt s3/A: n=865 min=73.1us p50=332.5us p90=11121.0us p99=134453.9us max=221537.0us mean=8869.2us total=7671.9ms
+    pacing A: {"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+--- session 3 side B exit=0
+PASS s3/B: rendezvoused :: IN_ROOM
+PASS s3/B: seated at its own chair :: {"map":240,"x":6,"y":4}
+PASS s3/B: ROM finished the 415-byte exchange :: linkState=4
+PASS s3/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s3/B: ZERO DESYNC — received block mirrors our party byte-for-byte :: diffs=0 where=null
+PASS s3/B: the block really crossed the wire :: exchanges=723
+PASS s3/B: the link battle opened :: note=battle ended, the peer won by knockout
+PASS s3/B: THE BATTLE REACHED A KNOCKOUT :: battle ended, the peer won by knockout hp=0 foe=12 rounds=1166 nudges=0
+PASS s3/B: verifyBattleLedger GREEN over 5 settled turns :: []
+PASS s3/B: every enemy move backed by its tagged index ($60|i) arriving that turn :: turns=5 unbacked=[]
+PASS s3/B: captured its own latency series (slave/serve) :: role=1 rtt=0 serve=824
+    rtt s3/B: n=0 min=n/aus p50=n/aus p90=n/aus p99=n/aus max=n/aus mean=n/aus total=0.0ms
+    pacing B: {"queuedIn":723,"served":723,"blocked":4598,"forced":11,"forcedDuringBlock":1,"collisions":0,"stillQueued":0,"gate":{"tooSoon":2202,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":2396},"forcedAt":["$20b4","$4bce","$20b4","$4004","$21a7","$2237","$2237","$223e"]}
+PASS s3: exactly one side was master :: roles=2/1
+PASS s3: ZERO DESYNC — the two sides' reports mirror (rng, final HP, knockout, moves) :: A hp=12/foe=0 ko=foe | B hp=0/foe=12 ko=us rngEq=true
+
+M5d per-transfer latency — mode=battle, 3 sessions, 2622 master round trips
+transport: peer=local bind=127.0.0.1 host=127.0.0.1 localNode=lumen peerNode=lumen
+BASELINE: both sides on this host — one kernel, one clock. NOT a cross-node measurement.
+
+rtt  (sync1 written -> peer answer parsed, wall clock): n=2622 min=73.1us p50=399.6us p90=32296.2us p99=150330.1us max=293717.9us mean=10559.2us total=27686.2ms
+serve (peer sync1 -> our answer written, OUR cost): n=2485 min=104.7us p50=352.7us p90=47840.8us p99=162941.0us max=10968163.2us mean=17460.6us total=43389.7ms
+      < 50us               0    0.0%  
+    50..100us             71    2.7%  ####
+   100..200us            295   11.3%  ###############
+   200..400us            949   36.2%  ################################################
+   400..800us            826   31.5%  ##########################################
+   800..1600us            82    3.1%  ####
+  1600..3200us            64    2.4%  ###
+  3200..6400us            56    2.1%  ###
+  6400..12800us            7    0.3%  
+ 12800..25600us            2    0.1%  
+ 25600..51200us           25    1.0%  #
+ 51200..102400us         148    5.6%  #######
+102400..204800us          89    3.4%  #####
+>= 204800us                8    0.3%  
+
+PASS zero desyncs across all 3 sessions :: desyncs=0
+PASS at least 3 consecutive sessions were run :: sessions=3
+PASS every side of every session reached a knockout :: 6/6
+NOTE: transport peer=local — same host; cross-node is wq#484's gate, not M5e's
+
+75 PASS / 0 FAIL   (evidence: /home/lumen/worktrees/wq3201-a3/docs/multiplayer/evidence/M5d)

@@ -48,7 +48,7 @@ import type { LatencySample } from "./bgblink";
  */
 const FLAGS = new Set(["sessions", "port", "bind", "host", "peer", "local-role",
   "timeout-ms", "evidence", "peer-node", "max-retries", "mode", "offer", "want",
-  "patched-tag"]);
+  "patched-tag", "move-slot"]);
 const argv = process.argv.slice(2);
 const flags: Record<string, string> = {};
 for (let i = 0; i < argv.length; i++) {
@@ -73,13 +73,22 @@ const HOST = opt("host", "M5D_HOST", BIND);
 const PEER = opt("peer", "M5D_PEER", "local") as "local" | "remote";
 const LOCAL_ROLE = opt("local-role", "M5D_LOCAL_ROLE", "listen") as "listen" | "connect";
 const TIMEOUT_MS = Number(opt("timeout-ms", "M5D_TIMEOUT_MS", "600000"));
-const EVIDENCE = opt("evidence", "M5D_EVIDENCE", join(REPO_ROOT, "docs/multiplayer/evidence/M5d"));
 const PEER_NODE = opt("peer-node", "M5D_PEER_NODE", PEER === "local" ? hostname() : "unknown");
 // `block` stops where M5c-3 stopped: the parties have been shown to each other.
 // `trade` carries on through selection -> confirm -> the swap, which is the half
 // of M5d's "full trade" that no distance can supply on its own.
-const MODE = opt("mode", "M5D_MODE", "block") as "block" | "trade";
-if (MODE !== "block" && MODE !== "trade") { console.error(`--mode must be block|trade, got ${MODE}`); process.exit(2); }
+// `battle` (wq#3201, M5e) goes to the COLOSSEUM instead and fights to knockout.
+const MODE = opt("mode", "M5D_MODE", "block") as "block" | "trade" | "battle";
+if (!["block", "trade", "battle"].includes(MODE)) { console.error(`--mode must be block|trade|battle, got ${MODE}`); process.exit(2); }
+const EVIDENCE = opt("evidence", "M5D_EVIDENCE",
+  join(REPO_ROOT, `docs/multiplayer/evidence/${MODE === "battle" ? "M5e" : "M5d"}`));
+/** Move slots in battle mode, `A,B` (or one value for both). The default gives
+ *  the sides DIFFERENT damaging moves — Scratch (0) and Ember (2) in the
+ *  snapshot party — so the cross-side check "every move one side used is a
+ *  move the other side saw" cannot pass by both sides reporting the same id.
+ *  Growl/Leer are out: the ledger fails a settled turn in which no HP moved. */
+const MOVE_SLOTS = opt("move-slot", "M5D_MOVE_SLOT", "0,2").split(",");
+const slotFor = (tag: string) => MOVE_SLOTS[tag === "A" ? 0 : MOVE_SLOTS.length - 1];
 const OFFER = Number(opt("offer", "M5D_OFFER", "0"));
 const WANT = Number(opt("want", "M5D_WANT", "0"));
 /**
@@ -135,7 +144,7 @@ const CONTROL = MODE === "trade" && PATCHED_TAG === "none";
 /** Artifact prefix. The modes answer different questions and their packs are read
  *  side by side, so no run may overwrite another's — least of all the control,
  *  whose whole content is failures. */
-const ART = CONTROL ? "m5d-trade-control" : MODE === "trade" ? "m5d-trade" : "m5d";
+const ART = CONTROL ? "m5d-trade-control" : MODE === "trade" ? "m5d-trade" : MODE === "battle" ? "m5e-battle" : "m5d";
 
 function sideEnv(tag: string, role: "listen" | "connect", port: number, latFile: string): Record<string, string> {
   return {
@@ -145,6 +154,7 @@ function sideEnv(tag: string, role: "listen" | "connect", port: number, latFile:
       ...(tag === PATCHED_TAG ? { RDV_IDENT: ASYM } : {}), // one side: be that trainer
       RDV_OFFER: String(OFFER), RDV_WANT: String(WANT),
     } : {}),
+    ...(MODE === "battle" ? { RDV_ROOM: "COLOSSEUM", RDV_MOVE_SLOT: slotFor(tag) } : {}),
     RDV_PORT: String(port),
     RDV_LINGER_MS: "45000",
     RDV_TAG: tag,
@@ -178,7 +188,7 @@ async function runSession(n: number): Promise<SessionOut> {
       // invisible, and the run would look green while proving nothing.
       const peerTrade = MODE === "trade"
         ? `RDV_ASYM=${ASYM} ${peerTag === PATCHED_TAG ? `RDV_IDENT=${ASYM} ` : ""}RDV_OFFER=${OFFER} RDV_WANT=${WANT} `
-        : "";
+        : MODE === "battle" ? `RDV_ROOM=COLOSSEUM RDV_MOVE_SLOT=${slotFor(peerTag)} ` : "";
       console.log(`--- session ${n}: peer is REMOTE. Launch on ${PEER_NODE}, from a synced checkout:`);
       console.log(`    RDV_CONTINUE=${MODE} RDV_ROLE=${peerRole} RDV_TAG=${peerTag} ${peerTrade}`
         + `RDV_PORT=${port} RDV_BIND=${BIND} RDV_HOST=${HOST} `
@@ -277,6 +287,19 @@ function readDump(path: string): LatencyDump | undefined {
         // included, is the one-sided form of "A ends holding B's exact mon".
         ok(`s${n}/${tag}: we hold exactly the identity the peer advertised`, tr?.identity?.ok === true,
            tr?.identity ? `got=${tr.identity.got} advertised=${tr.identity.advertised}` : "no identity verdict");
+      } else if (MODE === "battle") {
+        const b = side.battle;
+        ok(`s${n}/${tag}: the link battle opened`, !!b?.started, b ? `note=${b.note}` : "no BATTLECHECK");
+        ok(`s${n}/${tag}: THE BATTLE REACHED A KNOCKOUT`, !!b?.ended && b?.knockout !== "none",
+           b ? `${b.note} hp=${b.hp} foe=${b.foeHp} rounds=${b.rounds} nudges=${b.nudges}` : "no BATTLECHECK");
+        ok(`s${n}/${tag}: verifyBattleLedger GREEN over ${b?.turns?.length ?? 0} settled turns`, b?.ledger?.ok === true,
+           b?.ledger ? JSON.stringify(b.ledger.failures).slice(0, 200) : "no ledger");
+        // Restated from the ledger on purpose: the ticket's claim is per enemy
+        // move, and a ledger that silently skipped turns would still read green.
+        const unbacked = (b?.turns ?? []).filter((t: any) => !(t.hits > 0));
+        ok(`s${n}/${tag}: every enemy move backed by its tagged index ($60|i) arriving that turn`,
+           (b?.turns?.length ?? 0) > 0 && unbacked.length === 0,
+           `turns=${b?.turns?.length ?? 0} unbacked=${JSON.stringify(unbacked).slice(0, 160)}`);
       }
 
       const dump = readDump(latFile);
@@ -300,6 +323,23 @@ function readDump(path: string): LatencyDump | undefined {
     if (PEER === "local") {
       const roles = s.sides.map(x => x.side.res?.role);
       ok(`s${n}: exactly one side was master`, roles.filter(r => r === 2).length === 1, `roles=${roles.join("/")}`);
+      if (MODE === "battle") {
+        // The orchestrator may compare the two REPORTS (never the RAM — the
+        // sides only ever saw their own). This is M3's mirror, rebuilt from
+        // what each side printed: one RNG list, one outcome seen from both
+        // ends, and every move one side used is a move the other side saw.
+        const [a, b] = s.sides.map(x => x.side.battle);
+        const mirror = !!a && !!b
+          && JSON.stringify(a.rng) === JSON.stringify(b.rng)
+          && a.hp === b.foeHp && a.foeHp === b.hp
+          && ((a.knockout === "foe" && b.knockout === "us") || (a.knockout === "us" && b.knockout === "foe"))
+          && a.turns.every((t: any) => b.turns.some((u: any) => u.em === t.pm))
+          && b.turns.every((t: any) => a.turns.some((u: any) => u.em === t.pm));
+        s.sides.forEach(x => { (x as any).battleMirror = mirror; });
+        ok(`s${n}: ZERO DESYNC — the two sides' reports mirror (rng, final HP, knockout, moves)`, mirror,
+           a && b ? `A hp=${a.hp}/foe=${a.foeHp} ko=${a.knockout} | B hp=${b.hp}/foe=${b.foeHp} ko=${b.knockout} rngEq=${JSON.stringify(a.rng) === JSON.stringify(b.rng)}`
+             : "missing BATTLECHECK");
+      }
     }
     perSession.push({
       session: n, retries: s.retries,
@@ -307,7 +347,10 @@ function readDump(path: string): LatencyDump | undefined {
         tag: x.tag, exit: x.side.code, invariants: !!x.side.block?.ok,
         // `desync` is the mode's own gate, so the summary means the same thing in
         // both packs: "no byte was lost or shifted on this side".
-        desync: MODE === "trade" ? !x.side.block?.confined?.ok : !x.side.block?.mirror?.ok,
+        desync: MODE === "trade" ? !x.side.block?.confined?.ok
+          : MODE === "battle" ? !x.side.block?.mirror?.ok || x.side.battle?.ledger?.ok !== true
+            || (PEER === "local" && (x as any).battleMirror !== true)
+          : !x.side.block?.mirror?.ok,
         mirror: !!x.side.block?.mirror?.ok, confined: x.side.block?.confined,
         exchanges: x.side.block?.exchanges,
         exchangeDone: !!x.side.block?.exchangeDone,
@@ -315,6 +358,12 @@ function readDump(path: string): LatencyDump | undefined {
           swapped: !!x.side.trade?.swapped, postTrade: !!x.side.trade?.post?.ok,
           identity: x.side.trade?.identity, gave: x.side.trade?.gave,
           confirms: x.side.trade?.confirms,
+        } : {}),
+        ...(MODE === "battle" ? {
+          knockout: x.side.battle?.knockout, hp: x.side.battle?.hp, foeHp: x.side.battle?.foeHp,
+          ledger: x.side.battle?.ledger?.ok, turns: x.side.battle?.turns?.length,
+          rounds: x.side.battle?.rounds, nudges: x.side.battle?.nudges, battleBytes: x.side.battle?.battleBytes,
+          role: x.side.res?.role,
         } : {}),
       })),
       rtt: stats(sessionRtt),
@@ -355,12 +404,22 @@ function readDump(path: string): LatencyDump | undefined {
     const wanted = perSession.reduce((a, s) => a + s.sides.length, 0);
     ok(`every side of every session completed its swap`, swaps === wanted, `${swaps}/${wanted}`);
   }
+  if (MODE === "battle") {
+    const kos = perSession.reduce((a, s) => a + s.sides.filter((x: any) => x.knockout && x.knockout !== "none").length, 0);
+    const wanted = perSession.reduce((a, s) => a + s.sides.length, 0);
+    ok(`every side of every session reached a knockout`, kos === wanted, `${kos}/${wanted}`);
+    // M5e's gate is two PROCESSES, not two nodes (wq#3201): the cross-node half
+    // belongs to wq#484/wq#3200. Reported, never gated, so this pack cannot be
+    // mistaken for a cross-node one either way.
+    console.log(`NOTE: transport peer=${PEER}${PEER === "local" ? " — same host; cross-node is wq#484's gate, not M5e's" : ""}`);
+  } else {
   ok(`cross-node: the peer ran on another machine`, PEER === "remote",
      PEER === "remote" ? `peerNode=${PEER_NODE}` : "peer=local — baseline only, the M5d gate is NOT met");
   }
+  }
 
   writeFileSync(join(EVIDENCE, `${ART}-summary.json`), JSON.stringify({
-    ticket: "wq#484", generated: new Date().toISOString(),
+    ticket: MODE === "battle" ? "wq#3201" : "wq#484", generated: new Date().toISOString(),
     mode: MODE, control: CONTROL,
     ...(MODE === "trade" ? { asymmetry: { patch: CONTROL ? null : ASYM, patchedTag: PATCHED_TAG, offer: OFFER, want: WANT } } : {}),
     transport: { peer: PEER, bind: BIND, host: HOST, localNode: hostname(), peerNode: PEER_NODE },

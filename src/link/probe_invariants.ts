@@ -78,27 +78,38 @@ redFails("RED post-trade: party count changed",
    verifyPostTrade({ before: mine, after: afterOk, slot: 0, peerMon, count: 6, countAfter: 5 }), "count_stable");
 
 // ---- battle ledger (one-sided) ----
+// wq#3201: the wire carries the move's LIST INDEX; the id comes from the peer's
+// advertised move set. Windows mimic LinkBattleExchangeData: the tagged index
+// ($60|i, Serial_ExchangeNybble) repeated, then zero padding.
 const OWN = [33, 45, 52, 43];
-const wire = [52, 84, 33, 0x60];
+const FOE = [10, 45, 52, 43];
+const win = (idx: number) => [0xFE, 0x60 | idx, 0x60 | idx, 0x60 | idx, 0, 0, 0];
 const turns = [
-  { round: 1, playerMove: 33, enemyMove: 52, hp: 57, foeHp: 51, settled: true },
-  { round: 2, playerMove: 45, enemyMove: 84, hp: 50, foeHp: 40, settled: true },
+  { round: 1, playerMove: 33, enemyMove: 52, enemyIndex: 2, wire: win(2), hp: 57, foeHp: 51, settled: true },
+  { round: 2, playerMove: 45, enemyMove: 43, enemyIndex: 3, wire: win(3), hp: 50, foeHp: 40, settled: true },
 ];
-const bl = verifyBattleLedger({ turns, wireBytes: wire, ownMoveIds: OWN });
+const L = (t: any[]) => verifyBattleLedger({ turns: t, enemyMoveIds: FOE, ownMoveIds: OWN });
+const bl = L(turns);
 ok("GREEN: consistent battle ledger passes", bl.ok, bl.ok ? `checks=${bl.checked.join(",")}` : JSON.stringify(bl.failures));
 
-redFails("RED battle: enemy move our RAM shows but the wire never carried",
-  verifyBattleLedger({ turns: [...turns, { round: 3, playerMove: 33, enemyMove: 99, hp: 40, foeHp: 30, settled: true }], wireBytes: wire, ownMoveIds: OWN }), "enemy_move_on_wire");
+redFails("RED battle: enemy choice our RAM shows but this turn's bytes never carried",
+  L([turns[0], { ...turns[1], wire: win(2) }]), "enemy_move_on_wire");
+redFails("RED battle: the id was on the wire, but only inside the party block (old vacuous anchor)",
+  L([turns[0], { ...turns[1], wire: [0xFE, 43, 43, 0, 0] }]), "enemy_move_on_wire");
+redFails("RED battle: an untagged index byte is padding, not a choice",
+  L([turns[0], { ...turns[1], wire: [0xFE, 3, 3, 0, 0] }]), "enemy_move_on_wire");
+redFails("RED battle: index arrived but maps to a different move than our RAM reports",
+  L([turns[0], { ...turns[1], enemyMove: 10 }]), "enemy_move_advertised");
 redFails("RED battle: we 'used' a move our mon does not know",
-  verifyBattleLedger({ turns: [{ ...turns[0], playerMove: 120 }], wireBytes: [...wire, 120], ownMoveIds: OWN }), "own_move_known");
+  L([{ ...turns[0], playerMove: 120 }]), "own_move_known");
 redFails("RED battle: our HP rose unaccounted",
-  verifyBattleLedger({ turns: [turns[0], { ...turns[1], hp: 99 }], wireBytes: wire, ownMoveIds: OWN }), "own_hp_monotonic");
+  L([turns[0], { ...turns[1], hp: 99 }]), "own_hp_monotonic");
 redFails("RED battle: foe HP rose unaccounted",
-  verifyBattleLedger({ turns: [turns[0], { ...turns[1], foeHp: 99 }], wireBytes: wire, ownMoveIds: OWN }), "foe_hp_monotonic");
+  L([turns[0], { ...turns[1], foeHp: 99 }]), "foe_hp_monotonic");
 redFails("RED battle: settled turn where nothing changed (duplicate/stall)",
-  verifyBattleLedger({ turns: [turns[0], { ...turns[0], round: 2 }], wireBytes: wire, ownMoveIds: OWN }), "turn_had_effect");
+  L([turns[0], { ...turns[0], round: 2 }]), "turn_had_effect");
 redFails("RED battle: no settled turns at all is FAIL-CLOSED, not a pass",
-  verifyBattleLedger({ turns: [{ ...turns[0], settled: false }], wireBytes: wire, ownMoveIds: OWN }), "has_settled_turns");
+  L([{ ...turns[0], settled: false }]), "has_settled_turns");
 redFails("RED combine: zero verdicts is fail-closed", combine(), "combine");
 ok("combine rolls up mixed verdicts as failed", !combine(gv, verifyTradeBlock(good.slice(0, 10), O)).ok, "");
 

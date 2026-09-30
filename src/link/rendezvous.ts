@@ -101,6 +101,11 @@ export interface CoreView {
   step(n: number, key?: number): Promise<void>;
   /** press A this step */
   keyA: number;
+  /** wCurrentMenuItem ($CC26), or undefined while the room menu is not yet
+   *  taking input. Optional: without it room select can only take the menu's
+   *  default entry, which is TRADE CENTER (wq#3201). */
+  menuCursor?(): number | undefined;
+  keyDown?: number;
 }
 
 const TRADE_CENTER_MAP = 0xEF;
@@ -168,8 +173,11 @@ export class Rendezvous {
       if (this.closed) return this.abort("peer disconnected during the handshake");
       if (Date.now() > deadlineH)
         return this.abort(`handshake timeout after ${handshakeMs}ms (role=${this.core.role()}, ls=${this.core.linkState()})`);
-      await this.core.step(8, this.core.keyA);
-      await this.core.step(22);
+      // Per frame, not per batch (wq#3201, measured): an 8-frame A hold that
+      // straddles the room menu opening selects entry 0 before ROOM_SELECT ever
+      // runs, and the first A pressed wins for BOTH sides. Stop the instant the
+      // menu text is on screen.
+      for (let i = 0; i < 30 && !this.core.onMenu(); i++) await this.core.step(1, i < 8 ? this.core.keyA : undefined);
     }
 
     // --- ROOM_SELECT -------------------------------------------------------
@@ -191,7 +199,9 @@ export class Rendezvous {
         if (other === TRADE_CENTER_MAP || other === COLOSSEUM_MAP) {
           const theirRoom = other === TRADE_CENTER_MAP ? ROOM.TRADE_CENTER : ROOM.COLOSSEUM;
           const r = resolveRoom(this.room, theirRoom, this.core.role());
-          this.room = r.room; this.yielded = r.yielded;
+          // Report the room we are standing in, not the one resolveRoom keeps
+          // for a master: a master that landed elsewhere did not get its way.
+          this.room = theirRoom; this.yielded = r.yielded;
           this.to("IN_ROOM", `landed in the peer's room ($${theirRoom.toString(16)}), yielded=${r.yielded}`);
           return this.result(true);
         }
@@ -206,8 +216,18 @@ export class Rendezvous {
           socketAlive,  // retryable only when the peer is still there
         );
       }
-      // press A only while our own menu/dialog is up — never blind-tap
-      if (this.core.onMenu() || this.core.hasDialog()) await this.core.step(6, this.core.keyA);
+      // press A only while our own menu/dialog is up — never blind-tap. On the
+      // menu, walk the cursor to our room first: the menu opens on entry 0
+      // (TRADE CENTER), so a bare A can never select COLOSSEUM (wq#3201). And
+      // the FIRST side to press A imposes its entry on the other
+      // (LinkMenu.useEnemyMenuSelection, $01:5C98), so an early A on the wrong
+      // entry sends both sides to the wrong room.
+      const onMenu = this.core.onMenu();
+      const cur = onMenu ? this.core.menuCursor?.() : undefined;
+      const want = this.room - ROOM.TRADE_CENTER;
+      if (onMenu && this.core.menuCursor && this.core.keyDown !== undefined) {
+        if (cur !== undefined) await this.core.step(6, cur === want ? this.core.keyA : this.core.keyDown);
+      } else if (onMenu || this.core.hasDialog()) await this.core.step(6, this.core.keyA);
       await this.core.step(24);
     }
 

@@ -324,23 +324,43 @@ export function verifyPostTrade(i: PostTradeInput): Verdict {
 // Two-sided version (battle.ts): mirrored = pmA===emB && pmB===emA &&
 //   hp(A)===foeHp(B) && hp(B)===foeHp(A).
 // One-sided version: we keep only OUR (playerMove, enemyMove, hp, foeHp) per
-// settled turn, and require that the enemyMove our ROM reports was actually
-// DELIVERED ON THE WIRE — a move byte our RAM shows but that never arrived is
-// the remote-peer equivalent of a mirror break. Per doctrine, only settled
+// settled turn, and require that the enemyMove our ROM reports is backed by
+// bytes that actually ARRIVED — a move our RAM shows that the wire never carried
+// is the remote-peer equivalent of a mirror break. Per doctrine, only settled
 // samples are admissible (battle.ts: a torn mid-animation sample reports a
 // mismatch that resolves one round later).
+//
+// wq#3201: WHAT the wire carries, read out of LinkBattleExchangeData
+// ($0F:5605): `ld a,[wPlayerMoveListIndex] ... ld [wSerialExchangeNybbleSendData],a`.
+// A turn sends the move's LIST INDEX (0-3; 4+ is a switch, $0D-$0F no-action/
+// struggle/run), never the move id. The receiver maps it through
+// wEnemyMonMoves, which was filled from the party block. So the id arrives in
+// two halves and the anchor checks both: the index is in THIS turn's received
+// bytes, and indexing the move set the peer ADVERTISED in its block yields the
+// move our RAM reports. The previous anchor — "the move id appears somewhere in
+// the received bytes" — was vacuous: every id the peer knows crosses inside
+// the 415-byte block, so it could not fail on a real session.
+// On the wire the index is tagged: Serial_ExchangeNybble ($00:22C3) sends
+// `wSerialExchangeNybbleSendData + $60` and accepts a received byte only when
+// its high nybble is $6. So index i travels as $60|i, a value neither the zero
+// padding nor the $FE idle byte can impersonate.
+export const NYBBLE_TAG = 0x60;
 export interface TurnSample {
   round: number;
   playerMove: number;    // what we picked
   enemyMove: number;     // what our ROM says the peer picked
+  /** wEnemyMoveListIndex: the index our ROM took off the wire this turn */
+  enemyIndex: number;
+  /** bytes the bridge received from the peer since the previous sample */
+  wire: number[];
   hp: number; foeHp: number;
   settled: boolean;      // caller asserts the settle+bothAtMenu discipline
 }
 
 export interface BattleLedgerInput {
   turns: TurnSample[];
-  /** bytes the bridge actually received from the peer this battle */
-  wireBytes: number[];
+  /** the active peer mon's four move ids, as its RECEIVED party block states them */
+  enemyMoveIds: number[];
   ownMoveIds: number[];  // move ids our active mon actually knows
   maxMoveId?: number;
 }
@@ -348,7 +368,6 @@ export interface BattleLedgerInput {
 export function verifyBattleLedger(i: BattleLedgerInput): Verdict {
   const v = verdict();
   const maxMove = i.maxMoveId ?? 165;
-  const wire = new Set(i.wireBytes.map(b => b & 0xFF));
 
   const settled = i.turns.filter(t => t.settled);
   if (!settled.length) { v.fail("has_settled_turns", "no settled turns — nothing is verifiable (fail-closed)"); return v; }
@@ -362,9 +381,13 @@ export function verifyBattleLedger(i: BattleLedgerInput): Verdict {
     if (i.ownMoveIds.length && !i.ownMoveIds.includes(t.playerMove))
       v.fail("own_move_known", `${tag} we 'used' move ${t.playerMove}, not in our move set [${i.ownMoveIds}]`);
     if (t.enemyMove === 0 || t.enemyMove > maxMove) v.fail("enemy_move_range", `${tag} enemyMove=${t.enemyMove}`);
-    // THE one-sided anchor: the peer's move must have physically arrived.
-    else if (!wire.has(t.enemyMove))
-      v.fail("enemy_move_on_wire", `${tag} enemyMove=${t.enemyMove} never arrived over the link — our RAM shows a move the peer never sent`);
+    // THE one-sided anchor: the peer's choice must have physically arrived.
+    else {
+      if (!t.wire.some(b => (b & 0xFF) === (NYBBLE_TAG | t.enemyIndex)))
+        v.fail("enemy_move_on_wire", `${tag} enemyIndex=${t.enemyIndex} ($${(NYBBLE_TAG | t.enemyIndex).toString(16)}) is not among the ${t.wire.length} bytes received this turn — our RAM shows a choice the peer never sent`);
+      if (i.enemyMoveIds[t.enemyIndex] !== t.enemyMove)
+        v.fail("enemy_move_advertised", `${tag} enemyMove=${t.enemyMove} but the peer's block advertises [${i.enemyMoveIds}] at index ${t.enemyIndex}`);
+    }
     if (t.hp > 0 && t.foeHp > 0 && prev) {
       if (t.hp > prev.hp) v.fail("own_hp_monotonic", `${tag} hp rose ${prev.hp} -> ${t.hp} with no item/switch accounted`);
       if (t.foeHp > prev.foeHp) v.fail("foe_hp_monotonic", `${tag} foe hp rose ${prev.foeHp} -> ${t.foeHp}`);
