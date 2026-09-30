@@ -1,0 +1,20 @@
+M5d per-transfer latency — mode=trade, 3 sessions, 37878 master round trips
+transport: peer=local bind=100.117.66.102 host=100.117.66.102 localNode=lumen peerNode=lumen
+BASELINE: both sides on this host — one kernel, one clock. NOT a cross-node measurement.
+
+rtt  (sync1 written -> peer answer parsed, wall clock): n=37878 min=67.9us p50=912.0us p90=1421.6us p99=3031.8us max=233753.2us mean=1466.3us total=55540.8ms
+serve (peer sync1 -> our answer written, OUR cost): n=37756 min=104.7us p50=1893.1us p90=2828.5us p99=5838.0us max=1666901.2us mean=2633.4us total=99425.9ms
+      < 50us               0    0.0%  
+    50..100us             39    0.1%  
+   100..200us            421    1.1%  #
+   200..400us           2065    5.5%  ####
+   400..800us           9610   25.4%  ####################
+   800..1600us         23176   61.2%  ################################################
+  1600..3200us          2215    5.8%  #####
+  3200..6400us           109    0.3%  
+  6400..12800us           18    0.0%  
+ 12800..25600us           60    0.2%  
+ 25600..51200us           15    0.0%  
+ 51200..102400us          73    0.2%  
+102400..204800us          70    0.2%  
+>= 204800us                7    0.0%  

@@ -1,0 +1,55 @@
+=== M5d: 1 consecutive two-process sessions ===
+transport: peer=local bind=100.117.66.102 host=100.117.66.102 localNode=lumen peerNode=lumen
+NOTE: peer=local — both sides on THIS host. Real sockets on a real
+      address, but ONE kernel and ONE clock. This is the M5d baseline,
+      not the cross-node measurement.
+--- session 1 side A exit=0
+PASS s1/A: rendezvoused :: IN_ROOM
+PASS s1/A: seated at its own chair :: {"map":239,"x":3,"y":4}
+PASS s1/A: ROM finished the 415-byte exchange :: linkState=50
+PASS s1/A: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s1/A: NEGATIVE CONTROL — the desync gate REFUSES a clone pair :: ok=false crossed=false moved=[]
+PASS s1/A: the block really crossed the wire :: exchanges=701
+PASS s1/A: NEGATIVE CONTROL — a clone swap is correctly INVISIBLE :: swapped=false note=no swap in 80 iterations (1 confirm attempts)
+PASS s1/A: captured its own latency series (master/rtt) :: role=2 rtt=16646 serve=0
+    rtt s1/A: n=16646 min=79.8us p50=860.7us p90=1419.1us p99=2764.8us max=208220.1us mean=1220.7us total=20319.2ms
+    pacing A: {"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}
+--- session 1 side B exit=0
+PASS s1/B: rendezvoused :: IN_ROOM
+PASS s1/B: seated at its own chair :: {"map":239,"x":6,"y":4}
+PASS s1/B: ROM finished the 415-byte exchange :: linkState=50
+PASS s1/B: M5b invariants PASS on the received block :: length,no_FE,party_count,species_terminator,mon_fields checks []
+PASS s1/B: NEGATIVE CONTROL — the desync gate REFUSES a clone pair :: ok=false crossed=false moved=[]
+PASS s1/B: the block really crossed the wire :: exchanges=701
+PASS s1/B: NEGATIVE CONTROL — a clone swap is correctly INVISIBLE :: swapped=false note=no swap in 80 iterations (1 confirm attempts)
+PASS s1/B: captured its own latency series (slave/serve) :: role=1 rtt=0 serve=16621
+    rtt s1/B: n=0 min=n/aus p50=n/aus p90=n/aus p99=n/aus max=n/aus mean=n/aus total=0.0ms
+    pacing B: {"queuedIn":701,"served":701,"blocked":4390,"forced":7,"forcedDuringBlock":1,"collisions":0,"stillQueued":0,"gate":{"tooSoon":2120,"notArmed":5,"internal":0,"irq":0,"staged":0,"taken":2265},"forcedAt":["$20b4","$20b4","$ff87","$20b4","$21b0","$4b35","$21ce"]}
+PASS s1: exactly one side was master :: roles=2/1
+
+M5d per-transfer latency — mode=trade, 1 sessions, 16646 master round trips
+transport: peer=local bind=100.117.66.102 host=100.117.66.102 localNode=lumen peerNode=lumen
+BASELINE: both sides on this host — one kernel, one clock. NOT a cross-node measurement.
+
+rtt  (sync1 written -> peer answer parsed, wall clock): n=16646 min=79.8us p50=860.7us p90=1419.1us p99=2764.8us max=208220.1us mean=1220.7us total=20319.2ms
+serve (peer sync1 -> our answer written, OUR cost): n=16621 min=108.9us p50=1773.7us p90=2796.0us p99=4954.7us max=401729.4us mean=2310.0us total=38394.3ms
+      < 50us               0    0.0%  
+    50..100us              9    0.1%  
+   100..200us            118    0.7%  #
+   200..400us           1076    6.5%  ######
+   400..800us           4978   29.9%  #########################
+   800..1600us          9386   56.4%  ################################################
+  1600..3200us           941    5.7%  #####
+  3200..6400us            65    0.4%  
+  6400..12800us            6    0.0%  
+ 12800..25600us           21    0.1%  
+ 25600..51200us            6    0.0%  
+ 51200..102400us          23    0.1%  
+102400..204800us          16    0.1%  
+>= 204800us                1    0.0%  
+
+PASS NEGATIVE CONTROL — every side of every session was refused :: 2/2
+NOTE: this pack is the control. Its content is failures BY DESIGN;
+      cite m5d-trade-summary.json for the measurement.
+
+18 PASS / 0 FAIL   (evidence: /home/lumen/worktrees/wq484-a4/docs/multiplayer/evidence/M5d)

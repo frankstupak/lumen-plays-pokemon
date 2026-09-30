@@ -1,0 +1,21 @@
+
+=== docs/multiplayer/evidence/M5d/m5d-trade-latency-s3-B.json
+    tag=B role=1 dial 100.117.66.102:9851 — serve (slave holds)
+    all     : n=14228 min=108.6us p50=1930.0us p90=2966.1us p99=5625.8us max=372980.7us mean=2623.0us total=37319.8ms
+    pre-415 : n=13813 min=108.6us p50=1927.9us p90=2960.1us p99=5652.7us max=372980.7us mean=2633.2us total=36372.8ms
+    last 415: n=415 min=1771.1us p50=2076.9us p90=3083.3us p99=4946.0us max=5774.9us mean=2282.0us total=947.0ms
+    p99 payload / p99 all = 0.879  (<<1 means the tail is NOT in the payload)
+      < 50us               0    0.0%  
+    50..100us              0    0.0%  
+   100..200us             77    0.5%  
+   200..400us            398    2.8%  ##
+   400..800us            118    0.8%  
+   800..1600us            13    0.1%  
+  1600..3200us         12415   87.3%  ################################################
+  3200..6400us          1094    7.7%  ####
+  6400..12800us           27    0.2%  
+ 12800..25600us           25    0.2%  
+ 25600..51200us            7    0.0%  
+ 51200..102400us          26    0.2%  
+102400..204800us          25    0.2%  
+>= 204800us                3    0.0%  

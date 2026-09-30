@@ -1,0 +1,11 @@
+[A] listen 100.117.66.102:9851
+[A] AWAIT_PARTNER waiting up to 120000ms for the peer socket
+[A] HANDSHAKE driving attendant dialog
+[A] ROOM_SELECT selecting $d0 (role=1)
+[A] IN_ROOM map $ef
+RESULT {"tag":"A","ok":true,"phase":"IN_ROOM","room":208,"yielded":false,"retryable":false,"role":1,"map":239,"linkState":0,"elapsedMs":10637,"telemetry":{"sent":0,"received":0,"resends":0,"slaveServed":30,"forcedSbWrites":0,"suppressedDupIrq":0,"queuedIn":30,"blocked":220,"collisions":0,"forced":6,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":220},"forcedAt":[8372,8372,8372,16394,8760,8760]}}
+[A] continuation: SLAVE->right seat (6,4)
+BLOCKCHECK {"tag":"A","ok":true,"checks":["length","no_FE","party_count","species_terminator","mon_fields"],"failures":[],"linkState":50,"engagedAt":2,"seat":{"want":{"map":239,"x":6,"y":4},"at":{"map":239,"x":6,"y":4},"ok":true},"exchangeDone":true,"mirror":{"ok":true,"diffs":0},"mirrorAll":{"ok":true,"diffs":0},"peerCount":1,"peerSlot0":{"species":178,"level":20,"hp":57,"maxHp":57,"moves":[10,45,52,43]},"exchanges":703,"pacing":{"queuedIn":703,"served":703,"blocked":7821,"forced":8,"forcedDuringBlock":2,"collisions":0,"stillQueued":0,"gate":{"tooSoon":1925,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":5896},"forcedAt":["$20b4","$20b4","$20b4","$400a","$2238","$2238","$20b4","$21b0"]}}
+[A] peer closed; linger ends
+LATENCY {"tag":"A","rtt":{"n":0,"minUs":null,"p50Us":null,"p90Us":null,"p99Us":null,"maxUs":null,"meanUs":null,"sumUs":0},"serve":{"n":640,"minUs":108.557,"p50Us":311.332,"p90Us":1479.892,"p99Us":159293.224,"maxUs":2743605.417,"meanUs":8181.036421874999,"sumUs":5235863.31},"buckets":[0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
+[A] latency samples -> /home/lumen/worktrees/wq484-a3/docs/multiplayer/evidence/M5d/m5d-latency-s2-A.json (0 rtt, 640 serve)
