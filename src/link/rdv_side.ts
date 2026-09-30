@@ -28,9 +28,12 @@ import { SerialBridge } from "./bridge";
 import { Rendezvous, CoreView, RoomName, ROOM_MAP, ROOM as ROOM_ID } from "./rendezvous";
 import { setSlice, clearSlice, transferSliceDivisor } from "./lockstep";
 import { offsetsFromSymbols, verifyTradeBlock, viewBlock, readPartyBlock, diffBlocks,
-  diffSections, verifyPostTrade } from "./invariants";
+  diffSections, verifyPostTrade, verifyBattleLedger, NYBBLE_TAG } from "./invariants";
+import { inBattleOf, rngListOf, movesOf } from "./battle_menu";
+import { driveBattle } from "./battle_side";
 import { readLinkState } from "./linkstate";
 import { ASYM_PATCHES, assertPatchInBlock, expectedAsymSections, driveTradeConfirm } from "./trade_side";
+import { MENU } from "./trade_menu";
 import { writeIdentity, readEnemyIdentity, monKey } from "./identity";
 import { readParty, slotKey } from "./party";
 import { ckptPath, linkEventsDir, romPath } from "../fixtures";
@@ -74,6 +77,11 @@ const IDENT = process.env.RDV_IDENT ?? "";
 const ASYM = process.env.RDV_ASYM ?? "";
 const OFFER = Number(process.env.RDV_OFFER ?? 0);
 const WANT = Number(process.env.RDV_WANT ?? 0);
+// wq#3201 (M5e): RDV_CONTINUE=battle carries on past the party block into a link
+// battle driven one-sided to knockout (battle_side.ts). Needs RDV_ROOM=COLOSSEUM.
+//   RDV_MOVE_SLOT — our move slot (0-3), every turn. Must be a damaging move:
+//                   the ledger fails a settled turn in which no HP moved.
+const MOVE_SLOT = Number(process.env.RDV_MOVE_SLOT ?? 0);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** wLinkState values CONFIRMED in vivo by the M3 in-process trade (trade.ts):
@@ -139,6 +147,16 @@ const LS_TRADE_MENU = 50;
     onMenu: () => (scr.textGrid?.() ?? []).join("\n").includes("TRADE CENTER"),
     hasDialog: () => ((dlg.boxLines?.() ?? []).filter(Boolean).join("").length > 0),
     keyA: KEYS.A,
+    // LinkMenu ($01:5C0A) prints "TRADE CENTER" BEFORE it initialises the menu
+    // (max item 2, watched keys A|B), so until both read back the cursor is a
+    // stale value from the attendant's YES/NO box — and trusting it sent both
+    // sides to the trade center (wq#3201, measured).
+    menuCursor: () => {
+      const m = emu.mem();
+      const live = (m[MENU.maxItem] & 0xFF) === 2 && (m[MENU.watchedKeys] & 0xFF) === 0x03;
+      return live ? m[MENU.currentItem] & 0xFF : undefined;
+    },
+    keyDown: KEYS.DOWN,
     step: async (n: number, key?: number) => {
       for (let i = 0; i < n; i++) {
         if (bridge.closed) break;
@@ -193,7 +211,12 @@ const LS_TRADE_MENU = 50;
   // block clocked at one byte per frame is 400 frames of a partner sitting in a
   // serial wait loop. One slice ~= one transfer window (lockstep.ts).
   const CONTINUE = process.env.RDV_CONTINUE ?? "";
-  if (res.ok && (CONTINUE === "block" || CONTINUE === "trade")) {
+  const BATTLE = CONTINUE === "battle";
+  // The ROM's own completion signal for the block differs by room: the trade
+  // center puts its menu up (wLinkState 50), the colosseum opens the battle
+  // (wIsInBattle set, wLinkState 4 — battle.ts's header).
+  const blockDone = BATTLE ? () => inBattleOf(emu.mem(), sym) !== 0 : () => core.linkState() === LS_TRADE_MENU;
+  if (res.ok && (CONTINUE === "block" || CONTINUE === "trade" || BATTLE)) {
     const master = core.role() === 2;
     const seat = master ? { x: 3, y: 4, face: KEYS.RIGHT } : { x: 6, y: 4, face: KEYS.LEFT };
     // The room we actually resolved to, not the one we asked for: room select
@@ -230,11 +253,11 @@ const LS_TRADE_MENU = 50;
       forcedBefore = bridge.telemetry.forced;
       setSlice(emu.core, FINE);
       try {
-        for (let r = 0; r < 40 && !bridge.closed && core.linkState() !== LS_TRADE_MENU; r++) {
+        for (let r = 0; r < (BATTLE ? 60 : 40) && !bridge.closed && !blockDone(); r++) {
           await core.step(8 * FINE, KEYS.A);
           await core.step(24 * FINE);
         }
-      } finally { clearSlice(emu.core); }
+      } finally { if (!BATTLE) clearSlice(emu.core); }   // a battle keeps the fine slice to knockout
     } catch (e: any) {
       console.log(`[${TAG}] continuation error: ${String(e?.message ?? e).slice(0, 120)}`);
     }
@@ -276,7 +299,7 @@ const LS_TRADE_MENU = 50;
       linkState: core.linkState(), engagedAt: reached,
       seat: { want: { map: seatMap, x: seat.x, y: seat.y }, at: seated,
         ok: !!seated && seated.map === seatMap && seated.x === seat.x && seated.y === seat.y },
-      exchangeDone: core.linkState() === LS_TRADE_MENU,
+      exchangeDone: blockDone(),
       mirror: { ok: mirror.ok, diffs: mirror.diffs, first: mirror.first, where: mirror.where },
       mirrorAll: { ok: mirrorAll.ok, diffs: mirrorAll.diffs, where: mirrorAll.where },
       confined,
@@ -350,6 +373,58 @@ const LS_TRADE_MENU = 50;
         gave: offerBefore,
         linkState: core.linkState(),
         exchanges: bridge.telemetry.sent + bridge.telemetry.slaveServed,
+      }));
+    }
+
+    // ---- BATTLE: turn by turn to a knockout (wq#3201) -----------------------
+    //
+    // M3 ran this in-process with both cores and verified it by mirroring the
+    // two RAMs. Here the verdict is verifyBattleLedger over OUR settled turns,
+    // each enemy move anchored to the bytes that arrived during that turn and
+    // to the move set the peer's block advertised. The bridge's byte log is the
+    // wire record; only bytes received from now on count as battle traffic.
+    if (BATTLE) {
+      const received = () => bridge.log.filter(e => e.in >= 0).map(e => e.in);
+      const rxBeforeBattle = received().length;
+      const rng = rngListOf(emu.mem());
+      const ownMoves = movesOf(emu.mem(), sym);
+      const enemyMoves = view.mons[0]?.moves ?? [];
+      console.log(`[${TAG}] battle: slot ${MOVE_SLOT} (move ${ownMoves[MOVE_SLOT]}), peer advertises [${enemyMoves}]`);
+      let fight;
+      const t0 = Date.now();
+      try {
+        fight = blockDone() && !bridge.closed ? await driveBattle({
+          mem: () => emu.mem(), sym,
+          grid: () => (scr.textGrid?.() ?? []).join("\n"),
+          step: (n, key) => core.step(n, key),
+          closed: () => bridge.closed,
+          received: () => received().slice(rxBeforeBattle),
+          fine: FINE, slot: MOVE_SLOT,
+          describe: () => {
+            const m = emu.mem(), c = emu.core as any;
+            return `pc=$${(c.programCounter | 0).toString(16)} SC=$${(c.memory[0xFF02] & 0xFF).toString(16)} ` +
+              `nyb=$${(m[sym.addr("wSerialExchangeNybbleReceiveData")] & 0xFF).toString(16)} ` +
+              `cur=${m[MENU.currentItem] & 0xFF} rx=${received().length} queued=${bridge.queued} pending=${bridge.pending}`;
+          },
+          log: s => console.log(`[${TAG}]${s}`),
+        }) : undefined;
+      } finally { clearSlice(emu.core); }
+      const ledger = fight ? verifyBattleLedger({ turns: fight.turns, enemyMoveIds: enemyMoves, ownMoveIds: ownMoves }) : undefined;
+      console.log("BATTLECHECK " + JSON.stringify({
+        tag: TAG, role: core.role(), slot: MOVE_SLOT,
+        started: blockDone() || !!fight, ended: !!fight?.ended, knockout: fight?.knockout ?? "none",
+        hp: fight?.hp, foeHp: fight?.foeHp, note: fight?.note ?? "battle never opened",
+        rng, ownMoves, enemyMoves,
+        ledger: ledger ? { ok: ledger.ok, checks: ledger.checked, failures: ledger.failures } : undefined,
+        turns: fight?.turns.map(t => ({ r: t.round, pm: t.playerMove, em: t.enemyMove, ei: t.enemyIndex,
+          hp: t.hp, foe: t.foeHp, wire: t.wire.length, hits: t.wire.filter(b => b === (NYBBLE_TAG | t.enemyIndex)).length,
+          bytes: Buffer.from(t.wire).toString("hex") })),
+        battleMs: Date.now() - t0, rounds: fight?.rounds, nudges: fight?.nudges, commits: fight?.commits, misfires: fight?.misfires,
+        phases: fight?.phases,
+        battleBytes: received().length - rxBeforeBattle,
+        exchanges: bridge.telemetry.sent + bridge.telemetry.slaveServed,
+        forced: bridge.telemetry.forced, stalled: linkStalled || undefined,
+        closedWhy: bridge.closedWhy || undefined,
       }));
     }
   }

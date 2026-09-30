@@ -43,22 +43,11 @@ import { Screen } from "../screen";
 import { SerialBus } from "./serialbus";
 import { installSerialHook } from "./hook";
 import { runCycles, setSlice, clearSlice } from "./lockstep";
+import { COLOSSEUM_MAP, LINK_STATE_START_BATTLE, BATTLE_ADDR as ADDR, BattleView, BattlePhase,
+  battlePhaseOf, menuKeyFor, hpOf, foeHpOf, inBattleOf, rngListOf, movesOf, readBattleView } from "./battle_menu";
 
-export const COLOSSEUM_MAP = 0xF0;
-export const LINK_STATE_START_BATTLE = 3;
-export const LINK_STATE_BATTLING = 4;
-
-const ADDR = {
-  curMap: 0xD35E,
-  linkState: 0xD12B,
-  menuCursor: 0xCC26,
-  menuMax: 0xCC28,
-  menuKeys: 0xCC29,
-  playerMove: 0xCCDC,
-  enemyMove: 0xCCDD,
-  rngList: 0xD148,
-  rngListLen: 9,
-};
+export { COLOSSEUM_MAP, LINK_STATE_START_BATTLE, LINK_STATE_BATTLING } from "./battle_menu";
+export type { BattleView } from "./battle_menu";
 
 export interface BattleSide {
   tag: string;
@@ -66,17 +55,6 @@ export interface BattleSide {
   sym: SymbolTable;
   nav: Navigator;
   scr: Screen;
-}
-
-/** What a brain is shown when it is asked to choose a move. */
-export interface BattleView {
-  tag: string;
-  turn: number;
-  myNick: string; foeNick: string;
-  mySpecies: number; myLevel: number; myHp: number; myMaxHp: number;
-  foeSpecies: number; foeLevel: number; foeHp: number; foeMaxHp: number;
-  moves: number[]; pp: number[];
-  lastFoeMove: number;
 }
 
 export interface LinkBattleOptions {
@@ -189,18 +167,11 @@ export class LinkBattleSession {
   }
 
   private m(s: BattleSide, a: number): number { return s.emu.mem()[a] & 0xFF; }
-  private r16(s: BattleSide, name: string): number {
-    const m = s.emu.mem(), a = s.sym.addr(name);
-    return ((m[a] & 0xFF) << 8) | (m[a + 1] & 0xFF);
-  }
-  private hp(s: BattleSide): number { return this.r16(s, "wBattleMonHP"); }
-  private foeHp(s: BattleSide): number { return this.r16(s, "wEnemyMonHP"); }
-  private inBattle(s: BattleSide): number { return this.m(s, s.sym.addr("wIsInBattle")); }
+  private hp(s: BattleSide): number { return hpOf(s.emu.mem(), s.sym); }
+  private foeHp(s: BattleSide): number { return foeHpOf(s.emu.mem(), s.sym); }
+  private inBattle(s: BattleSide): number { return inBattleOf(s.emu.mem(), s.sym); }
   private grid(s: BattleSide): string { return (s.scr.textGrid?.() ?? []).join("\n"); }
-  private rngList(s: BattleSide): number[] {
-    const m = s.emu.mem();
-    return Array.from({ length: ADDR.rngListLen }, (_, i) => m[ADDR.rngList + i] & 0xFF);
-  }
+  private rngList(s: BattleSide): number[] { return rngListOf(s.emu.mem()); }
   private snap(s: BattleSide): string {
     return `${s.tag}[map=$${this.m(s, ADDR.curMap).toString(16)} ls=${this.m(s, ADDR.linkState)} ` +
       `bt=${this.inBattle(s)} hp=${this.hp(s)} foe=${this.foeHp(s)} ` +
@@ -322,8 +293,8 @@ export class LinkBattleSession {
   probeLine(): string { return `${this.snap(this.a)} ${this.snap(this.b)} ex=${this.bus.exchanges}`; }
   probeScreens(): string { return `--- A ---\n${this.grid(this.a)}\n--- B ---\n${this.grid(this.b)}`; }
   probeMoves(s: "A" | "B"): number[] {
-    const side = s === "A" ? this.a : this.b, m = side.emu.mem(), a = side.sym.addr("wBattleMonMoves");
-    return [0, 1, 2, 3].map(i => m[a + i] & 0xFF);
+    const side = s === "A" ? this.a : this.b;
+    return movesOf(side.emu.mem(), side.sym);
   }
   get sides(): [BattleSide, BattleSide] { return [this.a, this.b]; }
 
@@ -379,42 +350,8 @@ export class LinkBattleSession {
     else { this.sig[s.tag] = sig; this.stale[s.tag] = 0; }
   }
 
-  /** Gen1 text codec, enough for a nickname: $80-$99 = A-Z, $50 terminates. */
-  private name(s: BattleSide, addr: number): string {
-    const m = s.emu.mem();
-    let out = "";
-    for (let i = 0; i < 11; i++) {
-      const c = m[addr + i] & 0xFF;
-      if (c === 0x50) break;
-      out += c >= 0x80 && c <= 0x99 ? String.fromCharCode(65 + c - 0x80) : c === 0x7F ? " " : "";
-    }
-    return out || "?";
-  }
-
-  private view(s: BattleSide, turn: number): BattleView {
-    const m = s.emu.mem(), mv = s.sym.addr("wBattleMonMoves"), pp = s.sym.addr("wBattleMonPP");
-    return {
-      tag: s.tag, turn,
-      myNick: this.name(s, s.sym.addr("wBattleMonNick")),
-      foeNick: this.name(s, s.sym.addr("wEnemyMonNick")),
-      mySpecies: this.m(s, s.sym.addr("wBattleMonSpecies")),
-      myLevel: this.m(s, s.sym.addr("wBattleMonLevel")),
-      myHp: this.hp(s), myMaxHp: this.r16(s, "wBattleMonMaxHP"),
-      foeSpecies: this.m(s, s.sym.addr("wEnemyMonSpecies")),
-      foeLevel: this.m(s, s.sym.addr("wEnemyMonLevel")),
-      foeHp: this.foeHp(s), foeMaxHp: this.r16(s, "wEnemyMonMaxHP"),
-      moves: [0, 1, 2, 3].map(i => m[mv + i] & 0xFF),
-      pp: [0, 1, 2, 3].map(i => m[pp + i] & 0x3F),
-      lastFoeMove: this.m(s, ADDR.enemyMove),
-    };
-  }
-
-  private classify(s: BattleSide): "moveMenu" | "battleMenu" | "text" {
-    const g = this.grid(s);
-    if (g.includes("TYPE/") || g.includes("PP")) return "moveMenu";
-    if (g.includes("FIGHT")) return "battleMenu";
-    return "text";
-  }
+  private view(s: BattleSide, turn: number): BattleView { return readBattleView(s.emu.mem(), s.sym, s.tag, turn); }
+  private classify(s: BattleSide): BattlePhase { return battlePhaseOf(this.grid(s)); }
 
   private async fight(turns: TurnRecord[]): Promise<boolean> {
     const fine = this.o.fineDiv;
@@ -436,8 +373,7 @@ export class LinkBattleSession {
       const cur = this.m(s, ADDR.menuCursor);
       if (where === "battleMenu") {
         committed[s.tag] = false;                       // a new turn has begun
-        // 2x2 grid, FIGHT is top-left; wCurrentMenuItem tracks the row.
-        return cur === 0 ? KEYS.A : KEYS.UP;
+        return menuKeyFor(where, cur, 0).key;
       }
       if (committed[s.tag]) {
         // Silence while a selection is in flight — but silence with a deadman.
@@ -481,14 +417,9 @@ export class LinkBattleSession {
             this.log(`    ${s.tag} pickMove failed (${e}) — falling back to slot ${fallback}`);
           }
         }
-        // MEASURED: the move list is ONE-INDEXED. Cursor 1..4 maps to the four
-        // move ids and wPlayerSelectedMove ($CCDC) follows the highlighted
-        // entry. Targeting slot 0 never matches and walks the cursor forever.
-        // wMenuWatchedKeys here is $C3 (UP|DOWN|B|A).
-        const target = slot[s.tag] + 1;
-        if (cur !== target) return KEYS.DOWN;
-        committed[s.tag] = true;
-        return KEYS.A;
+        const k = menuKeyFor(where, cur, slot[s.tag]);
+        if (k.commits) committed[s.tag] = true;
+        return k.key;
       }
       // Narration: link battles scroll their own text (ManualTextScroll has an
       // in-link-battle path), so silence is correct here — with the same

@@ -1,0 +1,228 @@
+{
+  "ticket": "wq#3201",
+  "generated": "2026-09-30T07:27:01.070Z",
+  "mode": "battle",
+  "control": false,
+  "transport": {
+    "peer": "local",
+    "bind": "127.0.0.1",
+    "host": "127.0.0.1",
+    "localNode": "lumen",
+    "peerNode": "lumen"
+  },
+  "crossNode": false,
+  "sessions": [
+    {
+      "session": 1,
+      "retries": 0,
+      "sides": [
+        {
+          "tag": "A",
+          "exit": 0,
+          "invariants": true,
+          "desync": false,
+          "mirror": true,
+          "exchanges": 729,
+          "exchangeDone": true,
+          "knockout": "foe",
+          "hp": 15,
+          "foeHp": 0,
+          "ledger": true,
+          "turns": 6,
+          "rounds": 974,
+          "nudges": 0,
+          "battleBytes": 167,
+          "role": 1
+        },
+        {
+          "tag": "B",
+          "exit": 0,
+          "invariants": true,
+          "desync": false,
+          "mirror": true,
+          "exchanges": 729,
+          "exchangeDone": true,
+          "knockout": "us",
+          "hp": 0,
+          "foeHp": 15,
+          "ledger": true,
+          "turns": 6,
+          "rounds": 685,
+          "nudges": 0,
+          "battleBytes": 167,
+          "role": 2
+        }
+      ],
+      "rtt": {
+        "n": 896,
+        "minUs": 87.402,
+        "p50Us": 419.621,
+        "p90Us": 57754.537,
+        "p99Us": 153284.11,
+        "maxUs": 293717.937,
+        "meanUs": 11528.796498883932,
+        "sumUs": 10329801.663000003
+      }
+    },
+    {
+      "session": 2,
+      "retries": 0,
+      "sides": [
+        {
+          "tag": "A",
+          "exit": 0,
+          "invariants": true,
+          "desync": false,
+          "mirror": true,
+          "exchanges": 716,
+          "exchangeDone": true,
+          "knockout": "foe",
+          "hp": 22,
+          "foeHp": 0,
+          "ledger": true,
+          "turns": 5,
+          "rounds": 919,
+          "nudges": 0,
+          "battleBytes": 145,
+          "role": 1
+        },
+        {
+          "tag": "B",
+          "exit": 0,
+          "invariants": true,
+          "desync": false,
+          "mirror": true,
+          "exchanges": 716,
+          "exchangeDone": true,
+          "knockout": "us",
+          "hp": 0,
+          "foeHp": 22,
+          "ledger": true,
+          "turns": 5,
+          "rounds": 597,
+          "nudges": 0,
+          "battleBytes": 145,
+          "role": 2
+        }
+      ],
+      "rtt": {
+        "n": 861,
+        "minUs": 80.276,
+        "p50Us": 459.039,
+        "p90Us": 26363.562,
+        "p99Us": 166985.635,
+        "maxUs": 252368.939,
+        "meanUs": 11247.98843089431,
+        "sumUs": 9684518.039
+      }
+    },
+    {
+      "session": 3,
+      "retries": 1,
+      "sides": [
+        {
+          "tag": "A",
+          "exit": 0,
+          "invariants": true,
+          "desync": false,
+          "mirror": true,
+          "exchanges": 723,
+          "exchangeDone": true,
+          "knockout": "foe",
+          "hp": 12,
+          "foeHp": 0,
+          "ledger": true,
+          "turns": 5,
+          "rounds": 700,
+          "nudges": 0,
+          "battleBytes": 142,
+          "role": 2
+        },
+        {
+          "tag": "B",
+          "exit": 0,
+          "invariants": true,
+          "desync": false,
+          "mirror": true,
+          "exchanges": 723,
+          "exchangeDone": true,
+          "knockout": "us",
+          "hp": 0,
+          "foeHp": 12,
+          "ledger": true,
+          "turns": 5,
+          "rounds": 1166,
+          "nudges": 0,
+          "battleBytes": 142,
+          "role": 1
+        }
+      ],
+      "rtt": {
+        "n": 865,
+        "minUs": 73.093,
+        "p50Us": 332.493,
+        "p90Us": 11120.99,
+        "p99Us": 134453.906,
+        "maxUs": 221537.039,
+        "meanUs": 8869.22320462428,
+        "sumUs": 7671878.0720000025
+      }
+    }
+  ],
+  "desyncs": 0,
+  "rtt": {
+    "n": 2622,
+    "minUs": 73.093,
+    "p50Us": 399.597,
+    "p90Us": 32296.193,
+    "p99Us": 150330.115,
+    "maxUs": 293717.937,
+    "meanUs": 10559.190607932884,
+    "sumUs": 27686197.77400002
+  },
+  "serve": {
+    "n": 2485,
+    "minUs": 104.726,
+    "p50Us": 352.696,
+    "p90Us": 47840.803,
+    "p99Us": 162941.008,
+    "maxUs": 10968163.207,
+    "meanUs": 17460.645058350106,
+    "sumUs": 43389702.97000001
+  },
+  "histogram": {
+    "edgesUs": [
+      50,
+      100,
+      200,
+      400,
+      800,
+      1600,
+      3200,
+      6400,
+      12800,
+      25600,
+      51200,
+      102400,
+      204800
+    ],
+    "counts": [
+      0,
+      71,
+      295,
+      949,
+      826,
+      82,
+      64,
+      56,
+      7,
+      2,
+      25,
+      148,
+      89,
+      8
+    ]
+  },
+  "pass": 75,
+  "fail": 0
+}

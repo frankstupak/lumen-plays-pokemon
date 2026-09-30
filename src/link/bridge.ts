@@ -178,6 +178,8 @@ export class SerialBridge {
   /** True while a master transfer awaits its remote reply. Do not step the
    *  core while this is set — that is the stall the ticket requires. */
   get pending(): boolean { return this.inflight; }
+  /** Why the link closed ("" while open). */
+  get closedWhy(): string { return this.closeReason; }
   get telemetry(): BridgeStats {
     return { ...this.stats, gate: { ...this.stats.gate }, forcedAt: this.stats.forcedAt.slice() };
   }

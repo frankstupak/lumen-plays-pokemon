@@ -20,6 +20,8 @@ export interface Side {
   lat?: any;
   /** wq#484 the swap verdict (`TRADECHECK {...}`), only in RDV_CONTINUE=trade. */
   trade?: any;
+  /** wq#3201 the battle verdict (`BATTLECHECK {...}`), only in RDV_CONTINUE=battle. */
+  battle?: any;
 }
 
 /** Pull the LAST occurrence of a one-line JSON report. Last, not first: a side
@@ -51,6 +53,7 @@ export function spawnSide(env: Record<string, string>, timeoutMs: number): Promi
         block: reportLine(out, "BLOCKCHECK"),
         lat: reportLine(out, "LATENCY"),
         trade: reportLine(out, "TRADECHECK"),
+        battle: reportLine(out, "BATTLECHECK"),
       });
     });
   });

@@ -700,10 +700,9 @@ whose swap is invisible, so the printer never omits them.
 
 Second, the battle. The trade half of "full trade AND battle across the tailnet"
 is now built and measured (previous section) — a distance only has to carry it.
-A battle to knockout against a remote peer is still two-cores-in-one-process
-only: `invariants.verifyBattleLedger()` is already the one-sided verification and
-has no driver calling it. That is **wq#3201**, and it needs no cross-node
-capability at all, so it is not blocked by wq#3200.
+The battle half is now built too (**wq#3201**, "Battle (M5e)" below): two
+processes fight to a knockout over the bridge. Like the trade, it needs no
+cross-node capability, so wq#3200 does not block it.
 
 What the trade pack changes about the cross-node prediction, and it is worth
 restating because the earlier number was for the block alone: a trade session
@@ -725,3 +724,83 @@ test: 702 transfers is ~21s at the same round trip and fits every budget as it
 stands.
 
 No firewall or iptables rule was added, removed, or changed for any of this.
+
+# Battle (M5e, wq#3201) — to knockout, driven one-sided
+
+`npx tsx src/link/probe_m5d.ts --mode battle --sessions 3 --port 19471` runs
+two `rdv_side.ts` processes with `RDV_ROOM=COLOSSEUM RDV_CONTINUE=battle`. Each
+drives its own core only, and each prints a `BATTLECHECK` line. The pack goes to
+`evidence/M5e/` unless `--evidence` says otherwise.
+
+## Shape
+
+It follows the trade pattern. `battle_menu.ts` is the own-RAM decode that
+`battle.ts` used to keep private: the phase from the screen, the key for a
+waiting menu, and the HP/move/RNG reads. `battle.ts` now imports it.
+`battle_side.ts` is the one-sided driver. It walks its own menu to its slot,
+presses A, and then parks inside LinkBattleExchangeData until its own battle
+menu comes back. It never reads the peer's state.
+
+## What the ROM taught (all read from pokeblue.gb)
+
+- **The wire carries the move's list index, not its id.** LinkBattleExchangeData
+  (`$0F:5605`) sends `wPlayerMoveListIndex`, and Serial_ExchangeNybble
+  (`$00:22C3`) tags it as `$60|index`. The id crosses only inside the 415-byte
+  block, which carries every id the peer knows. The old ledger anchor ("the
+  enemy move id is somewhere in the received bytes") therefore could never
+  fail on a real session. The new anchor checks two things per settled turn:
+  `$60|wEnemyMoveListIndex` is among the bytes received that turn, and the
+  peer's advertised moves at that index equal `wEnemySelectedMove`. Sample
+  window from s1/A: `00 62×24 00×9`.
+- **Some commit presses never land, and the ROM shows which.**
+  LinkBattleExchangeData first sets `wSerialExchangeNybbleReceiveData` to
+  `$FF`. A side still on the move menu without that `$FF` never saw the
+  press. Before this fix, each such turn cost both sides a 60-round deadman,
+  because the peer waited in the sync the whole time. The driver now
+  re-presses after 4 rounds (4–7 misfires per battle, all recovered). While
+  it is parked with `$FF`, the deadman is off. That wait is healthy however
+  long it lasts: the master runs behind in wall time and can still be
+  narrating.
+- **Room select had two bugs, and neither was visible until something
+  asked for the COLOSSEUM.** First, LinkMenu (`$01:5C0A`) prints its text
+  before it initialises the cursor. Second, the side that presses A first
+  sets the room for both (`$01:5C98`). The handshake's 8-frame A holds ran
+  into the opening menu and picked TRADE CENTER about 2 runs in 3.
+  ISSUE-LOG 1094/1096.
+
+## Verified (`evidence/M5e/`)
+
+3/3 consecutive sessions on `--port 19471`, 75 PASS / 0 FAIL, zero desyncs,
+zero nudges (`m5e-battle-run.out`, `m5e-battle-summary.json`). The roles
+differed between sessions (A was slave in s1 and s2 and master in s3). s3
+needed one wq#510 STRANDED relaunch at rendezvous.
+
+| s | winner | final HP (A/B) | settled turns | battle bytes | battle |
+|---|--------|----------------|---------------|--------------|--------|
+| 1 | A      | 15 / 0         | 6             | 167          | ~38s   |
+| 2 | A      | 22 / 0         | 5             | 145          | ~39s   |
+| 3 | A      | 12 / 0         | 5             | 142          | ~35s   |
+
+Per side: the party block mirrors byte for byte, and verifyBattleLedger is
+green. Every enemy move is backed by its tagged index arriving in that turn's
+window. Per session, the orchestrator compares the two *reports*, never the
+RAM. It checks four things: the RNG lists are identical, A's HP equals B's
+foe HP and the reverse, one side saw a knockout of the other, and every move
+one side used is a move the other side saw. The default slots differ
+(A Scratch, B Ember), so that last check can fail. The final knockout turn
+is not a settled sample: the fainted side never returns to a menu. The
+knockout itself is gated on each side's last in-battle HP.
+
+**One unexplained flake, kept on record.** An earlier 3-session run on the
+default port 9451 failed in s2 and s3. In each, the listening side saw
+`peer closed` mid-battle while its own master was still running. In s3 the
+two sides' RNG lists also *differed*, which should be impossible for a linked
+pair. I think another process on this host was using the same default port
+range (other workers run probe_m5d here), but I did not confirm it. The next
+8 sessions on the default port were all green, and so were a 3-session run on
+`--port 19451` and the committed run on `--port 19471`. `BATTLECHECK` now carries `closedWhy`, so a
+repeat will name its cause.
+
+Not covered here: cross-node (wq#484/wq#3200) and multi-mon parties. A
+fainted mon with a replacement needs the switch menu, which this driver does
+not handle; the snapshot party has one mon.
