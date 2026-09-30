@@ -626,9 +626,11 @@ run cross-node.** Every session, both sides:
 - one confirm attempt each: the first selection converged every time.
 
 Session 2 needed one wq#510 STRANDED relaunch, which is reported rather than
-hidden. The trade phase is **~12.6k transfers per session against the block's
-702** — roughly 17x the link traffic, and the reason it sharpens the cross-node
-prediction below.
+hidden. A trade session is **7.8k to 15.8k master round trips (mean 12.6k over
+the three) against the block's 702** — an order of magnitude more link traffic,
+and the reason it sharpens the cross-node prediction below. The spread is wide
+because the trade phase ends when the sync converges, not after a fixed count;
+take the mean as the planning number and the 15.8k as the one to budget for.
 
 **The pack ships its own negative control**, because a gate that has only ever
 been shown passing cannot be told apart from a gate wired to `true`.
@@ -705,15 +707,16 @@ capability at all, so it is not blocked by wq#3200.
 
 What the trade pack changes about the cross-node prediction, and it is worth
 restating because the earlier number was for the block alone: a trade session
-runs **~12.6k transfers**, not ~700. No single transfer is at risk — the per-byte
+runs **7.8k-15.8k transfers**, not ~700. No single transfer is at risk — the per-byte
 settle budget is 15s and the observed per-transfer p50 is ~0.9ms, ~16000x of
-headroom. The exposure is entirely cumulative wall time, and it is now 17x
-larger: at a 30ms tailnet round trip, 12.6k sequential transfers is **~6.3 minutes
-of link time**, and three constants sit inside that. `spawnSide`'s
-`--timeout-ms` is 600s, so a 378s trade phase plus rendezvous lands just under a
-SIGKILL. The linger is `RDV_LINGER_MS=45000` hard with a 25s idle cutoff, which
-is ample at 0.9ms per transfer and nowhere near enough for a side waiting on a
-30ms-RTT peer to finish a 12.6k-transfer trade. **So the first cross-node trade
+headroom. The exposure is entirely cumulative wall time, and it is now an order of
+magnitude larger: at a 30ms tailnet round trip, the mean 12.6k sequential
+transfers is **~6.3 minutes of link time** (~8 at the observed worst session), and
+three constants sit inside that. `spawnSide`'s `--timeout-ms` is 600s, so a 378s
+trade phase plus rendezvous lands just under a SIGKILL — and the 15.8k session
+would exceed it. The linger is `RDV_LINGER_MS=45000` hard with a 25s idle cutoff,
+which is ample at 0.9ms per transfer and nowhere near enough for a side waiting on
+a 30ms-RTT peer to finish. **So the first cross-node trade
 should be expected to fail as a timeout — the linger first, the side timeout
 second — and not as a lost byte; the fix is budgets scaled from the measured
 round trip rather than constants.** Change those three before concluding

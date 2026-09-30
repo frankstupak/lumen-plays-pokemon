@@ -21,7 +21,7 @@ must REFUSE. Its content is failures by design — never cite it as a result.
 | --- | --- |
 | `m5d-trade-summary.json` | the swap verdict per session and side: `swapped`, `postTrade`, the `identity` comparison against what the peer advertised, and the `confined` desync verdict with every moved block section |
 | `m5d-trade-session<N>-<A\|B>.log` | that side's stdout including `TRADECHECK` — which menu phases it passed through, how many confirm attempts it took, and what it gave away |
-| `m5d-trade-latency-s3-<A\|B>.json` | per-transfer samples for one trade session: ~12.6k transfers, against ~700 for a block-only session. **Session 3 only, deliberately** — six full trade dumps are 4.5MB against this whole directory's 104KB before them, and the per-session percentiles are in the summary either way. Re-running the pack writes all six locally |
+| `m5d-trade-latency-s3-<A\|B>.json` | per-transfer samples for one trade session: 14.3k transfers, against ~700 for a block-only session. **Session 3 only, deliberately** — six full trade dumps are 4.5MB against this whole directory's 104KB before them, and the per-session percentiles are in the summary either way. Re-running the pack writes all six locally |
 | `m5d-trade-latency-histogram.txt` | the trade-mode distribution, header-labelled `mode=trade` |
 | `m5d-trade-latency-split-s3-B.txt` | `latency_report.ts` on one trade side. **Read the caption:** its `last 415` bucket is the last 415 transfers of a ~14k-transfer session, NOT the party block (which ended thousands of transfers earlier), so the payload/all ratio does not mean here what it means in the block pack. Cite the `all` line: p50 1.93ms sustained |
 | `m5d-trade-probe-run.log` | the orchestrator's output for the trade pack, assertions in order, including session 2's STRANDED relaunch |
@@ -48,8 +48,9 @@ sides: a full two-way swap, the mon held afterwards matching the identity the
 peer's block advertised down to OT and nickname, `verifyPostTrade` green, and
 **zero desyncs — 30 moved block sections, 0 outside the set the peer's patch can
 reach, on all six side-runs**. One confirm attempt per side; session 2 needed one
-wq#510 STRANDED relaunch. ~12.6k transfers per session (a block-only session is
-~700). Aggregate over 37878 master round trips: p50 912us, p90 1.42ms,
+wq#510 STRANDED relaunch. 7.8k / 15.8k / 14.3k master round trips per session
+against ~700 for a block-only session — the phase ends when the sync converges,
+not after a fixed count. Aggregate over 37878 round trips: p50 912us, p90 1.42ms,
 p99 3.03ms, max 234ms.
 
 The control (`m5d-trade-control-*`, 1 session, nobody patched) is **18 PASS / 0
