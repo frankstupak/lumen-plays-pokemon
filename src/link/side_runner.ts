@@ -18,6 +18,8 @@ export interface Side {
   block?: any;
   /** wq#484 per-transfer latency summary (`LATENCY {...}`). */
   lat?: any;
+  /** wq#484 the swap verdict (`TRADECHECK {...}`), only in RDV_CONTINUE=trade. */
+  trade?: any;
 }
 
 /** Pull the LAST occurrence of a one-line JSON report. Last, not first: a side
@@ -48,6 +50,7 @@ export function spawnSide(env: Record<string, string>, timeoutMs: number): Promi
         res: reportLine(out, "RESULT"),
         block: reportLine(out, "BLOCKCHECK"),
         lat: reportLine(out, "LATENCY"),
+        trade: reportLine(out, "TRADECHECK"),
       });
     });
   });

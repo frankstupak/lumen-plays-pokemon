@@ -1,0 +1,14 @@
+[B] late join: sleeping 4000ms before touching the socket
+[B] connect 100.117.66.102:9751
+[B] AWAIT_PARTNER waiting up to 120000ms for the peer socket
+[B] HANDSHAKE driving attendant dialog
+[B] ROOM_SELECT selecting $d0 (role=1)
+[B] IN_ROOM map $ef
+RESULT {"tag":"B","ok":true,"phase":"IN_ROOM","room":208,"yielded":false,"retryable":false,"role":1,"map":239,"linkState":0,"elapsedMs":5415,"telemetry":{"sent":0,"received":0,"resends":0,"slaveServed":30,"forcedSbWrites":0,"suppressedDupIrq":0,"queuedIn":30,"blocked":199,"collisions":0,"forced":6,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":199},"forcedAt":[8372,8372,65415,8372,8624,19253]}}
+[B] continuation: SLAVE->right seat (6,4)
+BLOCKCHECK {"tag":"B","ok":true,"checks":["length","no_FE","party_count","species_terminator","mon_fields"],"failures":[],"linkState":50,"engagedAt":2,"seat":{"want":{"map":239,"x":6,"y":4},"at":{"map":239,"x":6,"y":4},"ok":true},"exchangeDone":true,"mirror":{"ok":true,"diffs":0},"mirrorAll":{"ok":true,"diffs":0},"confined":{"patch":"bob","ok":false,"crossed":false,"moved":[],"unexpected":[],"allowed":36},"peerCount":1,"peerSlot0":{"species":178,"level":20,"hp":57,"maxHp":57,"moves":[10,45,52,43]},"exchanges":701,"pacing":{"queuedIn":701,"served":701,"blocked":4390,"forced":7,"forcedDuringBlock":1,"collisions":0,"stillQueued":0,"gate":{"tooSoon":2120,"notArmed":5,"internal":0,"irq":0,"staged":0,"taken":2265},"forcedAt":["$20b4","$20b4","$ff87","$20b4","$21b0","$4b35","$21ce"]}}
+[B] trade: offering slot 0 (sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON), asking for peer slot 0
+[B]  confirm #1: selection sent, sync did not converge in 14 quiet rounds
+TRADECHECK {"tag":"B","role":1,"offer":0,"want":0,"swapped":false,"note":"no swap in 80 iterations (1 confirm attempts)","iterations":80,"confirms":1,"phases":{"playerList":1,"submenu":1,"cancelbox":2,"other":76},"post":{"ok":false,"checks":["count_stable"],"failures":[{"check":"slot_actually_changed","detail":"slot0 is unchanged — no trade occurred (or we verified a clone; see M3_TRADE blind-test rule)"}]},"identity":{"ok":true,"got":"sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON","advertised":"sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON"},"gave":"sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON","linkState":50,"exchanges":751}
+LATENCY {"tag":"B","rtt":{"n":0,"minUs":null,"p50Us":null,"p90Us":null,"p99Us":null,"maxUs":null,"meanUs":null,"sumUs":0},"serve":{"n":16621,"minUs":108.856,"p50Us":1773.733,"p90Us":2795.967,"p99Us":4954.697,"maxUs":401729.387,"meanUs":2309.9893382467935,"sumUs":38394332.79099996},"buckets":[0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
+[B] latency samples -> /home/lumen/worktrees/wq484-a4/docs/multiplayer/evidence/M5d/m5d-trade-control-latency-s1-B.json (0 rtt, 16621 serve)

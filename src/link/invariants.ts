@@ -162,6 +162,32 @@ export function diffBlocks(
   return out;
 }
 
+/**
+ * Every section label where two blocks differ, UNCAPPED and de-duplicated.
+ *
+ * wq#484: `diffBlocks().where` stops at 12 labels because it exists to name a
+ * fault for a human. The asymmetric M5d trade needs the opposite — the complete
+ * set, so a gate can assert that the difference between our party and the peer's
+ * is CONFINED to the fields the peer is known to have patched. A capped list
+ * would silently drop the one unexpected section that is the whole point.
+ */
+export function diffSections(
+  ours: number[] | Uint8Array, theirs: number[] | Uint8Array,
+  o: MonOffsets, count?: number,
+): string[] {
+  const a = Array.from(ours), b = Array.from(theirs);
+  const seen = new Set<string>();
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] === b[i]) continue;
+    if (count !== undefined && !isLiveOffset(i, count, o)) continue;
+    seen.add(sectionOf(i, o));
+  }
+  // A length mismatch is a desync no label can express; name it so a caller that
+  // only inspects the section list still fails.
+  if (a.length !== b.length) seen.add(`length:${a.length}/${b.length}`);
+  return [...seen];
+}
+
 export interface Failure { check: string; detail: string }
 export interface Verdict { ok: boolean; failures: Failure[]; checked: string[] }
 

@@ -27,8 +27,12 @@ import { Dialog } from "../dialog";
 import { SerialBridge } from "./bridge";
 import { Rendezvous, CoreView, RoomName, ROOM_MAP, ROOM as ROOM_ID } from "./rendezvous";
 import { setSlice, clearSlice, transferSliceDivisor } from "./lockstep";
-import { offsetsFromSymbols, verifyTradeBlock, viewBlock, readPartyBlock, diffBlocks } from "./invariants";
+import { offsetsFromSymbols, verifyTradeBlock, viewBlock, readPartyBlock, diffBlocks,
+  diffSections, verifyPostTrade } from "./invariants";
 import { readLinkState } from "./linkstate";
+import { ASYM_PATCHES, assertPatchInBlock, expectedAsymSections, driveTradeConfirm } from "./trade_side";
+import { writeIdentity, readEnemyIdentity, monKey } from "./identity";
+import { readParty, slotKey } from "./party";
 import { ckptPath, linkEventsDir, romPath } from "../fixtures";
 import { summarise, LatencyDump } from "./latency";
 import { mkdirSync, writeFileSync } from "fs";
@@ -54,6 +58,22 @@ const TAG = process.env.RDV_TAG ?? MODE;
 const BIND = process.env.RDV_BIND ?? "127.0.0.1";
 const HOST = process.env.RDV_HOST ?? "127.0.0.1";
 const LAT_OUT = process.env.RDV_LAT_OUT ?? "";
+// wq#484 (M5d trade): RDV_CONTINUE=trade carries on past the 415-byte block into
+// selection -> confirm -> swap, driven one-sided (trade_side.ts).
+//   RDV_IDENT=<patch>  — apply this named identity patch to OUR core before any
+//                        link traffic. Set on exactly ONE side of a pair.
+//   RDV_ASYM=<patch>   — the patch in play on the PAIR, set on BOTH sides. Each
+//                        side needs it to know which block sections are allowed
+//                        to differ; the difference is symmetric, so both sides
+//                        compute the same expected set from the same name.
+//   RDV_OFFER/RDV_WANT — our party slot to give away, and the peer slot to ask
+//                        for. Gen1 exchanges ONE agreed pair, so the orchestrator
+//                        must set offer(A)==want(B) and offer(B)==want(A); the
+//                        sides cannot negotiate it over the wire.
+const IDENT = process.env.RDV_IDENT ?? "";
+const ASYM = process.env.RDV_ASYM ?? "";
+const OFFER = Number(process.env.RDV_OFFER ?? 0);
+const WANT = Number(process.env.RDV_WANT ?? 0);
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** wLinkState values CONFIRMED in vivo by the M3 in-process trade (trade.ts):
@@ -73,6 +93,17 @@ const LS_TRADE_MENU = 50;
 
   loadSnapshotFile(emu, ckptPath("center-m2b.state.gz"));
   emu.frames(6);
+
+  // The patch rides across the cable inside the party block, so it has to land
+  // BEFORE the first byte: patching afterwards leaves the partner's received copy
+  // stale and the pair inconsistent (identity.ts).
+  if (IDENT) {
+    const patch = ASYM_PATCHES[IDENT];
+    if (!patch) throw new Error(`RDV_IDENT=${IDENT} is not a known patch (${Object.keys(ASYM_PATCHES).join(",")})`);
+    writeIdentity(emu.mem(), patch);
+    console.log(`[${TAG}] identity patched: ${IDENT} ${JSON.stringify(patch)}`);
+  }
+
   await nav.goto(11, 3);                      // tile below the attendant
 
   // wq#511: the bridge needs to see the ROM take a byte out of the serial ISR's
@@ -161,7 +192,8 @@ const LS_TRADE_MENU = 50;
   // FINE around the block itself: a full frame freezes us for ~70k cycles, so a
   // block clocked at one byte per frame is 400 frames of a partner sitting in a
   // serial wait loop. One slice ~= one transfer window (lockstep.ts).
-  if (res.ok && process.env.RDV_CONTINUE === "block") {
+  const CONTINUE = process.env.RDV_CONTINUE ?? "";
+  if (res.ok && (CONTINUE === "block" || CONTINUE === "trade")) {
     const master = core.role() === 2;
     const seat = master ? { x: 3, y: 4, face: KEYS.RIGHT } : { x: 6, y: 4, face: KEYS.LEFT };
     // The room we actually resolved to, not the one we asked for: room select
@@ -219,6 +251,25 @@ const LS_TRADE_MENU = 50;
     const own = readPartyBlock(mem, sym, "own");
     const mirror = diffBlocks(own, received, O, view.count);   // the slots the block claims
     const mirrorAll = diffBlocks(own, received, O);            // including never-filled slots
+    // wq#484: an ASYMMETRIC pair is supposed to differ — that is what makes a
+    // swap visible at all — so the byte-for-byte mirror gate above cannot be the
+    // desync check here. The replacement is stricter in the one way that matters:
+    // the difference must be CONFINED to the sections the peer's known patch can
+    // reach, and it must be non-empty. A lost or shifted byte lands outside that
+    // set; a patch that never crossed leaves it empty. Neither can hide.
+    let confined: any;
+    if (ASYM) {
+      const patch = ASYM_PATCHES[ASYM];
+      if (!patch) throw new Error(`RDV_ASYM=${ASYM} is not a known patch (${Object.keys(ASYM_PATCHES).join(",")})`);
+      assertPatchInBlock(sym, O);
+      const expected = new Set(expectedAsymSections(sym, patch));
+      const moved = diffSections(own, received, O, view.count);
+      const unexpected = moved.filter(s => !expected.has(s));
+      confined = {
+        patch: ASYM, ok: unexpected.length === 0 && moved.length > 0,
+        crossed: moved.length > 0, moved, unexpected, allowed: [...expected].length,
+      };
+    }
     const t = bridge.telemetry;
     console.log("BLOCKCHECK " + JSON.stringify({
       tag: TAG, ok: v.ok, checks: v.checked, failures: v.failures,
@@ -228,6 +279,7 @@ const LS_TRADE_MENU = 50;
       exchangeDone: core.linkState() === LS_TRADE_MENU,
       mirror: { ok: mirror.ok, diffs: mirror.diffs, first: mirror.first, where: mirror.where },
       mirrorAll: { ok: mirrorAll.ok, diffs: mirrorAll.diffs, where: mirrorAll.where },
+      confined,
       peerCount: view.count,
       peerSlot0: { species: view.mons[0].species, level: view.mons[0].level,
         hp: view.mons[0].hp, maxHp: view.mons[0].maxHp, moves: view.mons[0].moves },
@@ -238,6 +290,68 @@ const LS_TRADE_MENU = 50;
         forcedAt: t.forcedAt.map(pc => `$${pc.toString(16)}`) },
       stalled: linkStalled || undefined,
     }));
+
+    // ---- TRADE: selection -> confirm -> the swap itself (wq#484) ------------
+    //
+    // The block above is only the parties being shown to each other; the trade
+    // is what happens next, and until now it existed only in-process (M3), with
+    // one driver holding both cores. Here each side sees its own menu only —
+    // see trade_side.ts for why the quiet phase is load-bearing.
+    if (CONTINUE === "trade" && core.linkState() === LS_TRADE_MENU && !bridge.closed) {
+      // Capture what the peer ADVERTISED before touching anything: the received
+      // block is the only statement we will ever get about what should arrive,
+      // and the swap overwrites our side of the comparison.
+      const enemyBefore = readEnemyIdentity(emu.mem());
+      const beforeView = viewBlock(readPartyBlock(emu.mem(), sym, "own"), O);
+      const partyBefore = readParty(emu.mem());
+      const offerBefore = partyBefore[OFFER] ? slotKey(partyBefore[OFFER]) : "";
+      const hasSwapped = () => {
+        const p = readParty(emu.mem());
+        return !!p[OFFER] && slotKey(p[OFFER]) !== offerBefore;
+      };
+      console.log(`[${TAG}] trade: offering slot ${OFFER} (${offerBefore}), asking for peer slot ${WANT}`);
+
+      setSlice(emu.core, FINE);
+      let drive;
+      try {
+        drive = await driveTradeConfirm({
+          mem: () => emu.mem(),
+          grid: () => (scr.textGrid?.() ?? []).join("\n"),
+          step: (n, key) => core.step(n, key),
+          swapped: hasSwapped,
+          closed: () => bridge.closed,
+          fine: FINE, offer: OFFER, want: WANT,
+          log: s => console.log(`[${TAG}]${s}`),
+        });
+      } finally { clearSlice(emu.core); }
+
+      const afterView = viewBlock(readPartyBlock(emu.mem(), sym, "own"), O);
+      const post = verifyPostTrade({
+        before: beforeView.mons, after: afterView.mons, slot: OFFER,
+        peerMon: view.mons[WANT], count: beforeView.count, countAfter: afterView.count,
+      });
+      // Stronger than verifyPostTrade's species+level: the mon we now hold must
+      // be the exact identity the peer's block advertised, OT and nickname
+      // included. Those two fields are what a trade carries and a clone pair
+      // cannot fake. Only mon1 has receive-side mirrors in RAM, so a non-zero
+      // `want` reports undefined rather than a vacuous pass.
+      const got = readParty(emu.mem())[OFFER];
+      const gotKey = got ? monKey({ species: got.species, otid: got.otid, level: got.level, ot: got.ot, nick: got.nick }) : "";
+      const advertised = monKey(enemyBefore.mon1);
+      console.log("TRADECHECK " + JSON.stringify({
+        tag: TAG, role: core.role(), offer: OFFER, want: WANT,
+        swapped: drive.swapped, note: drive.note,
+        iterations: drive.iterations, confirms: drive.confirms,
+        phases: drive.phases, swappedFrom: drive.swappedFrom,
+        post: { ok: post.ok, checks: post.checked, failures: post.failures },
+        identity: WANT === 0
+          ? { ok: gotKey === advertised, got: gotKey, advertised }
+          : { ok: undefined, got: gotKey, advertised: "n/a — only mon1 has a receive-side mirror" },
+        gave: offerBefore,
+        linkState: core.linkState(),
+        exchanges: bridge.telemetry.sent + bridge.telemetry.slaveServed,
+      }));
+    }
   }
 
   // LINGER — keep the core alive so the peer can finish its exchange.

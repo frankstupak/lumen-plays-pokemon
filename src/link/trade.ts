@@ -42,8 +42,9 @@ import { runCycles, setSlice, clearSlice } from "./lockstep";
 import { readLinkState } from "./linkstate";
 import { Identity, MonIdentity, readIdentity, sameMon, describeMon } from "./identity";
 import { SlotView, readParty, slotKey, describeParty } from "./party";
+import { Phase, phaseOf, cursorOf, maxItemOf, cursorKeyFor } from "./trade_menu";
 
-export type Phase = "stats" | "enemyList" | "playerList" | "submenu" | "cancelbox" | "other";
+export type { Phase } from "./trade_menu";
 
 export interface TradeSide {
   tag: string;
@@ -149,47 +150,13 @@ export class TradeSession {
     }
   }
 
-  /**
-   * Where a side is inside TradeCenter_SelectMon, read from RAM.
-   *
-   * wMenuWatchedKeys ($CC29) is set distinctly by every menu on this screen, so
-   * it identifies the active menu unambiguously AND tells us which keys are
-   * legal there. Values decoded from the ROM (bank 1, scan for `ld [$CC29],a`):
-   *   $5561 .enemyMonMenu           $A1 = DOWN|LEFT|A   maxItem = wEnemyPartyCount
-   *   $55E5 .playerMonMenu          $91 = DOWN|RIGHT|A  maxItem = wPartyCount
-   *   $56A6 .displayStatsTradeMenu  $13 = RIGHT|B|A     maxItem = 0  (HORIZONTAL)
-   *   $56CA .selectedCancelMenuItem $23 = LEFT|B|A
-   * NOTE neither party list watches UP — the cursor is DOWN-only and wraps.
-   *
-   * The stats page is not a menu, so it is detected from screen text; every
-   * result is still verified from RAM.
-   */
-  private phase(s: TradeSide): Phase {
-    if (this.grid(s).includes("STATUS/OK")) return "stats";
-    switch (s.emu.mem()[0xCC29] & 0xFF) {
-      case 0xA1: return "enemyList";
-      case 0x91: return "playerList";
-      case 0x13: return "submenu";
-      case 0x23: return "cancelbox";
-      default: return "other";
-    }
-  }
+  /** Where a side is inside TradeCenter_SelectMon — see trade_menu.ts for the
+   *  ROM-derived decode, shared with the one-sided M5d driver (wq#484). */
+  private phase(s: TradeSide): Phase { return phaseOf(s.emu.mem(), this.grid(s)); }
 
-  private cursor(s: TradeSide): number { return s.emu.mem()[0xCC26] & 0xFF; }
-  private maxItem(s: TradeSide): number { return s.emu.mem()[0xCC28] & 0xFF; }
-
-  /**
-   * DOWN until the cursor sits on `want`, then A. Never counts presses blind:
-   * the cursor is read back from wCurrentMenuItem ($CC26) every iteration, so a
-   * dropped or doubled input self-corrects instead of silently selecting the
-   * wrong slot — or CANCEL, which aborts the whole session (wLinkState 50 -> 1).
-   * `want` is clamped below wMaxMenuItem because the last entry IS CANCEL.
-   */
-  private cursorKey(s: TradeSide, want: number): number {
-    const max = this.maxItem(s);
-    const target = Math.max(0, Math.min(want, Math.max(0, max - 1)));
-    return this.cursor(s) === target ? KEYS.A : KEYS.DOWN;
-  }
+  private cursor(s: TradeSide): number { return cursorOf(s.emu.mem()); }
+  private maxItem(s: TradeSide): number { return maxItemOf(s.emu.mem()); }
+  private cursorKey(s: TradeSide, want: number): number { return cursorKeyFor(s.emu.mem(), want); }
 
 
   /** Walk both sides to the attendant and complete the Cable Club handshake. */

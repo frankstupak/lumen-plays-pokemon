@@ -1,0 +1,14 @@
+[A] listen 100.117.66.102:9751
+[A] AWAIT_PARTNER waiting up to 120000ms for the peer socket
+[A] HANDSHAKE driving attendant dialog
+[A] ROOM_SELECT selecting $d0 (role=2)
+[A] IN_ROOM map $ef
+RESULT {"tag":"A","ok":true,"phase":"IN_ROOM","room":208,"yielded":false,"retryable":false,"role":2,"map":239,"linkState":0,"elapsedMs":9394,"telemetry":{"sent":30,"received":30,"resends":0,"slaveServed":0,"forcedSbWrites":1,"suppressedDupIrq":30,"queuedIn":0,"blocked":0,"collisions":0,"forced":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}}
+[A] continuation: MASTER->left seat (3,4)
+BLOCKCHECK {"tag":"A","ok":true,"checks":["length","no_FE","party_count","species_terminator","mon_fields"],"failures":[],"linkState":50,"engagedAt":2,"seat":{"want":{"map":239,"x":3,"y":4},"at":{"map":239,"x":3,"y":4},"ok":true},"exchangeDone":true,"mirror":{"ok":true,"diffs":0},"mirrorAll":{"ok":true,"diffs":0},"confined":{"patch":"bob","ok":false,"crossed":false,"moved":[],"unexpected":[],"allowed":36},"peerCount":1,"peerSlot0":{"species":178,"level":20,"hp":57,"maxHp":57,"moves":[10,45,52,43]},"exchanges":701,"pacing":{"queuedIn":0,"served":0,"blocked":0,"forced":0,"forcedDuringBlock":0,"collisions":0,"stillQueued":0,"gate":{"tooSoon":0,"notArmed":0,"internal":0,"irq":0,"staged":0,"taken":0},"forcedAt":[]}}
+[A] trade: offering slot 0 (sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON), asking for peer slot 0
+[A]  confirm #1: selection sent, sync did not converge in 14 quiet rounds
+TRADECHECK {"tag":"A","role":2,"offer":0,"want":0,"swapped":false,"note":"no swap in 80 iterations (1 confirm attempts)","iterations":80,"confirms":1,"phases":{"other":75,"playerList":1,"submenu":1,"cancelbox":3},"post":{"ok":false,"checks":["count_stable"],"failures":[{"check":"slot_actually_changed","detail":"slot0 is unchanged — no trade occurred (or we verified a clone; see M3_TRADE blind-test rule)"}]},"identity":{"ok":true,"got":"sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON","advertised":"sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON"},"gave":"sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON","linkState":50,"exchanges":751}
+[A] peer closed; linger ends
+LATENCY {"tag":"A","rtt":{"n":16646,"minUs":79.796,"p50Us":860.728,"p90Us":1419.103,"p99Us":2764.843,"maxUs":208220.072,"meanUs":1220.665256397935,"sumUs":20319193.85800003},"serve":{"n":0,"minUs":null,"p50Us":null,"p90Us":null,"p99Us":null,"maxUs":null,"meanUs":null,"sumUs":0},"buckets":[0,9,118,1076,4978,9386,941,65,6,21,6,23,16,1]}
+[A] latency samples -> /home/lumen/worktrees/wq484-a4/docs/multiplayer/evidence/M5d/m5d-trade-control-latency-s1-A.json (16646 rtt, 0 serve)

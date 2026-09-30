@@ -102,8 +102,10 @@ what is left is the trade and battle sequences themselves, not the link:
 2. **We cannot drive the peer's menus — SOLVED (M5c, wq#483 + wq#511).**
    Each side drives only its own core and infers the partner's state from its
    own RAM plus link liveness: rendezvous to the room (wq#483), then the
-   415-byte party exchange (wq#511, "Continuation" below). What remains unbuilt
-   is the trade itself — selection, confirm, swap — against a remote peer.
+   415-byte party exchange (wq#511, "Continuation" below), then selection,
+   confirm and the swap itself (wq#484, "The trade itself, across two
+   processes"). What remains unbuilt is a **battle to knockout** against a remote
+   peer (wq#3201).
 3. **Latency replaces lockstep — SOLVED (M5a).** `src/link/bridge.ts` binds a
    core's SB/SC to a `BgbLink` endpoint; a master transfer stays OPEN until the
    remote sync2 arrives, and the core is NOT stepped while a byte is pending,
@@ -448,7 +450,9 @@ and one that correctly ignores never-filled party slots.
 
 **Honest limit:** both sides boot the same snapshot, so this proves the BLOCK
 crossed intact, not that a trade swapped anything. Two different identities and
-the post-swap check (`verifyPostTrade`) are the next milestone, not this one.
+the post-swap check (`verifyPostTrade`) were the next milestone — they are the
+"Trade" section under M5d below (wq#484), which also explains why a clone pair's
+byte-for-byte mirror gate cannot be the desync check once the sides differ.
 
 ---
 
@@ -569,6 +573,75 @@ test first.
 re-runnable from the repo at any later commit — no emulator, no sockets, and no
 way to accidentally cite a different session than the one in the pack.
 
+## The trade itself, across two processes
+
+The section above stops where M5c-3 stopped: the two parties have been shown to
+each other. A trade is what happens next, and until now it existed only
+in-process (M3, `trade.ts`), because M3's confirm loop reads BOTH cores — it waits
+until both sides report the STATS|TRADE submenu and only then presses RIGHT+A,
+"parking whoever arrives first". A remote side cannot do that; it cannot see the
+peer's menu at all.
+
+What replaces it is what a human player does, and the ROM is already built for
+it. `trade_side.ts` walks its OWN menu to the wanted slot, selects TRADE, and
+then **holds still** while `Serial_SyncAndExchangeNybble` ($00:227F) converges.
+The quiet phase is load-bearing rather than polite: a keypress knocks a waiting
+side out of the sync loop at $226E and the two selections never agree. The menu
+decode both drivers use is one module now (`trade_menu.ts`, ROM-derived from
+`wMenuWatchedKeys`), because a difference in how the in-process and cross-process
+drivers read the same menu would be indistinguishable from a link fault.
+
+**The pair must be asymmetric, and that changes the desync gate.** Both sides
+boot one snapshot, so their parties are byte-identical and a completed swap
+leaves RAM unchanged — indistinguishable from a swap that never happened (M3's
+blind-run rule). Exactly one side is therefore patched into a different trainer
+before the first byte. Which side is fixed by TAG, not by the negotiated
+master/slave role: the roles swap between sessions, and a patch that followed
+them would change what each session proves.
+
+That makes the byte-for-byte mirror gate above unusable here — an asymmetric pair
+is SUPPOSED to differ. The replacement is stricter in the way that matters: the
+difference must be **confined to the block sections the peer's known patch can
+reach, and non-empty**. Both halves can fail. A byte lost or shifted anywhere
+lands outside the allowed set (`mon2+1` for a slot the patch never touches);
+a patch that never crossed leaves the set empty and is reported as "the peer's
+identity did not cross" rather than as a clean run. The allowed set is derived
+from the patch fields and the symbol table, never from remembered offsets:
+`writeIdentity` couples playerName -> mon1OT and playerID -> mon1OTID, so it is
+wider than the patch literal looks (30 sections moved in every session here).
+
+`npx tsx src/link/probe_m5d.ts --mode trade --sessions 3 --bind 100.117.66.102` —
+**72 PASS / 1 FAIL, and the FAIL is again the probe refusing to call a same-host
+run cross-node.** Every session, both sides:
+
+- a **full two-way swap** — each side gave its own mon away and received the
+  peer's (`sp178/id$23c2/lv20/OT:AAAAAAA/nick:CHARMELEON` one way,
+  `sp178/id$1122/lv25/OT:BOB/nick:BOBMON` the other),
+- the mon held afterwards is **exactly the identity the peer's block advertised**,
+  OT and nickname included — the one-sided form of "A ends holding B's exact
+  mon", checked against the received bytes rather than against the peer's RAM,
+- `verifyPostTrade` green: party count stable, every other slot untouched,
+- **zero desyncs, 3/3 sessions, both sides** — 30 moved sections, 0 outside the
+  allowed set, on all six side-runs,
+- one confirm attempt each: the first selection converged every time.
+
+Session 2 needed one wq#510 STRANDED relaunch, which is reported rather than
+hidden. The trade phase is **~12.6k transfers per session against the block's
+702** — roughly 17x the link traffic, and the reason it sharpens the cross-node
+prediction below.
+
+**The pack ships its own negative control**, because a gate that has only ever
+been shown passing cannot be told apart from a gate wired to `true`.
+`--patched-tag none` runs the same trade mode with nobody patched — a clone pair —
+and asserts the inverse: every side must be REFUSED. Its artifacts are
+`m5d-trade-control-*` and their content is failures by design. The pure half of
+the same logic is covered without an emulator by
+`npx tsx src/link/probe_trade_side.ts` — **44/44**, whose red half asserts that a
+byte moved in slot 2 lands outside the allowed set, that an unpatched pair yields
+an empty one, that a peer which never converges produces `swapped: false` instead
+of a hang, and that a cancel box is dismissed with B (pressing A there ends the
+session).
+
 ## What is blocked, and why it is not a code problem
 
 The peer has to run on a second machine, and a fworker cannot start a process on
@@ -591,21 +664,61 @@ one. Not a Thor-specific rule and not something a policy PR can widen:
   `copy` into `/home/thor/lumen-drop`.
 - `copy` can stage a prebuilt bundle into that drop, but nothing on
   `run_readonly_cmds` (`cat ls stat df free journalctl ss`, `ip addr`,
-  `tailscale status`, `docker ps|logs`) can start it.
+  `tailscale status`, `docker ps|logs`) can start it — and
+  `fleet-exec run thor ls -la /home/thor/lumen-drop` shows the drop **empty with
+  no watcher**, so staging cannot be turned into starting by dropping into
+  something that already runs what lands there.
+- `fleet-exec --help` lists the whole verb set: `{run,copy,restart,grant}`. There
+  is no verb that executes a script, and `restart` is refused on a never-node.
+
+One narrow path does already exist in the policy code and is worth naming,
+because it is the difference between "widen the gate" and "review one tool":
+`check_bench()` (`fleet_exec_policy.py:267-274`) permits a run on a hardlocked
+node for any tool listed in `bench_tools[<node>]` — a yaml allowlist reviewed
+entry by entry, requiring no change to `_SHELL_ESCAPE_BASENAMES` and no
+loosening of `THOR_HARDLOCK`. It is not a route today: fleet-exec has no `bench`
+verb yet (the docstring says so). That decision is **wq#3200** (fleet lane),
+which also records why removing `node` from `_SHELL_ESCAPE_BASENAMES` is the
+wrong fix — it opens arbitrary exec on every node to unblock one game link.
 
 The tailnet itself is healthy and was verified from Thor's own view:
 `fleet-exec run thor tailscale status` reports `100.117.66.102 lumen-1 ...
 active; direct`, and `lumen`'s `tailscale0` holds `100.117.66.102/32`. Nothing
 about the network is the obstacle.
 
-**Two things must happen before M5d's gate can close, and neither is in this
-repo.** First, a way for the peer to run on a second node — either a reviewed
-change to `fleet_exec_policy.py` on its own ticket, or Frank launching
-`rdv_side.ts` by hand from a synced checkout (`probe_m5d --peer remote` prints
-the exact command, with the port and both addresses filled in, and then waits).
-Second, the M5c-3 limit above is still in force: the trade **swap** and a
-battle-to-knockout against a remote peer are unbuilt at any distance, so
-"full trade AND battle across the tailnet" needs those drivers first — M5d can
-carry them across a network, but it cannot invent them.
+**Two things must happen before M5d's gate can close, and only one of them is
+still a milestone.**
+
+First, a way for the peer to run on a second node. That is **wq#3200** — a
+reviewed narrow exec path, not a widening — or a human launching `rdv_side.ts`
+from a synced checkout. `probe_m5d --peer remote --mode trade` prints that
+command with the port, both addresses, and the asymmetry env all filled in, then
+waits for it; a peer started without `RDV_IDENT`/`RDV_ASYM` would be a clone pair
+whose swap is invisible, so the printer never omits them.
+
+Second, the battle. The trade half of "full trade AND battle across the tailnet"
+is now built and measured (previous section) — a distance only has to carry it.
+A battle to knockout against a remote peer is still two-cores-in-one-process
+only: `invariants.verifyBattleLedger()` is already the one-sided verification and
+has no driver calling it. That is **wq#3201**, and it needs no cross-node
+capability at all, so it is not blocked by wq#3200.
+
+What the trade pack changes about the cross-node prediction, and it is worth
+restating because the earlier number was for the block alone: a trade session
+runs **~12.6k transfers**, not ~700. No single transfer is at risk — the per-byte
+settle budget is 15s and the observed per-transfer p50 is ~0.9ms, ~16000x of
+headroom. The exposure is entirely cumulative wall time, and it is now 17x
+larger: at a 30ms tailnet round trip, 12.6k sequential transfers is **~6.3 minutes
+of link time**, and three constants sit inside that. `spawnSide`'s
+`--timeout-ms` is 600s, so a 378s trade phase plus rendezvous lands just under a
+SIGKILL. The linger is `RDV_LINGER_MS=45000` hard with a 25s idle cutoff, which
+is ample at 0.9ms per transfer and nowhere near enough for a side waiting on a
+30ms-RTT peer to finish a 12.6k-transfer trade. **So the first cross-node trade
+should be expected to fail as a timeout — the linger first, the side timeout
+second — and not as a lost byte; the fix is budgets scaled from the measured
+round trip rather than constants.** Change those three before concluding
+anything about the path. The block-only mode stays the cheap cross-node smoke
+test: 702 transfers is ~21s at the same round trip and fits every budget as it
+stands.
 
 No firewall or iptables rule was added, removed, or changed for any of this.
