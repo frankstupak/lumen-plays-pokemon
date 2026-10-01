@@ -1,0 +1,24 @@
+# wq#1053: one LPP RESEARCH driver (src/link/<instance>.ts) under the progress watchdog.
+# This is the research pipeline only. It is NOT the live agent and does not touch
+# DECOMMISSIONED.md (wq#2073); src/research_run.ts refuses anything outside src/link/ and
+# src/accept_*.ts.
+#
+# Install (root): cp deploy/lumen-lpp-research@.service /etc/systemd/system/ && systemctl daemon-reload
+# Start one:      systemctl start lumen-lpp-research@drive_trade_e2e
+#
+# The beat comes from the emulator: every frame advance marks progress. If no frame advances
+# for LPP_RESEARCH_STALL_MS (default 120000) the beats stop and WatchdogSec kills the run.
+# A holddown flag for the unit name below keeps it alive (wq#967). Never auto-restarts: a
+# research run that wedged needs a human to look, not a loop.
+[Unit]
+Description=LPP research driver %i (progress watchdog, wq#1053)
+
+[Service]
+Type=notify
+NotifyAccess=all
+WatchdogSec=300
+WorkingDirectory=/home/lumen/pokemon
+Environment=LPP_RESEARCH_UNIT=lumen-lpp-research
+ExecStart=/usr/bin/npx tsx src/research_run.ts src/link/%i.ts
+Restart=no
+Nice=10
