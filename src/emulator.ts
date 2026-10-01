@@ -1,6 +1,7 @@
 // serverboy wrapper: exposes internal save states + convenience I/O
 import { readFileSync, writeFileSync } from "fs";
 import { PNG } from "pngjs";
+import { markResearchProgress } from "./research_beat.js";
 const Gameboy = require("serverboy");
 
 export const KEYS = Gameboy.KEYMAP as Record<string, number>;
@@ -17,6 +18,14 @@ export class Emulator {
     this.inner = (this.gb as any)[priv].gameboy; // internal GameBoyCore
     if (typeof this.inner.saveState !== "function" || typeof this.inner.saving !== "function")
       throw new Error("serverboy internals changed: saveState/returnFromState unavailable");
+    // wq#1053: every frame advance feeds the research watchdog, including the link drivers that
+    // call gb.doFrame() directly and never go through frames()/framesAsync(). Non-enumerable and
+    // installed after the Object.keys() probe above, so it cannot disturb that lookup.
+    const doFrame = this.gb.doFrame.bind(this.gb);
+    Object.defineProperty(this.gb, "doFrame", {
+      value: (...a: unknown[]) => { const r = doFrame(...a); markResearchProgress(); return r; },
+      writable: true, configurable: true, enumerable: false,
+    });
   }
 
   frames(n: number) { for (let i = 0; i < n; i++) this.gb.doFrame(); }
